@@ -169,9 +169,14 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
 
         if (github) {
           const trackedBranches = pile.stack.getAllTrackedBranches();
+          const allLocalBranches = await pile.git.getAllBranches();
           const branchesToClean: Array<{ branch: string; reason: "merged" | "closed"; prNumber?: number; parent: string | null }> = [];
 
-          for (const branch of trackedBranches) {
+          // Check all local branches (tracked and untracked) for merged/closed PRs
+          for (const branch of allLocalBranches) {
+            // Skip trunk
+            if (branch === trunk) continue;
+
             try {
               // Check for open PRs first
               let pr = await github.prs.findByBranch(branch);
@@ -185,7 +190,9 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
 
                 if (pr) {
                   if (pr.merged) {
-                    const parent = pile.state.getParent(branch);
+                    const parent = trackedBranches.includes(branch)
+                      ? pile.state.getParent(branch)
+                      : null;
                     branchesToClean.push({
                       branch,
                       reason: "merged",
@@ -193,7 +200,9 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
                       parent
                     });
                   } else if (pr.state === "closed") {
-                    const parent = pile.state.getParent(branch);
+                    const parent = trackedBranches.includes(branch)
+                      ? pile.state.getParent(branch)
+                      : null;
                     branchesToClean.push({
                       branch,
                       reason: "closed",
