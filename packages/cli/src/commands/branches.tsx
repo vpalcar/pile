@@ -68,20 +68,15 @@ export function BranchesCommand({
       }
     }
 
-    // For untracked branches, find their likely parent
+    // Untracked branches are shown as direct children of trunk
+    // (we can't reliably determine their parent from git history)
     const untrackedBranches = localBranches.filter(
       (b) => !trackedBranches.includes(b) && b !== trunkBranch
     );
 
-    // Candidates for parents: trunk + all local branches
-    const parentCandidates = localBranches;
-
     for (const branch of untrackedBranches) {
-      const likelyParent = await pile.git.findLikelyParent(branch, parentCandidates);
-      const parent = likelyParent ?? trunkBranch;
-      parentMap[branch] = parent;
-      if (!childrenMap[parent]) childrenMap[parent] = [];
-      childrenMap[parent].push(branch);
+      parentMap[branch] = trunkBranch;
+      childrenMap[trunkBranch].push(branch);
     }
 
     // Build tree structure starting from trunk
