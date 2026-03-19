@@ -247,6 +247,43 @@ export class GitOperations {
     const result = await this.git.revparse(["--show-toplevel"]);
     return result.trim();
   }
+
+  /**
+   * Find the likely parent branch by checking merge-base with candidates.
+   * Returns the branch with the closest common ancestor.
+   */
+  async findLikelyParent(branch: string, candidates: string[]): Promise<string | null> {
+    if (candidates.length === 0) return null;
+
+    let bestCandidate: string | null = null;
+    let minDistance = Infinity;
+
+    for (const candidate of candidates) {
+      if (candidate === branch) continue;
+
+      try {
+        const mergeBase = await this.getMergeBase(branch, candidate);
+        if (!mergeBase) continue;
+
+        // Count commits between merge-base and branch head
+        const result = await this.git.raw([
+          "rev-list",
+          "--count",
+          `${mergeBase}..${branch}`,
+        ]);
+        const distance = parseInt(result.trim(), 10);
+
+        if (distance < minDistance) {
+          minDistance = distance;
+          bestCandidate = candidate;
+        }
+      } catch {
+        // Skip this candidate
+      }
+    }
+
+    return bestCandidate;
+  }
 }
 
 export function createGitOperations(repoPath?: string): GitOperations {

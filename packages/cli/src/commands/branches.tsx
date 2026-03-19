@@ -9,21 +9,33 @@ export interface BranchesCommandProps {
   options: OutputOptions;
 }
 
-interface BranchInfo {
+interface TrackedBranchItem {
+  type: "tracked";
   name: string;
-  isTracked: boolean;
-  isLocal: boolean;
-  isRemote: boolean;
+  depth: number;
   isCurrent: boolean;
-  isTrunk: boolean;
   parent?: string;
-  children: string[];
 }
+
+interface UntrackedBranchItem {
+  type: "untracked";
+  name: string;
+  isCurrent: boolean;
+  isRemoteOnly: boolean;
+  suggestedParent?: string;
+}
+
+interface SeparatorItem {
+  type: "separator";
+  label: string;
+}
+
+type ListItem = TrackedBranchItem | UntrackedBranchItem | SeparatorItem;
 
 type State =
   | "loading"
   | "browsing"
-  | "selecting_parent"
+  | "confirming_parent"
   | "success"
   | "not_initialized"
   | "error";
@@ -33,13 +45,14 @@ export function BranchesCommand({
 }: BranchesCommandProps): React.ReactElement {
   const { exit } = useApp();
   const [state, setState] = useState<State>("loading");
-  const [branches, setBranches] = useState<BranchInfo[]>([]);
+  const [items, setItems] = useState<ListItem[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [pileInstance, setPileInstance] = useState<PileInstance | null>(null);
   const [trunk, setTrunk] = useState("main");
   const [trackingBranch, setTrackingBranch] = useState<string | null>(null);
+  const [suggestedParent, setSuggestedParent] = useState<string | null>(null);
 
   const loadBranches = async (pile: PileInstance) => {
     const config = pile.state.getConfig();
@@ -51,54 +64,91 @@ export function BranchesCommand({
     const remoteBranches = await pile.git.getRemoteBranches();
     const trackedBranches = pile.stack.getAllTrackedBranches();
 
-    const branchInfos: BranchInfo[] = [];
+    const listItems: ListItem[] = [];
 
-    // Add local branches
-    for (const name of localBranches) {
-      const isTracked = trackedBranches.includes(name);
-      const parent = pile.state.getParent(name) ?? undefined;
-      const children = pile.state.getChildren(name);
-      const hasRemote = remoteBranches.some((r) => r.endsWith(`/${name}`));
+    // Build tree structure for tracked branches (like co command)
+    const rootBranches = trackedBranches.filter(
+      (b) => pile.state.getParent(b) === trunkBranch
+    );
 
-      branchInfos.push({
-        name,
-        isTracked,
-        isLocal: true,
-        isRemote: hasRemote,
-        isCurrent: name === currentBranch,
-        isTrunk: name === trunkBranch,
-        parent,
-        children,
+    const addBranchAndChildren = (branchName: string, depth: number) => {
+      const children = pile.state.getChildren(branchName);
+      const hasMultipleChildren = children.length > 1;
+
+      // Add children first (they appear above in the inverted tree)
+      for (let index = 0; index < children.length; index++) {
+        const child = children[index];
+        const childDepth = hasMultipleChildren && index > 0 ? depth + 1 : depth;
+        addBranchAndChildren(child, childDepth);
+      }
+
+      // Then add this branch
+      listItems.push({
+        type: "tracked",
+        name: branchName,
+        depth,
+        isCurrent: branchName === currentBranch,
+        parent: pile.state.getParent(branchName) ?? undefined,
       });
+    };
+
+    // Add tracked branches with tree structure
+    for (let index = 0; index < rootBranches.length; index++) {
+      addBranchAndChildren(rootBranches[index], index);
     }
 
-    // Add remote-only branches
-    for (const remoteName of remoteBranches) {
-      const name = remoteName.replace(/^origin\//, "");
-      if (name === "HEAD") continue;
-      if (!localBranches.includes(name)) {
-        branchInfos.push({
-          name: remoteName,
-          isTracked: false,
-          isLocal: false,
-          isRemote: true,
+    // Add trunk
+    listItems.push({
+      type: "tracked",
+      name: trunkBranch,
+      depth: 0,
+      isCurrent: trunkBranch === currentBranch,
+    });
+
+    // Find untracked local branches
+    const untrackedLocal = localBranches.filter(
+      (b) => !trackedBranches.includes(b) && b !== trunkBranch
+    );
+
+    // Find remote-only branches
+    const remoteOnly = remoteBranches
+      .filter((r) => {
+        const name = r.replace(/^origin\//, "");
+        return name !== "HEAD" && !localBranches.includes(name);
+      })
+      .map((r) => r.replace(/^origin\//, ""));
+
+    // Add separator and untracked branches if any
+    if (untrackedLocal.length > 0 || remoteOnly.length > 0) {
+      listItems.push({ type: "separator", label: "Untracked" });
+
+      // Get candidate parents for auto-detection
+      const parentCandidates = [trunkBranch, ...trackedBranches];
+
+      for (const name of untrackedLocal) {
+        // Find suggested parent
+        const suggested = await pile.git.findLikelyParent(name, parentCandidates);
+
+        listItems.push({
+          type: "untracked",
+          name,
+          isCurrent: name === currentBranch,
+          isRemoteOnly: false,
+          suggestedParent: suggested ?? trunkBranch,
+        });
+      }
+
+      for (const name of remoteOnly) {
+        listItems.push({
+          type: "untracked",
+          name: `origin/${name}`,
           isCurrent: false,
-          isTrunk: false,
-          children: [],
+          isRemoteOnly: true,
         });
       }
     }
 
-    // Sort: current first, then tracked, then local, then remote
-    branchInfos.sort((a, b) => {
-      if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
-      if (a.isTrunk !== b.isTrunk) return a.isTrunk ? -1 : 1;
-      if (a.isTracked !== b.isTracked) return a.isTracked ? -1 : 1;
-      if (a.isLocal !== b.isLocal) return a.isLocal ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
-
-    setBranches(branchInfos);
+    setItems(listItems);
   };
 
   useEffect(() => {
@@ -154,30 +204,42 @@ export function BranchesCommand({
     load();
   }, [options.json]);
 
-  const handleTrack = async (branch: BranchInfo) => {
-    if (!pileInstance || branch.isTrunk) return;
+  const handleTrack = async (item: UntrackedBranchItem) => {
+    if (!pileInstance || item.isRemoteOnly) return;
 
-    if (branch.isTracked) {
-      // Untrack
-      await pileInstance.stack.untrackBranch(branch.name);
-      setSuccessMessage(`Untracked ${branch.name}`);
-      await loadBranches(pileInstance);
-    } else {
-      // Start tracking - need to select parent
-      setTrackingBranch(branch.name);
-      setState("selecting_parent");
-    }
+    // Auto-track with suggested parent, show confirmation
+    setTrackingBranch(item.name);
+    setSuggestedParent(item.suggestedParent ?? trunk);
+    setState("confirming_parent");
   };
 
-  const handleSelectParent = async (parent: string) => {
-    if (!pileInstance || !trackingBranch) return;
+  const handleUntrack = async (item: TrackedBranchItem) => {
+    if (!pileInstance || item.name === trunk) return;
 
-    await pileInstance.stack.trackBranch(trackingBranch, parent);
-    setSuccessMessage(`Tracking ${trackingBranch} (parent: ${parent})`);
+    await pileInstance.stack.untrackBranch(item.name);
+    setSuccessMessage(`Untracked ${item.name}`);
+    await loadBranches(pileInstance);
+  };
+
+  const confirmTrack = async () => {
+    if (!pileInstance || !trackingBranch || !suggestedParent) return;
+
+    await pileInstance.stack.trackBranch(trackingBranch, suggestedParent);
+    setSuccessMessage(`Tracking ${trackingBranch} (parent: ${suggestedParent})`);
     setTrackingBranch(null);
+    setSuggestedParent(null);
     await loadBranches(pileInstance);
     setState("browsing");
   };
+
+  const cancelTrack = () => {
+    setTrackingBranch(null);
+    setSuggestedParent(null);
+    setState("browsing");
+  };
+
+  // Get selectable items (exclude separators)
+  const selectableItems = items.filter((item) => item.type !== "separator");
 
   useInput(
     (input, key) => {
@@ -185,104 +247,66 @@ export function BranchesCommand({
         if (key.upArrow) {
           setSelectedIndex((prev) => Math.max(0, prev - 1));
         } else if (key.downArrow) {
-          setSelectedIndex((prev) => Math.min(branches.length - 1, prev + 1));
+          setSelectedIndex((prev) =>
+            Math.min(selectableItems.length - 1, prev + 1)
+          );
         } else if (input === "t" || input === "T") {
-          const selected = branches[selectedIndex];
-          if (selected && selected.isLocal && !selected.isTrunk) {
+          const selected = selectableItems[selectedIndex];
+          if (selected?.type === "untracked" && !selected.isRemoteOnly) {
             handleTrack(selected);
+          } else if (selected?.type === "tracked" && selected.name !== trunk) {
+            handleUntrack(selected);
           }
         } else if (input === "q" || key.escape) {
           exit();
         }
         setSuccessMessage(null);
-      } else if (state === "selecting_parent") {
-        const eligibleParents = branches.filter(
-          (b) => b.isLocal && b.name !== trackingBranch
-        );
-
-        if (key.upArrow) {
-          setSelectedIndex((prev) => Math.max(0, prev - 1));
-        } else if (key.downArrow) {
-          setSelectedIndex((prev) =>
-            Math.min(eligibleParents.length - 1, prev + 1)
-          );
-        } else if (key.return) {
-          const parent = eligibleParents[selectedIndex];
-          if (parent) {
-            handleSelectParent(parent.name);
-          }
-        } else if (key.escape) {
-          setTrackingBranch(null);
-          setState("browsing");
+      } else if (state === "confirming_parent") {
+        if (key.return || input === "y" || input === "Y") {
+          confirmTrack();
+        } else if (key.escape || input === "n" || input === "N") {
+          cancelTrack();
         }
       }
     },
-    { isActive: state === "browsing" || state === "selecting_parent" }
+    { isActive: state === "browsing" || state === "confirming_parent" }
   );
 
   if (options.json) {
     return <></>;
   }
 
-  const getIcon = (branch: BranchInfo): { icon: string; color: string } => {
-    if (branch.isTrunk) {
-      return { icon: "◆", color: "magenta" };
-    }
-    if (branch.isTracked) {
-      return { icon: "●", color: "green" };
-    }
-    if (branch.isLocal) {
-      return { icon: "○", color: "gray" };
-    }
-    return { icon: "◌", color: "gray" };
-  };
+  // Calculate max depth for alignment
+  const maxDepth = Math.max(
+    ...items
+      .filter((i): i is TrackedBranchItem => i.type === "tracked")
+      .map((i) => i.depth),
+    0
+  );
 
   switch (state) {
     case "loading":
       return <Spinner label="Loading branches..." />;
 
-    case "selecting_parent":
-      const eligibleParents = branches.filter(
-        (b) => b.isLocal && b.name !== trackingBranch
-      );
+    case "confirming_parent":
       return (
         <Box flexDirection="column">
-          <Box marginBottom={1} flexDirection="column">
-            <Text bold>Select parent for {trackingBranch}</Text>
-            <Text color="gray">↑↓ navigate  enter select  esc cancel</Text>
-          </Box>
-          {eligibleParents.map((branch, index) => {
-            const isSelected = index === selectedIndex;
-            const icon = getIcon(branch);
-
-            return (
-              <Box key={branch.name}>
-                <Text color={isSelected ? "cyan" : undefined}>
-                  {isSelected ? "› " : "  "}
-                </Text>
-                <Text color={icon.color}>{icon.icon}</Text>
-                <Text> </Text>
-                <Text
-                  color={isSelected ? "cyan" : undefined}
-                  bold={isSelected}
-                >
-                  {branch.name}
-                </Text>
-                {branch.isTrunk && <Text color="magenta"> (trunk)</Text>}
-              </Box>
-            );
-          })}
+          <Text>
+            Track <Text color="cyan" bold>{trackingBranch}</Text> with parent{" "}
+            <Text color="green" bold>{suggestedParent}</Text>?
+          </Text>
+          <Text color="gray">y confirm  n cancel</Text>
         </Box>
       );
 
     case "browsing":
+      let selectableIndex = 0;
+
       return (
         <Box flexDirection="column">
           <Box marginBottom={1} flexDirection="column">
             <Text bold>All Branches</Text>
-            <Text color="gray">
-              ↑↓ navigate  t track/untrack  q quit
-            </Text>
+            <Text color="gray">↑↓ navigate  t track/untrack  q quit</Text>
           </Box>
 
           {successMessage && (
@@ -291,43 +315,104 @@ export function BranchesCommand({
             </Box>
           )}
 
-          <Box marginBottom={1} flexDirection="column">
-            <Text color="gray" dimColor>
-              <Text color="green">●</Text> tracked{"  "}
-              <Text color="gray">○</Text> local{"  "}
-              <Text color="gray">◌</Text> remote-only{"  "}
-              <Text color="magenta">◆</Text> trunk
-            </Text>
-          </Box>
+          {items.map((item, index) => {
+            if (item.type === "separator") {
+              return (
+                <Box key={`sep-${index}`} marginTop={1}>
+                  <Text color="gray" dimColor>
+                    ── {item.label} ──
+                  </Text>
+                </Box>
+              );
+            }
 
-          {branches.map((branch, index) => {
-            const isSelected = index === selectedIndex;
-            const icon = getIcon(branch);
+            const currentSelectableIndex = selectableIndex++;
+            const isSelected = currentSelectableIndex === selectedIndex;
+
+            if (item.type === "tracked") {
+              const isTrunk = item.name === trunk;
+              let prefix = "";
+              for (let d = 0; d < item.depth; d++) {
+                prefix += "│ ";
+              }
+
+              if (isTrunk) {
+                const trunkColor = isSelected
+                  ? "cyan"
+                  : item.isCurrent
+                    ? "blue"
+                    : undefined;
+                return (
+                  <Box key={item.name}>
+                    <Text color={isSelected ? "cyan" : undefined}>
+                      {isSelected ? "› " : "  "}
+                    </Text>
+                    <Text color={trunkColor}>◆</Text>
+                    <Text dimColor>{maxDepth > 0 ? "─┘" : "  "}</Text>
+                    <Text>{" ".repeat(maxDepth)} </Text>
+                    <Text color={trunkColor} bold={isSelected || item.isCurrent}>
+                      {item.name}
+                    </Text>
+                    {item.isCurrent && <Text color="blue"> (current)</Text>}
+                    <Text color="magenta"> trunk</Text>
+                  </Box>
+                );
+              }
+
+              const branchColor = isSelected
+                ? "cyan"
+                : item.isCurrent
+                  ? "blue"
+                  : undefined;
+
+              return (
+                <Box key={item.name}>
+                  <Text color={isSelected ? "cyan" : undefined}>
+                    {isSelected ? "› " : "  "}
+                  </Text>
+                  <Text dimColor>{prefix}</Text>
+                  <Text color="green" bold={isSelected || item.isCurrent}>
+                    ●
+                  </Text>
+                  <Text>{" ".repeat(maxDepth - item.depth + 2)} </Text>
+                  <Text color={branchColor} bold={isSelected || item.isCurrent}>
+                    {item.name}
+                  </Text>
+                  {item.isCurrent && <Text color="blue"> (current)</Text>}
+                </Box>
+              );
+            }
+
+            // Untracked branch
+            const branchColor = isSelected
+              ? "cyan"
+              : item.isCurrent
+                ? "blue"
+                : undefined;
 
             return (
-              <Box key={branch.name}>
+              <Box key={item.name}>
                 <Text color={isSelected ? "cyan" : undefined}>
                   {isSelected ? "› " : "  "}
                 </Text>
-                <Text color={icon.color}>{icon.icon}</Text>
-                <Text> </Text>
-                <Text
-                  color={
-                    isSelected
-                      ? "cyan"
-                      : branch.isCurrent
-                        ? "blue"
-                        : undefined
-                  }
-                  bold={isSelected || branch.isCurrent}
-                >
-                  {branch.name}
+                <Text color="gray">{item.isRemoteOnly ? "◌" : "○"}</Text>
+                <Text>{"   "}</Text>
+                <Text color={branchColor} bold={isSelected || item.isCurrent}>
+                  {item.name}
                 </Text>
-                {branch.isCurrent && <Text color="blue"> (current)</Text>}
-                {branch.isTracked && branch.parent && (
-                  <Text color="gray"> ← {branch.parent}</Text>
+                {item.isCurrent && <Text color="blue"> (current)</Text>}
+                {item.suggestedParent && !item.isRemoteOnly && (
+                  <Text color="gray" dimColor>
+                    {" "}
+                    → {item.suggestedParent}
+                  </Text>
                 )}
-                {!branch.isLocal && <Text color="gray" dimColor> (remote)</Text>}
+                {item.isRemoteOnly && (
+                  <Text color="gray" dimColor>
+                    {" "}
+                    (remote)
+                  </Text>
+                )}
               </Box>
             );
           })}
