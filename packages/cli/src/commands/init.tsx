@@ -11,6 +11,7 @@ import { OutputOptions, formatJson, createResult } from "../utils/output.js";
 
 export interface InitCommandProps {
   trunk?: string;
+  openPr?: boolean;
   options: OutputOptions;
 }
 
@@ -24,10 +25,12 @@ type State =
 
 export function InitCommand({
   trunk,
+  openPr,
   options,
 }: InitCommandProps): React.ReactElement {
   const [state, setState] = useState<State>("checking");
   const [detectedTrunk, setDetectedTrunk] = useState("main");
+  const [autoOpenPR, setAutoOpenPR] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -80,11 +83,13 @@ export function InitCommand({
         }
 
         setDetectedTrunk(defaultTrunk);
+        setAutoOpenPR(openPr ?? false);
 
         pile.state.saveConfig({
           trunk: defaultTrunk,
           remote: "origin",
           initialized: true,
+          autoOpenPR: openPr ?? false,
         });
 
         if (options.json) {
@@ -128,6 +133,9 @@ export function InitCommand({
           <SuccessMessage>
             Initialized pile with trunk branch: {detectedTrunk}
           </SuccessMessage>
+          {autoOpenPR && (
+            <InfoMessage>PR links will open automatically after submit</InfoMessage>
+          )}
           <InfoMessage>
             Run `pile create {"<name>"}` to create your first stacked branch
           </InfoMessage>

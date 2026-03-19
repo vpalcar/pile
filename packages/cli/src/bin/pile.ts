@@ -30,11 +30,16 @@ program
     "-t, --trunk <branch>",
     "Trunk branch name (default: auto-detect main/master)"
   )
+  .option(
+    "--open-pr",
+    "Automatically open PR links in browser after submit"
+  )
   .action((opts) => {
     const globalOpts = program.opts();
     render(
       React.createElement(InitCommand, {
         trunk: opts.trunk,
+        openPr: opts.openPr,
         options: { json: globalOpts.json },
       })
     );
@@ -182,6 +187,7 @@ program
   .option("-d, --draft", "Create PR as draft")
   .option("-t, --title <title>", "PR title (default: derived from branch name)")
   .option("-r, --reviewers <reviewers...>", "Request reviewers")
+  .option("-o, --open", "Open PR in browser after creating")
   .action((opts) => {
     const globalOpts = program.opts();
     render(
@@ -190,6 +196,7 @@ program
         draft: opts.draft,
         title: opts.title,
         reviewers: opts.reviewers,
+        open: opts.open,
         options: { json: globalOpts.json },
       })
     );
@@ -201,6 +208,7 @@ program
   .description("Submit entire stack (alias for submit --stack)")
   .option("-d, --draft", "Create PRs as draft")
   .option("-r, --reviewers <reviewers...>", "Request reviewers")
+  .option("-o, --open", "Open PRs in browser after creating")
   .action((opts) => {
     const globalOpts = program.opts();
     render(
@@ -208,6 +216,7 @@ program
         stack: true,
         draft: opts.draft,
         reviewers: opts.reviewers,
+        open: opts.open,
         options: { json: globalOpts.json },
       })
     );
