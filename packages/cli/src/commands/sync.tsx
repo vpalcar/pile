@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Box, Text } from "ink";
-import { createPile } from "@pile/core";
+import { createPile, RestackResult } from "@pile/core";
 import { createGitHub, createQueueProcessor } from "@pile/github";
 import { Spinner } from "../components/Spinner.js";
 import {
@@ -12,12 +12,6 @@ import { OutputOptions, formatJson, createResult } from "../utils/output.js";
 
 export interface SyncCommandProps {
   options: OutputOptions;
-}
-
-interface RestackResult {
-  branch: string;
-  success: boolean;
-  conflicts: boolean;
 }
 
 interface QueueResult {
@@ -41,13 +35,14 @@ type State =
   | "cleaning_branches"
   | "success"
   | "conflict"
+  | "restack_in_progress"
   | "not_initialized"
   | "error";
 
 export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
   const [state, setState] = useState<State>("checking");
   const [error, setError] = useState<string | null>(null);
-  const [restackResults, setRestackResults] = useState<RestackResult[]>([]);
+  const [restackResult, setRestackResult] = useState<RestackResult | null>(null);
   const [conflictBranch, setConflictBranch] = useState<string | null>(null);
   const [queueResult, setQueueResult] = useState<QueueResult | null>(null);
   const [cleanedBranches, setCleanedBranches] = useState<CleanedBranch[]>([]);
@@ -68,10 +63,29 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
           return;
         }
 
+        // Check if there's a restack in progress
+        if (pile.stack.hasRestackInProgress()) {
+          const existingState = pile.stack.getRestackState();
+          if (options.json) {
+            console.log(
+              formatJson(
+                createResult(
+                  false,
+                  existingState,
+                  `Restack in progress on ${existingState?.conflictBranch}. Run 'pile restack --continue' or 'pile restack --abort'.`
+                )
+              )
+            );
+            process.exit(1);
+          }
+          setConflictBranch(existingState?.conflictBranch ?? null);
+          setState("restack_in_progress");
+          return;
+        }
+
         const repoRoot = await pile.git.getRepoRoot();
         const github = await createGitHub(`${repoRoot}/.pile`);
         const trunk = pile.stack.getTrunk();
-        const currentBranch = await pile.git.getCurrentBranch();
 
         // Process pending operations if GitHub is available
         if (github && pile.state.hasPendingOperations()) {
@@ -101,26 +115,33 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
           });
         }
 
+        // Fetch and update trunk
         setState("fetching");
-        const result = await pile.stack.syncStack();
+        await pile.git.fetch(true);
 
-        if (result.error) {
-          throw new Error(result.error);
+        setState("updating_trunk");
+        try {
+          await pile.git.checkout(trunk);
+          await pile.git.pull(trunk);
+        } catch {
+          // Trunk might not have a remote
         }
 
-        setRestackResults(result.restacked);
+        // Restack using the new state-managed flow
+        setState("restacking");
+        const result = await pile.stack.startRestack();
+        setRestackResult(result);
 
         // Check for conflicts
-        const conflictResult = result.restacked.find((r) => r.conflicts);
-        if (conflictResult) {
-          setConflictBranch(conflictResult.branch);
+        if (!result.success && result.conflictBranch) {
+          setConflictBranch(result.conflictBranch);
           if (options.json) {
             console.log(
               formatJson(
                 createResult(
                   false,
-                  { restacked: result.restacked, queue: queueResult },
-                  `Conflict in ${conflictResult.branch}`
+                  { restacked: result, queue: queueResult },
+                  `Conflict in ${result.conflictBranch}`
                 )
               )
             );
@@ -238,7 +259,7 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
           console.log(
             formatJson(
               createResult(true, {
-                restacked: result.restacked,
+                restacked: result,
                 queue: queueResult,
                 cleaned,
               })
@@ -312,23 +333,19 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
               ))}
             </Box>
           )}
-          {restackResults.filter((r) => !cleanedBranches.some((c) => c.branch === r.branch)).length > 0 && (
+          {restackResult && restackResult.completed.filter((b) => !cleanedBranches.some((c) => c.branch === b)).length > 0 && (
             <Box flexDirection="column" marginTop={1}>
               <Text color="gray">Restacked branches:</Text>
-              {restackResults
-                .filter((r) => !cleanedBranches.some((c) => c.branch === r.branch))
-                .map((result) => (
-                  <Text
-                    key={result.branch}
-                    color={result.success ? "green" : "red"}
-                  >
-                    {"  "}
-                    {result.success ? "✓" : "✗"} {result.branch}
+              {restackResult.completed
+                .filter((b) => !cleanedBranches.some((c) => c.branch === b))
+                .map((branch) => (
+                  <Text key={branch} color="green">
+                    {"  "}✓ {branch}
                   </Text>
                 ))}
             </Box>
           )}
-          {restackResults.filter((r) => !cleanedBranches.some((c) => c.branch === r.branch)).length === 0 && cleanedBranches.length === 0 && (
+          {(!restackResult || restackResult.completed.filter((b) => !cleanedBranches.some((c) => c.branch === b)).length === 0) && cleanedBranches.length === 0 && (
             <Text color="gray">No branches to restack or clean.</Text>
           )}
         </Box>
@@ -337,22 +354,39 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
       return (
         <Box flexDirection="column">
           <WarningMessage>Rebase conflict in {conflictBranch}</WarningMessage>
-          <Text color="gray">
-            Resolve the conflict and run `git rebase --continue`, then run `pile
-            sync` again.
-          </Text>
-          {restackResults.filter((r) => r.success).length > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text>Resolve the conflicts, then run:</Text>
+            <Text color="cyan">{"  "}git add &lt;files&gt;</Text>
+            <Text color="cyan">{"  "}pile restack --continue</Text>
+          </Box>
+          <Box marginTop={1}>
+            <Text color="gray">Or abort with: pile restack --abort</Text>
+          </Box>
+          {restackResult && restackResult.completed.length > 0 && (
             <Box flexDirection="column" marginTop={1}>
               <Text color="gray">Successfully restacked before conflict:</Text>
-              {restackResults
-                .filter((r) => r.success)
-                .map((result) => (
-                  <Text key={result.branch} color="green">
-                    {"  "}✓ {result.branch}
-                  </Text>
-                ))}
+              {restackResult.completed.map((branch) => (
+                <Text key={branch} color="green">
+                  {"  "}✓ {branch}
+                </Text>
+              ))}
             </Box>
           )}
+        </Box>
+      );
+    case "restack_in_progress":
+      return (
+        <Box flexDirection="column">
+          <WarningMessage>Restack already in progress</WarningMessage>
+          <Text>Conflict in {conflictBranch}</Text>
+          <Box flexDirection="column" marginTop={1}>
+            <Text>Resolve the conflicts, then run:</Text>
+            <Text color="cyan">{"  "}git add &lt;files&gt;</Text>
+            <Text color="cyan">{"  "}pile restack --continue</Text>
+          </Box>
+          <Box marginTop={1}>
+            <Text color="gray">Or abort with: pile restack --abort</Text>
+          </Box>
         </Box>
       );
     case "not_initialized":

@@ -14,6 +14,8 @@ import { BranchesCommand } from "../commands/branches.js";
 import { ModifyCommand } from "../commands/modify.js";
 import { StatusCommand } from "../commands/status.js";
 import { MergeCommand } from "../commands/merge.js";
+import { RestackCommand } from "../commands/restack.js";
+import { AddCommand } from "../commands/add.js";
 
 const program = new Command();
 
@@ -42,6 +44,27 @@ program
       React.createElement(InitCommand, {
         trunk: opts.trunk,
         openPr: opts.openPr,
+        options: { json: globalOpts.json },
+      })
+    );
+  });
+
+// add command
+program
+  .command("add [files...]")
+  .alias("a")
+  .description("Stage files for commit")
+  .option("-a, --all", "Stage all changes (new, modified, deleted)")
+  .option("-u, --update", "Stage modified and deleted files only")
+  .option("-p, --patch", "Interactively select hunks to stage")
+  .action((files, opts) => {
+    const globalOpts = program.opts();
+    render(
+      React.createElement(AddCommand, {
+        files: files || [],
+        all: opts.all,
+        update: opts.update,
+        patch: opts.patch,
         options: { json: globalOpts.json },
       })
     );
@@ -290,6 +313,24 @@ program
     render(
       React.createElement(MergeCommand, {
         force: opts.force,
+        options: { json: globalOpts.json },
+      })
+    );
+  });
+
+// restack command
+program
+  .command("restack")
+  .alias("rs")
+  .description("Rebase all branches onto their parents")
+  .option("-c, --continue", "Continue restack after resolving conflicts")
+  .option("-a, --abort", "Abort restack in progress")
+  .action((opts) => {
+    const globalOpts = program.opts();
+    render(
+      React.createElement(RestackCommand, {
+        continue: opts.continue,
+        abort: opts.abort,
         options: { json: globalOpts.json },
       })
     );

@@ -1,6 +1,13 @@
 import { GitOperations } from "./git.js";
-import { StateManager } from "./state.js";
+import { StateManager, RestackState } from "./state.js";
 import { Branch, Stack, StackNode } from "./schemas.js";
+
+export interface RestackResult {
+  success: boolean;
+  completed: string[];
+  conflictBranch?: string;
+  remaining: string[];
+}
 
 export class StackManager {
   private git: GitOperations;
@@ -456,6 +463,191 @@ export class StackManager {
         error: error instanceof Error ? error.message : String(error),
       };
     }
+  }
+
+  /**
+   * Get all branches that need to be restacked in order (depth-first from roots)
+   */
+  getBranchesToRestack(): string[] {
+    const branches: string[] = [];
+    const roots = this.getRootBranches();
+
+    const collectBranches = (branch: string) => {
+      branches.push(branch);
+      const children = this.state.getChildren(branch);
+      for (const child of children) {
+        collectBranches(child);
+      }
+    };
+
+    for (const root of roots) {
+      collectBranches(root);
+    }
+
+    return branches;
+  }
+
+  /**
+   * Check if there's a restack in progress
+   */
+  hasRestackInProgress(): boolean {
+    return this.state.hasRestackInProgress();
+  }
+
+  /**
+   * Get the current restack state
+   */
+  getRestackState(): RestackState | null {
+    return this.state.getRestackState();
+  }
+
+  /**
+   * Start a new restack operation with state management
+   */
+  async startRestack(): Promise<RestackResult> {
+    const currentBranch = await this.git.getCurrentBranch();
+    const branches = this.getBranchesToRestack();
+
+    if (branches.length === 0) {
+      return { success: true, completed: [], remaining: [] };
+    }
+
+    return this.restackBranches(branches, [], currentBranch);
+  }
+
+  /**
+   * Continue a restack after conflict resolution
+   */
+  async continueRestack(): Promise<RestackResult> {
+    const restackState = this.state.getRestackState();
+
+    if (!restackState) {
+      throw new Error("No restack in progress");
+    }
+
+    // Continue the current rebase
+    const rebaseResult = await this.git.rebaseContinue();
+
+    if (!rebaseResult.success) {
+      // Still has conflicts
+      return {
+        success: false,
+        completed: restackState.completedBranches,
+        conflictBranch: restackState.conflictBranch,
+        remaining: restackState.remainingBranches,
+      };
+    }
+
+    // Update base commit for the branch that was being rebased
+    const parent = this.state.getParent(restackState.conflictBranch);
+    if (parent) {
+      const newParentCommit = await this.git.getCommitHash(parent);
+      this.state.setBaseCommit(restackState.conflictBranch, newParentCommit);
+    }
+
+    // Add to completed
+    const completed = [...restackState.completedBranches, restackState.conflictBranch];
+
+    // Clear state and continue with remaining branches
+    this.state.clearRestackState();
+
+    if (restackState.remainingBranches.length === 0) {
+      // All done, go back to original branch
+      if (restackState.originalBranch) {
+        try {
+          await this.git.checkout(restackState.originalBranch);
+        } catch {
+          // Branch might not exist
+        }
+      }
+      return { success: true, completed, remaining: [] };
+    }
+
+    return this.restackBranches(
+      restackState.remainingBranches,
+      completed,
+      restackState.originalBranch
+    );
+  }
+
+  /**
+   * Abort a restack in progress
+   */
+  async abortRestack(): Promise<void> {
+    const restackState = this.state.getRestackState();
+
+    if (!restackState) {
+      throw new Error("No restack in progress");
+    }
+
+    // Abort the current rebase
+    try {
+      await this.git.rebaseAbort();
+    } catch {
+      // Rebase might not be in progress
+    }
+
+    // Go back to original branch
+    if (restackState.originalBranch) {
+      try {
+        await this.git.checkout(restackState.originalBranch);
+      } catch {
+        // Branch might not exist
+      }
+    }
+
+    // Clear state
+    this.state.clearRestackState();
+  }
+
+  /**
+   * Internal: restack a list of branches with state management
+   */
+  private async restackBranches(
+    branches: string[],
+    alreadyCompleted: string[],
+    originalBranch?: string
+  ): Promise<RestackResult> {
+    const completed = [...alreadyCompleted];
+    const remaining = [...branches];
+
+    while (remaining.length > 0) {
+      const branch = remaining.shift()!;
+
+      const result = await this.restack(branch);
+
+      if (result.conflicts) {
+        // Save state for continue/abort
+        this.state.saveRestackState({
+          conflictBranch: branch,
+          remainingBranches: remaining,
+          completedBranches: completed,
+          originalBranch,
+        });
+
+        return {
+          success: false,
+          completed,
+          conflictBranch: branch,
+          remaining,
+        };
+      }
+
+      if (result.success) {
+        completed.push(branch);
+      }
+    }
+
+    // All done, go back to original branch
+    if (originalBranch) {
+      try {
+        await this.git.checkout(originalBranch);
+      } catch {
+        // Branch might not exist
+      }
+    }
+
+    return { success: true, completed, remaining: [] };
   }
 }
 

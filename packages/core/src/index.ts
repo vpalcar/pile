@@ -27,10 +27,10 @@ export {
 export { GitOperations, createGitOperations } from "./git.js";
 
 // State management
-export { StateManager, createStateManager } from "./state.js";
+export { StateManager, createStateManager, type RestackState } from "./state.js";
 
 // Stack management
-export { StackManager, createStackManager } from "./stack.js";
+export { StackManager, createStackManager, type RestackResult } from "./stack.js";
 
 // Pile instance
 export { createPile, type PileInstance } from "./pile.js";
