@@ -14,6 +14,7 @@ export {
   InfoMessage,
   type MessageProps,
 } from "./components/Message.js";
+export { Link, type LinkProps } from "./components/Link.js";
 export { SyncStatus, type SyncStatusProps } from "./components/SyncStatus.js";
 
 // Utils
@@ -44,3 +45,7 @@ export {
   BranchesCommand,
   type BranchesCommandProps,
 } from "./commands/branches.js";
+export {
+  ModifyCommand,
+  type ModifyCommandProps,
+} from "./commands/modify.js";

@@ -11,6 +11,7 @@ import { SubmitCommand } from "../commands/submit.js";
 import { SyncCommand } from "../commands/sync.js";
 import { CheckoutCommand } from "../commands/checkout.js";
 import { BranchesCommand } from "../commands/branches.js";
+import { ModifyCommand } from "../commands/modify.js";
 
 const program = new Command();
 
@@ -57,6 +58,26 @@ program
         all: opts.all,
         update: opts.update,
         insert: opts.insert,
+        options: { json: globalOpts.json },
+      })
+    );
+  });
+
+// modify command
+program
+  .command("modify")
+  .alias("m")
+  .description("Amend changes to the current branch commit")
+  .option("-a, --all", "Stage all changes before amending")
+  .option("-u, --update", "Stage all tracked file changes (git add -u)")
+  .option("-m, --message <message>", "New commit message (optional)")
+  .action((opts) => {
+    const globalOpts = program.opts();
+    render(
+      React.createElement(ModifyCommand, {
+        all: opts.all,
+        update: opts.update,
+        message: opts.message,
         options: { json: globalOpts.json },
       })
     );

@@ -9,6 +9,7 @@ import {
   WarningMessage,
   InfoMessage,
 } from "../components/Message.js";
+import { Link } from "../components/Link.js";
 import { OutputOptions, formatJson, createResult } from "../utils/output.js";
 
 export interface SubmitCommandProps {
@@ -293,7 +294,7 @@ export function SubmitCommand({
                 {result.created ? "Created" : "Updated"} PR #{result.prNumber} for{" "}
                 {result.branch}
               </SuccessMessage>
-              <Text color="gray">  {result.prUrl}</Text>
+              <Text>  <Link url={result.prUrl}>{result.prUrl}</Link></Text>
             </Box>
           ))}
           {queuedResults.length > 0 && (
