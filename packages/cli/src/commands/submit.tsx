@@ -147,6 +147,18 @@ export function SubmitCommand({
         const queued: QueuedResult[] = [];
 
         for (const branch of branchesToSubmit) {
+          // Check if this branch's PR is already merged - skip it
+          try {
+            const existingPr = await github.prs.findByBranchAnyState(branch);
+            if (existingPr?.merged) {
+              // Branch already merged, clean it up and skip
+              pile.state.removeBranchRelationship(branch);
+              continue;
+            }
+          } catch {
+            // Ignore errors, proceed with submit
+          }
+
           // Push branch
           setState("pushing");
           try {
@@ -167,8 +179,26 @@ export function SubmitCommand({
             }
           }
 
-          // Create or update PR
-          const parent = pile.state.getParent(branch);
+          // Create or update PR - use trunk as base if parent was merged
+          let parent = pile.state.getParent(branch);
+
+          // Check if parent was merged
+          if (parent && parent !== trunk) {
+            try {
+              const parentPr = await github.prs.findByBranchAnyState(parent);
+              if (parentPr?.merged) {
+                // Parent was merged, update this branch to use trunk as base
+                parent = trunk;
+                const rel = pile.state.getBranchRelationship(branch);
+                if (rel) {
+                  pile.state.setBranchRelationship(branch, { ...rel, parent: trunk });
+                }
+              }
+            } catch {
+              // Ignore errors
+            }
+          }
+
           const baseBranch = parent ?? trunk;
 
           try {
