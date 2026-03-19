@@ -40,6 +40,7 @@ export const RepoConfigSchema = z.object({
   remote: z.string().default("origin"),
   initialized: z.boolean().default(false),
   autoOpenPR: z.boolean().default(false),
+  mergeMethod: z.enum(["squash", "merge", "rebase"]).default("squash"),
 });
 export type RepoConfig = z.infer<typeof RepoConfigSchema>;
 
@@ -47,6 +48,8 @@ export type RepoConfig = z.infer<typeof RepoConfigSchema>;
 export const BranchRelationshipSchema = z.object({
   name: z.string(),
   parent: z.string().nullable(),
+  baseCommit: z.string().optional(), // Parent's commit hash when branch was created/synced
+  title: z.string().optional(), // Original commit message, used as PR title
   prNumber: z.number().optional(),
   prUrl: z.string().optional(),
 });

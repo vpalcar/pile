@@ -29,6 +29,14 @@ interface PRResult {
   created: boolean;
 }
 
+interface StackPR {
+  branch: string;
+  prNumber: number;
+  prUrl: string;
+  isNew: boolean;
+  isCurrent: boolean;
+}
+
 interface QueuedResult {
   branch: string;
   operation: string;
@@ -72,6 +80,8 @@ export function SubmitCommand({
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<PRResult[]>([]);
   const [queuedResults, setQueuedResults] = useState<QueuedResult[]>([]);
+  const [stackPRs, setStackPRs] = useState<StackPR[]>([]);
+  const [trunk, setTrunk] = useState<string>("main");
 
   useEffect(() => {
     async function submit() {
@@ -147,6 +157,18 @@ export function SubmitCommand({
         const queued: QueuedResult[] = [];
 
         for (const branch of branchesToSubmit) {
+          // Check if this branch's PR is already merged - skip it
+          try {
+            const existingPr = await github.prs.findByBranchAnyState(branch);
+            if (existingPr?.merged) {
+              // Branch already merged, clean it up and skip
+              pile.state.removeBranchRelationship(branch);
+              continue;
+            }
+          } catch {
+            // Ignore errors, proceed with submit
+          }
+
           // Push branch
           setState("pushing");
           try {
@@ -167,8 +189,26 @@ export function SubmitCommand({
             }
           }
 
-          // Create or update PR
-          const parent = pile.state.getParent(branch);
+          // Create or update PR - use trunk as base if parent was merged
+          let parent = pile.state.getParent(branch);
+
+          // Check if parent was merged
+          if (parent && parent !== trunk) {
+            try {
+              const parentPr = await github.prs.findByBranchAnyState(parent);
+              if (parentPr?.merged) {
+                // Parent was merged, update this branch to use trunk as base
+                parent = trunk;
+                const rel = pile.state.getBranchRelationship(branch);
+                if (rel) {
+                  pile.state.setBranchRelationship(branch, { ...rel, parent: trunk });
+                }
+              }
+            } catch {
+              // Ignore errors
+            }
+          }
+
           const baseBranch = parent ?? trunk;
 
           try {
@@ -192,8 +232,9 @@ export function SubmitCommand({
               });
             } else {
               setState("creating_pr");
-              const prTitle =
-                title ?? branch.split("/").pop()?.replace(/-/g, " ") ?? branch;
+              // Use stored title from create, or fall back to branch name
+              const storedTitle = pile.state.getTitle(branch);
+              const prTitle = title ?? storedTitle ?? branch;
               const stackInfo = stack
                 ? `Part of a stack based on \`${trunk}\``
                 : "";
@@ -227,8 +268,8 @@ export function SubmitCommand({
             }
           } catch (prErr) {
             if (isNetworkError(prErr)) {
-              const prTitle =
-                title ?? branch.split("/").pop()?.replace(/-/g, " ") ?? branch;
+              const storedTitle = pile.state.getTitle(branch);
+              const prTitle = title ?? storedTitle ?? branch;
               const stackInfo = stack
                 ? `Part of a stack based on \`${trunk}\``
                 : "";
@@ -252,6 +293,26 @@ export function SubmitCommand({
 
         setResults(prResults);
         setQueuedResults(queued);
+        setTrunk(trunk);
+
+        // Build full stack PR list for display
+        if (stack) {
+          const allStackPRs: StackPR[] = [];
+          for (const branch of branchesToSubmit) {
+            const rel = pile.state.getBranchRelationship(branch);
+            if (rel?.prNumber && rel?.prUrl) {
+              const wasNew = prResults.some(r => r.branch === branch && r.created);
+              allStackPRs.push({
+                branch,
+                prNumber: rel.prNumber,
+                prUrl: rel.prUrl,
+                isNew: wasNew,
+                isCurrent: branch === current,
+              });
+            }
+          }
+          setStackPRs(allStackPRs);
+        }
 
         if (options.json) {
           console.log(
@@ -297,18 +358,47 @@ export function SubmitCommand({
     case "success":
       return (
         <Box flexDirection="column">
-          {results.map((result) => (
-            <Box key={result.branch} flexDirection="column">
-              <SuccessMessage>
-                {result.created ? "Created" : "Updated"} PR #{result.prNumber} for{" "}
-                {result.branch}
-              </SuccessMessage>
-              <Box>
-                <Text>  </Text>
-                <Link url={result.prUrl}>{result.prUrl}</Link>
+          {/* Show stack summary if submitting stack */}
+          {stackPRs.length > 0 ? (
+            <Box flexDirection="column">
+              <SuccessMessage>Stack submitted</SuccessMessage>
+              <Box flexDirection="column" marginTop={1}>
+                <Text color="gray">  {trunk}</Text>
+                {stackPRs.map((pr, index) => (
+                  <Box key={pr.branch} flexDirection="column">
+                    <Box>
+                      <Text color="gray">  {"│"}</Text>
+                    </Box>
+                    <Box>
+                      <Text color={pr.isCurrent ? "cyan" : "white"}>
+                        {"  "}
+                        {pr.isCurrent ? "●" : "○"} #{pr.prNumber} {pr.branch}
+                        {pr.isNew && <Text color="green"> (new)</Text>}
+                      </Text>
+                    </Box>
+                    <Box>
+                      <Text color="gray">    </Text>
+                      <Link url={pr.prUrl}>{pr.prUrl}</Link>
+                    </Box>
+                  </Box>
+                ))}
               </Box>
             </Box>
-          ))}
+          ) : (
+            // Single PR result
+            results.map((result) => (
+              <Box key={result.branch} flexDirection="column">
+                <SuccessMessage>
+                  {result.created ? "Created" : "Updated"} PR #{result.prNumber} for{" "}
+                  {result.branch}
+                </SuccessMessage>
+                <Box>
+                  <Text>  </Text>
+                  <Link url={result.prUrl}>{result.prUrl}</Link>
+                </Box>
+              </Box>
+            ))
+          )}
           {queuedResults.length > 0 && (
             <Box flexDirection="column" marginTop={1}>
               <InfoMessage>Queued for later (offline):</InfoMessage>

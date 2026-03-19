@@ -73,11 +73,16 @@ export class StateManager {
     const trunk = this.gitConfig("pile.trunk") ?? "main";
     const remote = this.gitConfig("pile.remote") ?? "origin";
     const autoOpenPR = this.gitConfig("pile.autoOpenPR") === "true";
+    const mergeMethodRaw = this.gitConfig("pile.mergeMethod") ?? "squash";
+    const mergeMethod = (["squash", "merge", "rebase"].includes(mergeMethodRaw)
+      ? mergeMethodRaw
+      : "squash") as "squash" | "merge" | "rebase";
     return {
       trunk,
       remote,
       initialized: true,
       autoOpenPR,
+      mergeMethod,
     };
   }
 
@@ -88,6 +93,9 @@ export class StateManager {
     if (config.autoOpenPR !== undefined) {
       this.gitConfig("pile.autoOpenPR", config.autoOpenPR ? "true" : "false");
     }
+    if (config.mergeMethod !== undefined) {
+      this.gitConfig("pile.mergeMethod", config.mergeMethod);
+    }
   }
 
   getBranchRelationship(branchName: string): BranchRelationship | null {
@@ -95,11 +103,15 @@ export class StateManager {
     if (!parent) {
       return null;
     }
+    const baseCommit = this.gitConfig(`branch.${branchName}.pile-base`);
+    const title = this.gitConfig(`branch.${branchName}.pile-title`);
     const prNumber = this.gitConfig(`branch.${branchName}.pile-pr-number`);
     const prUrl = this.gitConfig(`branch.${branchName}.pile-pr-url`);
     return {
       name: branchName,
       parent,
+      baseCommit: baseCommit ?? undefined,
+      title: title ?? undefined,
       prNumber: prNumber ? parseInt(prNumber, 10) : undefined,
       prUrl: prUrl ?? undefined,
     };
@@ -109,6 +121,12 @@ export class StateManager {
     if (relationship.parent) {
       this.gitConfig(`branch.${branchName}.pile-parent`, relationship.parent);
     }
+    if (relationship.baseCommit !== undefined) {
+      this.gitConfig(`branch.${branchName}.pile-base`, relationship.baseCommit);
+    }
+    if (relationship.title !== undefined) {
+      this.gitConfig(`branch.${branchName}.pile-title`, relationship.title);
+    }
     if (relationship.prNumber !== undefined) {
       this.gitConfig(`branch.${branchName}.pile-pr-number`, String(relationship.prNumber));
     }
@@ -117,8 +135,22 @@ export class StateManager {
     }
   }
 
+  getTitle(branchName: string): string | null {
+    return this.gitConfig(`branch.${branchName}.pile-title`);
+  }
+
+  getBaseCommit(branchName: string): string | null {
+    return this.gitConfig(`branch.${branchName}.pile-base`);
+  }
+
+  setBaseCommit(branchName: string, commit: string): void {
+    this.gitConfig(`branch.${branchName}.pile-base`, commit);
+  }
+
   removeBranchRelationship(branchName: string): void {
     this.gitConfig(`branch.${branchName}.pile-parent`, undefined, true);
+    this.gitConfig(`branch.${branchName}.pile-base`, undefined, true);
+    this.gitConfig(`branch.${branchName}.pile-title`, undefined, true);
     this.gitConfig(`branch.${branchName}.pile-pr-number`, undefined, true);
     this.gitConfig(`branch.${branchName}.pile-pr-url`, undefined, true);
   }

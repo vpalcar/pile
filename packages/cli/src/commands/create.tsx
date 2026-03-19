@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Box, Text, useInput, useApp } from "ink";
 import { createPile, PileInstance } from "@pile/core";
+import { createGitHub } from "@pile/github";
 import { Spinner } from "../components/Spinner.js";
 import { SuccessMessage, ErrorMessage, WarningMessage } from "../components/Message.js";
 import { OutputOptions, formatJson, createResult } from "../utils/output.js";
@@ -16,6 +17,8 @@ export interface CreateCommandProps {
 
 type State =
   | "checking"
+  | "checking_parent"
+  | "rebasing_to_trunk"
   | "prompt_unstaged"
   | "staging"
   | "creating"
@@ -89,8 +92,69 @@ export function CreateCommand({
           return;
         }
 
-        const currentBranch = await pile.git.getCurrentBranch();
-        setParentBranch(currentBranch);
+        const config = pile.state.getConfig();
+        const trunk = config?.trunk ?? "main";
+        let currentBranch = await pile.git.getCurrentBranch();
+        let effectiveParent = currentBranch;
+
+        // Check if current branch (potential parent) has been merged
+        if (currentBranch !== trunk) {
+          setState("checking_parent");
+          const repoRoot = await pile.git.getRepoRoot();
+          const github = await createGitHub(`${repoRoot}/.pile`);
+
+          if (github) {
+            const parentRel = pile.state.getBranchRelationship(currentBranch);
+            if (parentRel) {
+              try {
+                const pr = await github.prs.findByBranchAnyState(currentBranch);
+                if (pr && pr.merged) {
+                  // Parent was merged! Need to rebase onto trunk
+                  setState("rebasing_to_trunk");
+
+                  // Stash any changes first
+                  const hasChanges = await pile.git.hasUncommittedChanges();
+                  if (hasChanges) {
+                    await pile.git.stash();
+                  }
+
+                  // Update trunk
+                  await pile.git.fetch(true);
+                  await pile.git.checkout(trunk);
+                  try {
+                    await pile.git.pull(trunk);
+                  } catch {
+                    // Might fail
+                  }
+
+                  // Switch back and rebase onto trunk
+                  await pile.git.checkout(currentBranch);
+                  await pile.git.rebase(trunk);
+
+                  // Pop stash if we stashed
+                  if (hasChanges) {
+                    try {
+                      await pile.git.stashPop();
+                    } catch {
+                      // Stash might have conflicts
+                    }
+                  }
+
+                  // Clean up the merged branch tracking
+                  pile.state.removeBranchRelationship(currentBranch);
+
+                  // Now treat trunk as the parent
+                  effectiveParent = trunk;
+                }
+              } catch {
+                // Ignore GitHub errors, proceed with normal flow
+              }
+            }
+          }
+        }
+
+        setParentBranch(effectiveParent);
+        setState("checking");
 
         // Check for staged and unstaged changes
         const stagedFiles = await pile.git.getStagedFiles();
@@ -247,6 +311,10 @@ export function CreateCommand({
   switch (state) {
     case "checking":
       return <Spinner label="Checking repository state..." />;
+    case "checking_parent":
+      return <Spinner label="Checking parent branch status..." />;
+    case "rebasing_to_trunk":
+      return <Spinner label="Parent was merged, rebasing to trunk..." />;
     case "prompt_unstaged":
       return (
         <Box flexDirection="column">

@@ -90,6 +90,7 @@ export function InitCommand({
           remote: "origin",
           initialized: true,
           autoOpenPR: openPr ?? false,
+          mergeMethod: "squash",
         });
 
         if (options.json) {

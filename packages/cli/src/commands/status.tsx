@@ -164,9 +164,9 @@ export function StatusCommand({
           return;
         }
 
-        const pr = await github.prs.findByBranchAnyState(currentBranch);
+        const prFromList = await github.prs.findByBranchAnyState(currentBranch);
 
-        if (!pr) {
+        if (!prFromList) {
           if (options.json) {
             console.log(
               formatJson(
@@ -179,6 +179,8 @@ export function StatusCommand({
           return;
         }
 
+        // Fetch full PR data to get mergeable status (list doesn't include it)
+        const pr = await github.prs.get(prFromList.number);
         const status = getPRStatus(pr);
 
         if (options.json) {

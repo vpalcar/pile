@@ -193,6 +193,18 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
                       ...childRel,
                       parent: newParent,
                     });
+
+                    // Update the child's PR base on GitHub
+                    if (childRel.prNumber) {
+                      try {
+                        await github.prs.update({
+                          number: childRel.prNumber,
+                          base: newParent,
+                        });
+                      } catch {
+                        // PR might not exist or other error
+                      }
+                    }
                   }
                 }
 
