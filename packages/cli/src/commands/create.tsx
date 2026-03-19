@@ -2,12 +2,12 @@ import React, { useState, useEffect } from "react";
 import { Box, Text, useInput, useApp } from "ink";
 import { createPile, PileInstance } from "@pile/core";
 import { Spinner } from "../components/Spinner.js";
-import { SuccessMessage, ErrorMessage } from "../components/Message.js";
+import { SuccessMessage, ErrorMessage, WarningMessage } from "../components/Message.js";
 import { OutputOptions, formatJson, createResult } from "../utils/output.js";
 
 export interface CreateCommandProps {
   name?: string;
-  message?: string;
+  message: string;
   all?: boolean;
   update?: boolean;
   insert?: boolean;
@@ -21,13 +21,17 @@ type State =
   | "creating"
   | "restacking"
   | "success"
+  | "no_staged"
   | "not_initialized"
   | "no_changes"
   | "aborted"
   | "error";
 
+/**
+ * Generate a branch name from a commit message.
+ * Format: mm-dd-slug-from-message
+ */
 function deriveBranchName(message: string): string {
-  // Get date prefix in mm-dd format
   const now = new Date();
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const day = String(now.getDate()).padStart(2, "0");
@@ -37,6 +41,7 @@ function deriveBranchName(message: string): string {
   const slug = message
     .toLowerCase()
     .replace(/[^a-z0-9\s-]/g, "") // Remove special chars
+    .trim()
     .replace(/\s+/g, "-") // Replace spaces with dashes
     .replace(/-+/g, "-") // Replace multiple dashes with single
     .replace(/^-|-$/g, "") // Remove leading/trailing dashes
@@ -91,21 +96,6 @@ export function CreateCommand({
         const stagedFiles = await pile.git.getStagedFiles();
         const hasChanges = await pile.git.hasUncommittedChanges();
 
-        // Require message
-        if (!message) {
-          if (options.json) {
-            console.log(
-              formatJson(
-                createResult(false, null, "Message is required. Use -m <message>")
-              )
-            );
-            process.exit(1);
-          }
-          setError("Message is required. Use -m <message>");
-          setState("error");
-          return;
-        }
-
         // Check for changes
         if (stagedFiles.length === 0) {
           if (!hasChanges) {
@@ -129,7 +119,7 @@ export function CreateCommand({
         }
 
         // Proceed with creation
-        await performCreate(pile, currentBranch, stagedFiles.length > 0);
+        await performCreate(pile, currentBranch);
       } catch (err) {
         handleError(err);
       }
@@ -150,8 +140,7 @@ export function CreateCommand({
 
   const performCreate = async (
     pile: PileInstance,
-    currentBranch: string,
-    hasStaged: boolean
+    currentBranch: string
   ) => {
     try {
       // Stage changes if needed
@@ -177,17 +166,11 @@ export function CreateCommand({
       }
 
       // Determine branch name
-      let finalName = name;
-      const commitMessage = message;
-
-      if (!finalName) {
-        finalName = deriveBranchName(commitMessage!);
-      }
-
+      const finalName = name || deriveBranchName(message);
       setBranchName(finalName);
       setState("creating");
 
-      const branch = await pile.stack.createBranch(finalName, commitMessage, {
+      const branch = await pile.stack.createBranch(finalName, message, {
         insert,
       });
 
@@ -244,7 +227,7 @@ export function CreateCommand({
             setState("staging");
             pileInstance.git.stageAll().then(() => {
               pileInstance.git.getCurrentBranch().then((currentBranch) => {
-                performCreate(pileInstance, currentBranch, true);
+                performCreate(pileInstance, currentBranch);
               });
             });
           }
@@ -291,8 +274,8 @@ export function CreateCommand({
     case "no_changes":
       return (
         <Box flexDirection="column">
-          <ErrorMessage>No changes to commit</ErrorMessage>
-          <Text color="gray">Stage changes or use -a/--all to stage all changes</Text>
+          <WarningMessage>No staged changes</WarningMessage>
+          <Text color="gray">Stage changes with -a (all) or -u (tracked), or use git add</Text>
         </Box>
       );
     case "aborted":

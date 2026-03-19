@@ -85,7 +85,9 @@ export class StateManager {
     this.gitConfig("pile.trunk", config.trunk);
     this.gitConfig("pile.remote", config.remote);
     this.gitConfig("pile.initialized", config.initialized ? "true" : "false");
-    this.gitConfig("pile.autoOpenPR", config.autoOpenPR ? "true" : "false");
+    if (config.autoOpenPR !== undefined) {
+      this.gitConfig("pile.autoOpenPR", config.autoOpenPR ? "true" : "false");
+    }
   }
 
   getBranchRelationship(branchName: string): BranchRelationship | null {

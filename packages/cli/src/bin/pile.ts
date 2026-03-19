@@ -12,6 +12,7 @@ import { SyncCommand } from "../commands/sync.js";
 import { CheckoutCommand } from "../commands/checkout.js";
 import { BranchesCommand } from "../commands/branches.js";
 import { ModifyCommand } from "../commands/modify.js";
+import { StatusCommand } from "../commands/status.js";
 
 const program = new Command();
 
@@ -257,6 +258,20 @@ program
     const globalOpts = program.opts();
     render(
       React.createElement(BranchesCommand, {
+        options: { json: globalOpts.json },
+      })
+    );
+  });
+
+// status command
+program
+  .command("status")
+  .alias("st")
+  .description("Show PR status for the current branch")
+  .action(() => {
+    const globalOpts = program.opts();
+    render(
+      React.createElement(StatusCommand, {
         options: { json: globalOpts.json },
       })
     );
