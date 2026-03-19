@@ -235,6 +235,52 @@ export class StateManager {
   getPileDir(): string {
     return `${this.repoRoot}/.pile (git config)`;
   }
+
+  // Restack state management for conflict resolution
+  getRestackState(): RestackState | null {
+    const conflictBranch = this.gitConfig("pile.restack.conflict-branch");
+    if (!conflictBranch) {
+      return null;
+    }
+
+    const remainingRaw = this.gitConfig("pile.restack.remaining");
+    const completedRaw = this.gitConfig("pile.restack.completed");
+    const originalBranch = this.gitConfig("pile.restack.original-branch");
+
+    return {
+      conflictBranch,
+      remainingBranches: remainingRaw ? remainingRaw.split(",").filter(Boolean) : [],
+      completedBranches: completedRaw ? completedRaw.split(",").filter(Boolean) : [],
+      originalBranch: originalBranch ?? undefined,
+    };
+  }
+
+  saveRestackState(state: RestackState): void {
+    this.gitConfig("pile.restack.conflict-branch", state.conflictBranch);
+    this.gitConfig("pile.restack.remaining", state.remainingBranches.join(","));
+    this.gitConfig("pile.restack.completed", state.completedBranches.join(","));
+    if (state.originalBranch) {
+      this.gitConfig("pile.restack.original-branch", state.originalBranch);
+    }
+  }
+
+  clearRestackState(): void {
+    this.gitConfig("pile.restack.conflict-branch", undefined, true);
+    this.gitConfig("pile.restack.remaining", undefined, true);
+    this.gitConfig("pile.restack.completed", undefined, true);
+    this.gitConfig("pile.restack.original-branch", undefined, true);
+  }
+
+  hasRestackInProgress(): boolean {
+    return this.gitConfig("pile.restack.conflict-branch") !== null;
+  }
+}
+
+export interface RestackState {
+  conflictBranch: string;
+  remainingBranches: string[];
+  completedBranches: string[];
+  originalBranch?: string;
 }
 
 export function createStateManager(repoRoot: string): StateManager {
