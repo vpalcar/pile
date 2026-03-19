@@ -20,7 +20,7 @@ export class StackManager {
     return config?.trunk ?? "main";
   }
 
-  async createBranch(name: string, message?: string): Promise<Branch> {
+  async createBranch(name: string, message?: string, options?: { insert?: boolean }): Promise<Branch> {
     const currentBranch = await this.git.getCurrentBranch();
     const trunk = this.getTrunk();
 
@@ -48,6 +48,20 @@ export class StackManager {
       name,
       parent,
     });
+
+    // If insert mode, reparent children of the current branch to this new branch
+    if (options?.insert && currentBranch !== trunk) {
+      const children = this.state.getChildren(currentBranch);
+      for (const child of children) {
+        const childRel = this.state.getBranchRelationship(child);
+        if (childRel) {
+          this.state.setBranchRelationship(child, {
+            ...childRel,
+            parent: name,
+          });
+        }
+      }
+    }
 
     return {
       name,

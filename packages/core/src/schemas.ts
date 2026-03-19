@@ -39,6 +39,7 @@ export const RepoConfigSchema = z.object({
   trunk: z.string(),
   remote: z.string().default("origin"),
   initialized: z.boolean().default(false),
+  autoOpenPR: z.boolean().default(false),
 });
 export type RepoConfig = z.infer<typeof RepoConfigSchema>;
 

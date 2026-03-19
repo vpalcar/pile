@@ -9,13 +9,16 @@ import {
   WarningMessage,
   InfoMessage,
 } from "../components/Message.js";
+import { Link } from "../components/Link.js";
 import { OutputOptions, formatJson, createResult } from "../utils/output.js";
+import { openUrl } from "../utils/browser.js";
 
 export interface SubmitCommandProps {
   stack?: boolean;
   draft?: boolean;
   title?: string;
   reviewers?: string[];
+  open?: boolean;
   options: OutputOptions;
 }
 
@@ -62,12 +65,14 @@ export function SubmitCommand({
   draft,
   title,
   reviewers,
+  open,
   options,
 }: SubmitCommandProps): React.ReactElement {
   const [state, setState] = useState<State>("checking");
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<PRResult[]>([]);
   const [queuedResults, setQueuedResults] = useState<QueuedResult[]>([]);
+  const [shouldOpenPR, setShouldOpenPR] = useState(false);
 
   useEffect(() => {
     async function submit() {
@@ -88,6 +93,10 @@ export function SubmitCommand({
         const config = pile.state.getConfig();
         const trunk = config?.trunk ?? "main";
         const current = await pile.git.getCurrentBranch();
+
+        // Check if we should auto-open PR links
+        const autoOpen = open || config?.autoOpenPR;
+        setShouldOpenPR(autoOpen ?? false);
 
         if (current === trunk) {
           if (options.json) {
@@ -243,6 +252,13 @@ export function SubmitCommand({
         setResults(prResults);
         setQueuedResults(queued);
 
+        // Open PR URLs in browser if configured
+        if (autoOpen && prResults.length > 0) {
+          for (const pr of prResults) {
+            openUrl(pr.prUrl);
+          }
+        }
+
         if (options.json) {
           console.log(
             formatJson(createResult(true, { prs: prResults, queued }))
@@ -267,7 +283,7 @@ export function SubmitCommand({
     }
 
     submit();
-  }, [stack, draft, title, reviewers, options.json]);
+  }, [stack, draft, title, reviewers, open, options.json]);
 
   if (options.json) {
     return <></>;
@@ -293,7 +309,7 @@ export function SubmitCommand({
                 {result.created ? "Created" : "Updated"} PR #{result.prNumber} for{" "}
                 {result.branch}
               </SuccessMessage>
-              <Text color="gray">  {result.prUrl}</Text>
+              <Text>  <Link url={result.prUrl}>{result.prUrl}</Link></Text>
             </Box>
           ))}
           {queuedResults.length > 0 && (

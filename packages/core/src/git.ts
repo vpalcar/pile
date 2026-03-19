@@ -138,6 +138,10 @@ export class GitOperations {
     await this.git.add("-A");
   }
 
+  async stageUpdated(): Promise<void> {
+    await this.git.add("-u");
+  }
+
   async commit(message: string): Promise<string> {
     const result = await this.git.commit(message);
     return result.commit;

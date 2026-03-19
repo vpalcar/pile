@@ -5,12 +5,10 @@ import { Spinner } from "../components/Spinner.js";
 import { SuccessMessage, ErrorMessage } from "../components/Message.js";
 import { OutputOptions, formatJson, createResult } from "../utils/output.js";
 
-export interface CreateCommandProps {
-  name?: string;
-  message?: string;
+export interface ModifyCommandProps {
   all?: boolean;
   update?: boolean;
-  insert?: boolean;
+  message?: string;
   options: OutputOptions;
 }
 
@@ -18,51 +16,29 @@ type State =
   | "checking"
   | "prompt_unstaged"
   | "staging"
-  | "creating"
-  | "restacking"
+  | "amending"
   | "success"
   | "not_initialized"
   | "no_changes"
+  | "on_trunk"
   | "aborted"
   | "error";
 
-function deriveBranchName(message: string): string {
-  // Get date prefix in mm-dd format
-  const now = new Date();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  const datePrefix = `${month}-${day}`;
-
-  // Convert message to branch-friendly format
-  const slug = message
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, "") // Remove special chars
-    .replace(/\s+/g, "-") // Replace spaces with dashes
-    .replace(/-+/g, "-") // Replace multiple dashes with single
-    .replace(/^-|-$/g, "") // Remove leading/trailing dashes
-    .slice(0, 40); // Limit length (leaving room for date prefix)
-
-  return `${datePrefix}-${slug}`;
-}
-
-export function CreateCommand({
-  name,
-  message,
+export function ModifyCommand({
   all,
   update,
-  insert,
+  message,
   options,
-}: CreateCommandProps): React.ReactElement {
+}: ModifyCommandProps): React.ReactElement {
   const { exit } = useApp();
   const [state, setState] = useState<State>("checking");
   const [error, setError] = useState<string | null>(null);
-  const [parentBranch, setParentBranch] = useState("");
   const [branchName, setBranchName] = useState<string>("");
   const [commitHash, setCommitHash] = useState<string | null>(null);
   const [pileInstance, setPileInstance] = useState<PileInstance | null>(null);
 
   useEffect(() => {
-    async function checkAndCreate() {
+    async function checkAndModify() {
       try {
         const pile = await createPile();
         setPileInstance(pile);
@@ -85,26 +61,27 @@ export function CreateCommand({
         }
 
         const currentBranch = await pile.git.getCurrentBranch();
-        setParentBranch(currentBranch);
+        setBranchName(currentBranch);
 
-        // Check for staged and unstaged changes
-        const stagedFiles = await pile.git.getStagedFiles();
-        const hasChanges = await pile.git.hasUncommittedChanges();
+        const config = pile.state.getConfig();
+        const trunk = config?.trunk ?? "main";
 
-        // Require message
-        if (!message) {
+        if (currentBranch === trunk) {
           if (options.json) {
             console.log(
               formatJson(
-                createResult(false, null, "Message is required. Use -m <message>")
+                createResult(false, null, "Cannot modify trunk branch")
               )
             );
             process.exit(1);
           }
-          setError("Message is required. Use -m <message>");
-          setState("error");
+          setState("on_trunk");
           return;
         }
+
+        // Check for staged and unstaged changes
+        const stagedFiles = await pile.git.getStagedFiles();
+        const hasChanges = await pile.git.hasUncommittedChanges();
 
         // Check for changes
         if (stagedFiles.length === 0) {
@@ -128,15 +105,15 @@ export function CreateCommand({
           }
         }
 
-        // Proceed with creation
-        await performCreate(pile, currentBranch, stagedFiles.length > 0);
+        // Proceed with modification
+        await performModify(pile);
       } catch (err) {
         handleError(err);
       }
     }
 
-    checkAndCreate();
-  }, [name, message, all, update, insert, options.json]);
+    checkAndModify();
+  }, [all, update, message, options.json]);
 
   const handleError = (err: unknown) => {
     const errMessage = err instanceof Error ? err.message : String(err);
@@ -148,11 +125,7 @@ export function CreateCommand({
     setState("error");
   };
 
-  const performCreate = async (
-    pile: PileInstance,
-    currentBranch: string,
-    hasStaged: boolean
-  ) => {
+  const performModify = async (pile: PileInstance) => {
     try {
       // Stage changes if needed
       if (all) {
@@ -163,7 +136,7 @@ export function CreateCommand({
         await pile.git.stageUpdated();
       }
 
-      // Recheck staged files after staging - always require staged files
+      // Recheck staged files after staging
       const stagedFiles = await pile.git.getStagedFiles();
       if (stagedFiles.length === 0) {
         if (options.json) {
@@ -176,34 +149,10 @@ export function CreateCommand({
         return;
       }
 
-      // Determine branch name
-      let finalName = name;
-      const commitMessage = message;
+      setState("amending");
 
-      if (!finalName) {
-        finalName = deriveBranchName(commitMessage!);
-      }
-
-      setBranchName(finalName);
-      setState("creating");
-
-      const branch = await pile.stack.createBranch(finalName, commitMessage, {
-        insert,
-      });
-
-      // If insert mode and there were children, restack them
-      if (insert) {
-        const children = pile.state.getChildren(finalName);
-        if (children.length > 0) {
-          setState("restacking");
-          for (const child of children) {
-            await pile.git.checkout(child);
-            await pile.git.rebase(finalName);
-          }
-          // Go back to the new branch
-          await pile.git.checkout(finalName);
-        }
-      }
+      // Amend the commit
+      const hash = await pile.git.amendCommit(message);
 
       if (options.json) {
         console.log(
@@ -211,23 +160,19 @@ export function CreateCommand({
             createResult(
               true,
               {
-                branch: branch.name,
-                parent: branch.parent,
-                commits: branch.commits.length,
-                inserted: insert && pile.state.getChildren(finalName).length > 0,
+                branch: branchName,
+                commit: hash,
+                filesModified: stagedFiles.length,
               },
               undefined,
-              `Created branch ${finalName}`
+              `Amended commit on ${branchName}`
             )
           )
         );
         process.exit(0);
       }
 
-      if (branch.commits.length > 0) {
-        setCommitHash(branch.commits[0].hash.slice(0, 7));
-      }
-
+      setCommitHash(hash.slice(0, 7));
       setState("success");
       setTimeout(() => exit(), 100);
     } catch (err) {
@@ -239,13 +184,11 @@ export function CreateCommand({
     (input, key) => {
       if (state === "prompt_unstaged") {
         if (input === "a" || input === "A") {
-          // Stage all and create
+          // Stage all and modify
           if (pileInstance) {
             setState("staging");
             pileInstance.git.stageAll().then(() => {
-              pileInstance.git.getCurrentBranch().then((currentBranch) => {
-                performCreate(pileInstance, currentBranch, true);
-              });
+              performModify(pileInstance);
             });
           }
         } else if (input === "q" || key.escape) {
@@ -273,19 +216,18 @@ export function CreateCommand({
       );
     case "staging":
       return <Spinner label="Staging changes..." />;
-    case "creating":
-      return <Spinner label={`Creating branch ${branchName}...`} />;
-    case "restacking":
-      return <Spinner label="Restacking child branches..." />;
+    case "amending":
+      return <Spinner label="Amending commit..." />;
     case "success":
       return (
         <Box flexDirection="column">
           <SuccessMessage>
-            Created branch {branchName} (stacked on {parentBranch})
+            Amended commit on {branchName}
           </SuccessMessage>
           {commitHash && (
-            <Text color="gray">  Committed: {commitHash}</Text>
+            <Text color="gray">  Commit: {commitHash}</Text>
           )}
+          <Text color="gray">  Run `pile submit` to push changes</Text>
         </Box>
       );
     case "no_changes":
@@ -294,6 +236,10 @@ export function CreateCommand({
           <ErrorMessage>No changes to commit</ErrorMessage>
           <Text color="gray">Stage changes or use -a/--all to stage all changes</Text>
         </Box>
+      );
+    case "on_trunk":
+      return (
+        <ErrorMessage>Cannot modify trunk branch. Create a branch first.</ErrorMessage>
       );
     case "aborted":
       return <Text color="gray">Aborted</Text>;
