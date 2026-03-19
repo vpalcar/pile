@@ -74,10 +74,11 @@ program
 program
   .command("modify")
   .alias("m")
-  .description("Amend changes to the current branch commit")
-  .option("-a, --all", "Stage all changes before amending")
+  .description("Squash all commits and stage changes into single commit")
+  .option("-a, --all", "Stage all changes before squashing")
   .option("-u, --update", "Stage all tracked file changes (git add -u)")
   .option("-m, --message <message>", "New commit message (optional)")
+  .option("--amend", "Only amend last commit instead of squashing all")
   .action((opts) => {
     const globalOpts = program.opts();
     render(
@@ -85,6 +86,7 @@ program
         all: opts.all,
         update: opts.update,
         message: opts.message,
+        squash: !opts.amend, // Squash by default, --amend disables it
         options: { json: globalOpts.json },
       })
     );

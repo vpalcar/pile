@@ -9,6 +9,7 @@ export interface ModifyCommandProps {
   all?: boolean;
   update?: boolean;
   message?: string;
+  squash?: boolean;
   options: OutputOptions;
 }
 
@@ -16,6 +17,7 @@ type State =
   | "checking"
   | "prompt_unstaged"
   | "staging"
+  | "squashing"
   | "amending"
   | "success"
   | "not_initialized"
@@ -28,6 +30,7 @@ export function ModifyCommand({
   all,
   update,
   message,
+  squash,
   options,
 }: ModifyCommandProps): React.ReactElement {
   const { exit } = useApp();
@@ -35,6 +38,7 @@ export function ModifyCommand({
   const [error, setError] = useState<string | null>(null);
   const [branchName, setBranchName] = useState<string>("");
   const [commitHash, setCommitHash] = useState<string | null>(null);
+  const [commitCount, setCommitCount] = useState<number>(1);
   const [pileInstance, setPileInstance] = useState<PileInstance | null>(null);
 
   useEffect(() => {
@@ -83,13 +87,20 @@ export function ModifyCommand({
         const stagedFiles = await pile.git.getStagedFiles();
         const hasChanges = await pile.git.hasUncommittedChanges();
 
-        // Check for changes
-        if (stagedFiles.length === 0 && !message) {
-          if (!hasChanges) {
+        // For squash, we can proceed even without new changes - we're squashing existing commits
+        if (squash) {
+          // Check if there are commits to squash
+          const config = pile.state.getConfig();
+          const trunk = config?.trunk ?? "main";
+          const parent = pile.state.getParent(currentBranch) ?? trunk;
+          const commitCount = await pile.git.getCommitCount(parent, "HEAD");
+
+          if (commitCount <= 1 && stagedFiles.length === 0 && !hasChanges) {
+            // Only 1 commit and no new changes - nothing to squash
             if (options.json) {
               console.log(
                 formatJson(
-                  createResult(false, null, "No changes to commit")
+                  createResult(false, null, "Nothing to squash (single commit, no new changes)")
                 )
               );
               process.exit(1);
@@ -97,23 +108,40 @@ export function ModifyCommand({
             setState("no_changes");
             return;
           }
+          // Otherwise proceed with squash
+        } else {
+          // For amend mode, check for changes
+          if (stagedFiles.length === 0 && !message) {
+            if (!hasChanges) {
+              if (options.json) {
+                console.log(
+                  formatJson(
+                    createResult(false, null, "No changes to commit")
+                  )
+                );
+                process.exit(1);
+              }
+              setState("no_changes");
+              return;
+            }
 
-          // If --all or --update is specified, proceed with staging
-          if (!all && !update) {
-            setState("prompt_unstaged");
-            return;
+            // If --all or --update is specified, proceed with staging
+            if (!all && !update) {
+              setState("prompt_unstaged");
+              return;
+            }
           }
         }
 
         // Proceed with modification
-        await performModify(pile);
+        await performModify(pile, currentBranch);
       } catch (err) {
         handleError(err);
       }
     }
 
     checkAndModify();
-  }, [all, update, message, options.json]);
+  }, [all, update, message, squash, options.json]);
 
   const handleError = (err: unknown) => {
     const errMessage = err instanceof Error ? err.message : String(err);
@@ -125,7 +153,7 @@ export function ModifyCommand({
     setState("error");
   };
 
-  const performModify = async (pile: PileInstance) => {
+  const performModify = async (pile: PileInstance, currentBranch: string) => {
     try {
       // Stage changes if needed
       if (all) {
@@ -138,7 +166,9 @@ export function ModifyCommand({
 
       // Recheck staged files after staging
       const stagedFiles = await pile.git.getStagedFiles();
-      if (stagedFiles.length === 0 && !message) {
+
+      // For squash, we don't need staged files
+      if (stagedFiles.length === 0 && !message && !squash) {
         if (options.json) {
           console.log(
             formatJson(createResult(false, null, "No changes to commit"))
@@ -149,10 +179,34 @@ export function ModifyCommand({
         return;
       }
 
-      setState("amending");
+      let hash: string;
 
-      // Amend the commit
-      const hash = await pile.git.amendCommit(message);
+      if (squash) {
+        // Squash all commits into one
+        setState("squashing");
+        const config = pile.state.getConfig();
+        const trunk = config?.trunk ?? "main";
+        const parent = pile.state.getParent(currentBranch) ?? trunk;
+
+        // Get commit count for display
+        const count = await pile.git.getCommitCount(parent, "HEAD");
+        setCommitCount(count);
+
+        // Get the stored title or use provided message
+        const storedTitle = pile.state.getTitle(currentBranch);
+        const squashMessage = message ?? storedTitle ?? currentBranch;
+
+        // Stage any unstaged changes first if -a flag
+        if (all && stagedFiles.length === 0) {
+          await pile.git.stageAll();
+        }
+
+        hash = await pile.git.squashCommits(parent, squashMessage);
+      } else {
+        setState("amending");
+        // Amend the commit
+        hash = await pile.git.amendCommit(message);
+      }
 
       if (options.json) {
         console.log(
@@ -163,9 +217,10 @@ export function ModifyCommand({
                 branch: branchName,
                 commit: hash,
                 filesModified: stagedFiles.length,
+                squashed: squash ? commitCount : undefined,
               },
               undefined,
-              `Amended commit on ${branchName}`
+              squash ? `Squashed ${commitCount} commits on ${branchName}` : `Amended commit on ${branchName}`
             )
           )
         );
@@ -188,7 +243,7 @@ export function ModifyCommand({
           if (pileInstance) {
             setState("staging");
             pileInstance.git.stageAll().then(() => {
-              performModify(pileInstance);
+              performModify(pileInstance, branchName);
             });
           }
         } else if (input === "q" || key.escape) {
@@ -216,13 +271,15 @@ export function ModifyCommand({
       );
     case "staging":
       return <Spinner label="Staging changes..." />;
+    case "squashing":
+      return <Spinner label={`Squashing ${commitCount} commits...`} />;
     case "amending":
       return <Spinner label="Amending commit..." />;
     case "success":
       return (
         <Box flexDirection="column">
           <SuccessMessage>
-            Amended commit on {branchName}
+            {squash ? `Squashed ${commitCount} commits on ${branchName}` : `Amended commit on ${branchName}`}
           </SuccessMessage>
           {commitHash && (
             <Text color="gray">  Commit: {commitHash}</Text>
