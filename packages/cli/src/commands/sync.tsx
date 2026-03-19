@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { Box, Text } from "ink";
-import { createPile, RestackResult } from "@pile/core";
+import { Box, Text, useInput, useApp } from "ink";
+import { createPile, RestackResult, PileInstance } from "@pile/core";
 import { createGitHub, createQueueProcessor } from "@pile/github";
 import { Spinner } from "../components/Spinner.js";
 import {
@@ -25,6 +25,13 @@ interface CleanedBranch {
   prNumber?: number;
 }
 
+interface BranchToClean {
+  branch: string;
+  reason: "merged" | "closed";
+  prNumber?: number;
+  parent: string | null;
+}
+
 type State =
   | "checking"
   | "processing_queue"
@@ -32,6 +39,7 @@ type State =
   | "updating_trunk"
   | "restacking"
   | "refreshing_prs"
+  | "confirming_delete"
   | "cleaning_branches"
   | "success"
   | "conflict"
@@ -40,12 +48,16 @@ type State =
   | "error";
 
 export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
+  const { exit } = useApp();
   const [state, setState] = useState<State>("checking");
   const [error, setError] = useState<string | null>(null);
   const [restackResult, setRestackResult] = useState<RestackResult | null>(null);
   const [conflictBranch, setConflictBranch] = useState<string | null>(null);
   const [queueResult, setQueueResult] = useState<QueueResult | null>(null);
   const [cleanedBranches, setCleanedBranches] = useState<CleanedBranch[]>([]);
+  const [branchesToConfirm, setBranchesToConfirm] = useState<BranchToClean[]>([]);
+  const [pileInstance, setPileInstance] = useState<PileInstance | null>(null);
+  const [trunk, setTrunk] = useState<string>("main");
 
   useEffect(() => {
     async function sync() {
@@ -196,64 +208,59 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
             }
           }
 
-          // Clean up merged/closed branches
+          // If there are branches to clean, pause for user confirmation (or auto-delete in JSON mode)
           if (branchesToClean.length > 0) {
-            setState("cleaning_branches");
-
-            for (const { branch, reason, prNumber, parent } of branchesToClean) {
-              try {
-                // Get children of this branch before deleting
-                const children = pile.state.getChildren(branch);
-
-                // Reparent children to this branch's parent
-                const newParent = parent ?? trunk;
-                for (const child of children) {
-                  const childRel = pile.state.getBranchRelationship(child);
-                  if (childRel) {
-                    pile.state.setBranchRelationship(child, {
-                      ...childRel,
-                      parent: newParent,
-                    });
-
-                    // Update the child's PR base on GitHub
-                    if (childRel.prNumber) {
-                      try {
-                        await github.prs.update({
-                          number: childRel.prNumber,
-                          base: newParent,
-                        });
-                      } catch {
-                        // PR might not exist or other error
+            if (options.json) {
+              // In JSON mode, auto-delete merged/closed branches
+              const cleaned: CleanedBranch[] = [];
+              for (const { branch, reason, prNumber, parent } of branchesToClean) {
+                try {
+                  const children = pile.state.getChildren(branch);
+                  const newParent = parent ?? trunk;
+                  for (const child of children) {
+                    const childRel = pile.state.getBranchRelationship(child);
+                    if (childRel) {
+                      pile.state.setBranchRelationship(child, { ...childRel, parent: newParent });
+                      if (childRel.prNumber) {
+                        try {
+                          await github.prs.update({ number: childRel.prNumber, base: newParent });
+                        } catch { /* ignore */ }
                       }
                     }
                   }
-                }
-
-                // If we're on this branch, switch to trunk first
-                const nowCurrentBranch = await pile.git.getCurrentBranch();
-                if (nowCurrentBranch === branch) {
-                  await pile.git.checkout(trunk);
-                }
-
-                // Remove from pile tracking
-                pile.state.removeBranchRelationship(branch);
-
-                // Delete the local branch
-                try {
-                  await pile.git.deleteBranch(branch, true);
-                } catch {
-                  // Branch might not exist locally (only remote)
-                }
-
-                cleaned.push({ branch, reason, prNumber });
-              } catch {
-                // Ignore errors when cleaning individual branches
+                  const nowCurrentBranch = await pile.git.getCurrentBranch();
+                  if (nowCurrentBranch === branch) {
+                    await pile.git.checkout(trunk);
+                  }
+                  pile.state.removeBranchRelationship(branch);
+                  try {
+                    await pile.git.deleteBranch(branch, true);
+                  } catch { /* ignore */ }
+                  cleaned.push({ branch, reason, prNumber });
+                } catch { /* ignore */ }
               }
+              console.log(
+                formatJson(
+                  createResult(true, {
+                    restacked: result,
+                    queue: queueResult,
+                    cleaned,
+                  })
+                )
+              );
+              process.exit(0);
             }
+
+            // Interactive mode: pause for confirmation
+            setPileInstance(pile);
+            setTrunk(trunk);
+            setBranchesToConfirm(branchesToClean);
+            setState("confirming_delete");
+            return;
           }
         }
 
-        setCleanedBranches(cleaned);
+        setCleanedBranches([]);
 
         if (options.json) {
           console.log(
@@ -261,7 +268,7 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
               createResult(true, {
                 restacked: result,
                 queue: queueResult,
-                cleaned,
+                cleaned: [],
               })
             )
           );
@@ -283,6 +290,88 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
     sync();
   }, [options.json]);
 
+  // Handle branch cleanup after user confirmation
+  const handleCleanupBranches = async (deleteBranches: boolean) => {
+    if (!pileInstance) return;
+
+    const cleaned: CleanedBranch[] = [];
+    const repoRoot = await pileInstance.git.getRepoRoot();
+    const github = await createGitHub(`${repoRoot}/.pile`);
+
+    setState("cleaning_branches");
+
+    for (const { branch, reason, prNumber, parent } of branchesToConfirm) {
+      try {
+        // Get children of this branch before removing
+        const children = pileInstance.state.getChildren(branch);
+
+        // Reparent children to this branch's parent
+        const newParent = parent ?? trunk;
+        for (const child of children) {
+          const childRel = pileInstance.state.getBranchRelationship(child);
+          if (childRel) {
+            pileInstance.state.setBranchRelationship(child, {
+              ...childRel,
+              parent: newParent,
+            });
+
+            // Update the child's PR base on GitHub
+            if (github && childRel.prNumber) {
+              try {
+                await github.prs.update({
+                  number: childRel.prNumber,
+                  base: newParent,
+                });
+              } catch {
+                // PR might not exist or other error
+              }
+            }
+          }
+        }
+
+        // If we're on this branch, switch to trunk first
+        const nowCurrentBranch = await pileInstance.git.getCurrentBranch();
+        if (nowCurrentBranch === branch) {
+          await pileInstance.git.checkout(trunk);
+        }
+
+        // Remove from pile tracking
+        pileInstance.state.removeBranchRelationship(branch);
+
+        // Only delete the local branch if user confirmed
+        if (deleteBranches) {
+          try {
+            await pileInstance.git.deleteBranch(branch, true);
+          } catch {
+            // Branch might not exist locally (only remote)
+          }
+        }
+
+        cleaned.push({ branch, reason, prNumber });
+      } catch {
+        // Ignore errors when cleaning individual branches
+      }
+    }
+
+    setCleanedBranches(cleaned);
+    setBranchesToConfirm([]);
+    setState("success");
+  };
+
+  // Handle user input for delete confirmation
+  useInput(
+    (input, key) => {
+      if (state === "confirming_delete") {
+        if (input === "y" || input === "Y" || key.return) {
+          handleCleanupBranches(true);
+        } else if (input === "n" || input === "N" || key.escape) {
+          handleCleanupBranches(false);
+        }
+      }
+    },
+    { isActive: state === "confirming_delete" }
+  );
+
   if (options.json) {
     return <></>;
   }
@@ -302,6 +391,26 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
       return <Spinner label="Refreshing PR statuses..." />;
     case "cleaning_branches":
       return <Spinner label="Cleaning up merged/closed branches..." />;
+    case "confirming_delete":
+      return (
+        <Box flexDirection="column">
+          <Text bold>The following branches have been merged or closed:</Text>
+          <Box flexDirection="column" marginTop={1}>
+            {branchesToConfirm.map((item) => (
+              <Text key={item.branch} color="magenta">
+                {"  "}• {item.branch}{" "}
+                <Text color="gray">
+                  ({item.reason}{item.prNumber ? ` PR #${item.prNumber}` : ""})
+                </Text>
+              </Text>
+            ))}
+          </Box>
+          <Box marginTop={1}>
+            <Text>Delete these local branches? </Text>
+            <Text color="gray">y yes  n no (untrack only)</Text>
+          </Box>
+        </Box>
+      );
     case "success":
       return (
         <Box flexDirection="column">
@@ -356,7 +465,7 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
           <WarningMessage>Rebase conflict in {conflictBranch}</WarningMessage>
           <Box flexDirection="column" marginTop={1}>
             <Text>Resolve the conflicts, then run:</Text>
-            <Text color="cyan">{"  "}git add &lt;files&gt;</Text>
+            <Text color="cyan">{"  "}pile add &lt;files&gt;</Text>
             <Text color="cyan">{"  "}pile restack --continue</Text>
           </Box>
           <Box marginTop={1}>
@@ -381,7 +490,7 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
           <Text>Conflict in {conflictBranch}</Text>
           <Box flexDirection="column" marginTop={1}>
             <Text>Resolve the conflicts, then run:</Text>
-            <Text color="cyan">{"  "}git add &lt;files&gt;</Text>
+            <Text color="cyan">{"  "}pile add &lt;files&gt;</Text>
             <Text color="cyan">{"  "}pile restack --continue</Text>
           </Box>
           <Box marginTop={1}>
