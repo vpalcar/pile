@@ -13,6 +13,7 @@ import { CheckoutCommand } from "../commands/checkout.js";
 import { BranchesCommand } from "../commands/branches.js";
 import { ModifyCommand } from "../commands/modify.js";
 import { StatusCommand } from "../commands/status.js";
+import { MergeCommand } from "../commands/merge.js";
 
 const program = new Command();
 
@@ -272,6 +273,21 @@ program
     const globalOpts = program.opts();
     render(
       React.createElement(StatusCommand, {
+        options: { json: globalOpts.json },
+      })
+    );
+  });
+
+// merge command
+program
+  .command("merge")
+  .description("Merge the current branch's PR (squash by default)")
+  .option("-f, --force", "Merge even if checks are failing or reviews pending")
+  .action((opts) => {
+    const globalOpts = program.opts();
+    render(
+      React.createElement(MergeCommand, {
+        force: opts.force,
         options: { json: globalOpts.json },
       })
     );

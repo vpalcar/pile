@@ -192,8 +192,9 @@ export function SubmitCommand({
               });
             } else {
               setState("creating_pr");
-              const prTitle =
-                title ?? branch.split("/").pop()?.replace(/-/g, " ") ?? branch;
+              // Use stored title from create, or fall back to branch name
+              const storedTitle = pile.state.getTitle(branch);
+              const prTitle = title ?? storedTitle ?? branch;
               const stackInfo = stack
                 ? `Part of a stack based on \`${trunk}\``
                 : "";
@@ -227,8 +228,8 @@ export function SubmitCommand({
             }
           } catch (prErr) {
             if (isNetworkError(prErr)) {
-              const prTitle =
-                title ?? branch.split("/").pop()?.replace(/-/g, " ") ?? branch;
+              const storedTitle = pile.state.getTitle(branch);
+              const prTitle = title ?? storedTitle ?? branch;
               const stackInfo = stack
                 ? `Part of a stack based on \`${trunk}\``
                 : "";

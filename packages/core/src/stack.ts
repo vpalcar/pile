@@ -48,9 +48,12 @@ export class StackManager {
 
     // Track the relationship
     const parent = currentBranch === trunk ? trunk : currentBranch;
+    const baseCommit = await this.git.getCommitHash(parent);
     this.state.setBranchRelationship(name, {
       name,
       parent,
+      baseCommit, // Store parent's commit for smarter rebasing
+      title: message, // Store original message for PR title
     });
 
     // Handle insert mode - reparent children of current branch to new branch
@@ -162,9 +165,33 @@ export class StackManager {
       return { success: true, conflicts: false };
     }
 
-    // Checkout the branch and rebase onto parent
-    await this.git.checkout(current);
-    return this.git.rebase(parent);
+    // Get the stored base commit (parent's commit when branch was created/last synced)
+    const oldBase = this.state.getBaseCommit(current);
+    const newParentCommit = await this.git.getCommitHash(parent);
+
+    let result: { success: boolean; conflicts: boolean };
+
+    // Check if we can use smart rebase with --onto
+    const canUseOnto = oldBase &&
+      oldBase !== newParentCommit &&
+      await this.git.commitExists(oldBase);
+
+    if (canUseOnto) {
+      // Use --onto rebase to avoid reapplying commits already in parent
+      // git rebase --onto <newParent> <oldBase> <branch>
+      result = await this.git.rebaseOnto(parent, oldBase, current);
+    } else {
+      // Fall back to simple rebase
+      await this.git.checkout(current);
+      result = await this.git.rebase(parent);
+    }
+
+    // Update the base commit after successful rebase
+    if (result.success) {
+      this.state.setBaseCommit(current, newParentCommit);
+    }
+
+    return result;
   }
 
   async restackUpstream(

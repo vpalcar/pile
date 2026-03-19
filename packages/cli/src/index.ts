@@ -54,3 +54,7 @@ export {
   StatusCommand,
   type StatusCommandProps,
 } from "./commands/status.js";
+export {
+  MergeCommand,
+  type MergeCommandProps,
+} from "./commands/merge.js";

@@ -107,6 +107,55 @@ export class GitOperations {
     }
   }
 
+  /**
+   * Rebase using --onto to avoid reapplying commits already in the parent.
+   * git rebase --onto <newParent> <oldBase> <branch>
+   * This takes commits from oldBase..branch and replays them onto newParent.
+   */
+  async rebaseOnto(
+    newParent: string,
+    oldBase: string,
+    branch: string
+  ): Promise<{ success: boolean; conflicts: boolean }> {
+    try {
+      await this.git.rebase(["--onto", newParent, oldBase, branch]);
+      return { success: true, conflicts: false };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      if (errorMessage.includes("CONFLICT") || errorMessage.includes("conflict")) {
+        return { success: false, conflicts: true };
+      }
+      throw error;
+    }
+  }
+
+  async getCommitHash(ref: string): Promise<string> {
+    const result = await this.git.revparse([ref]);
+    return result.trim();
+  }
+
+  async commitExists(hash: string): Promise<boolean> {
+    try {
+      await this.git.catFile(["-t", hash]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Find the merge-base (common ancestor) between two refs.
+   * This is useful as a fallback when the stored base commit no longer exists.
+   */
+  async getMergeBase(ref1: string, ref2: string): Promise<string | null> {
+    try {
+      const result = await this.git.raw(["merge-base", ref1, ref2]);
+      return result.trim();
+    } catch {
+      return null;
+    }
+  }
+
   async rebaseAbort(): Promise<void> {
     await this.git.rebase(["--abort"]);
   }
@@ -220,15 +269,6 @@ export class GitOperations {
 
   async deleteRemoteBranch(branch: string, remote = "origin"): Promise<void> {
     await this.git.push(remote, `:${branch}`);
-  }
-
-  async getMergeBase(branch1: string, branch2: string): Promise<string | null> {
-    try {
-      const result = await this.git.raw(["merge-base", branch1, branch2]);
-      return result.trim();
-    } catch {
-      return null;
-    }
   }
 
   async branchExists(branch: string): Promise<boolean> {
