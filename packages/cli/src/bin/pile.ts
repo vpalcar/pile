@@ -10,6 +10,7 @@ import { NavigateCommand } from "../commands/navigate.js";
 import { SubmitCommand } from "../commands/submit.js";
 import { SyncCommand } from "../commands/sync.js";
 import { CheckoutCommand } from "../commands/checkout.js";
+import { BranchesCommand } from "../commands/branches.js";
 
 const program = new Command();
 
@@ -208,6 +209,20 @@ program
     const globalOpts = program.opts();
     render(
       React.createElement(CheckoutCommand, {
+        options: { json: globalOpts.json },
+      })
+    );
+  });
+
+// branches command
+program
+  .command("branches")
+  .alias("br")
+  .description("View and manage all branches - track/untrack branches for stacking")
+  .action(() => {
+    const globalOpts = program.opts();
+    render(
+      React.createElement(BranchesCommand, {
         options: { json: globalOpts.json },
       })
     );

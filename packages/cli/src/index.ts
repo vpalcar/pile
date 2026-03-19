@@ -40,3 +40,7 @@ export {
   CheckoutCommand,
   type CheckoutCommandProps,
 } from "./commands/checkout.js";
+export {
+  BranchesCommand,
+  type BranchesCommandProps,
+} from "./commands/branches.js";
