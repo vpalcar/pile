@@ -215,6 +215,37 @@ export class GitOperations {
     return result.commit;
   }
 
+  /**
+   * Squash all commits on the current branch since parent into a single commit.
+   * Uses soft reset to parent and recommit.
+   */
+  async squashCommits(parent: string, message: string): Promise<string> {
+    // Get the merge base with parent
+    const mergeBase = await this.getMergeBase("HEAD", parent);
+    if (!mergeBase) {
+      throw new Error("Could not find merge base with parent");
+    }
+
+    // Soft reset to merge base (keeps all changes staged)
+    await this.git.reset(["--soft", mergeBase]);
+
+    // Commit with the new message
+    const result = await this.git.commit(message);
+    return result.commit;
+  }
+
+  /**
+   * Get the number of commits between two refs.
+   */
+  async getCommitCount(from: string, to: string): Promise<number> {
+    try {
+      const result = await this.git.raw(["rev-list", "--count", `${from}..${to}`]);
+      return parseInt(result.trim(), 10);
+    } catch {
+      return 0;
+    }
+  }
+
   async push(branch: string, force = false): Promise<void> {
     const args = force ? ["--force-with-lease"] : [];
     await this.git.push("origin", branch, args);
