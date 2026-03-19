@@ -300,21 +300,23 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
               ))}
             </Box>
           )}
-          {restackResults.length > 0 && (
+          {restackResults.filter((r) => !cleanedBranches.some((c) => c.branch === r.branch)).length > 0 && (
             <Box flexDirection="column" marginTop={1}>
               <Text color="gray">Restacked branches:</Text>
-              {restackResults.map((result) => (
-                <Text
-                  key={result.branch}
-                  color={result.success ? "green" : "red"}
-                >
-                  {"  "}
-                  {result.success ? "✓" : "✗"} {result.branch}
-                </Text>
-              ))}
+              {restackResults
+                .filter((r) => !cleanedBranches.some((c) => c.branch === r.branch))
+                .map((result) => (
+                  <Text
+                    key={result.branch}
+                    color={result.success ? "green" : "red"}
+                  >
+                    {"  "}
+                    {result.success ? "✓" : "✗"} {result.branch}
+                  </Text>
+                ))}
             </Box>
           )}
-          {restackResults.length === 0 && cleanedBranches.length === 0 && (
+          {restackResults.filter((r) => !cleanedBranches.some((c) => c.branch === r.branch)).length === 0 && cleanedBranches.length === 0 && (
             <Text color="gray">No branches to restack or clean.</Text>
           )}
         </Box>
