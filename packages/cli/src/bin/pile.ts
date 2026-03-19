@@ -21,10 +21,7 @@ import { RenameCommand } from "../commands/rename.js";
 
 const program = new Command();
 
-program
-  .name("pile")
-  .description("AI-native stacked PR CLI")
-  .version("0.1.0");
+program.name("pile").description("AI-native stacked PR CLI").version("0.1.0");
 
 program.option("--json", "Output in JSON format for AI agents", false);
 
@@ -34,12 +31,9 @@ program
   .description("Initialize pile in the current repository")
   .option(
     "-t, --trunk <branch>",
-    "Trunk branch name (default: auto-detect main/master)"
+    "Trunk branch name (default: auto-detect main/master)",
   )
-  .option(
-    "--open-pr",
-    "Automatically open PR links in browser after submit"
-  )
+  .option("--open-pr", "Automatically open PR links in browser after submit")
   .action((opts) => {
     const globalOpts = program.opts();
     render(
@@ -47,7 +41,7 @@ program
         trunk: opts.trunk,
         openPr: opts.openPr,
         options: { json: globalOpts.json },
-      })
+      }),
     );
   });
 
@@ -68,7 +62,7 @@ program
         update: opts.update,
         patch: opts.patch,
         options: { json: globalOpts.json },
-      })
+      }),
     );
   });
 
@@ -80,7 +74,10 @@ program
   .requiredOption("-m, --message <message>", "Commit message (required)")
   .option("-a, --all", "Stage all changes before creating branch")
   .option("-u, --update", "Stage all tracked file changes (git add -u)")
-  .option("-i, --insert", "Insert branch between current branch and its children")
+  .option(
+    "-i, --insert",
+    "Insert branch between current branch and its children",
+  )
   .action((name, opts) => {
     const globalOpts = program.opts();
     render(
@@ -91,7 +88,7 @@ program
         update: opts.update,
         insert: opts.insert,
         options: { json: globalOpts.json },
-      })
+      }),
     );
   });
 
@@ -113,7 +110,7 @@ program
         message: opts.message,
         squash: !opts.amend, // Squash by default, --amend disables it
         options: { json: globalOpts.json },
-      })
+      }),
     );
   });
 
@@ -127,7 +124,7 @@ program
     render(
       React.createElement(LogCommand, {
         options: { json: globalOpts.json },
-      })
+      }),
     );
   });
 
@@ -140,7 +137,7 @@ program
     render(
       React.createElement(LogCommand, {
         options: { json: globalOpts.json },
-      })
+      }),
     );
   });
 
@@ -156,7 +153,7 @@ program
         direction: "up",
         steps: steps ? parseInt(steps, 10) : 1,
         options: { json: globalOpts.json },
-      })
+      }),
     );
   });
 
@@ -172,7 +169,7 @@ program
         direction: "down",
         steps: steps ? parseInt(steps, 10) : 1,
         options: { json: globalOpts.json },
-      })
+      }),
     );
   });
 
@@ -186,7 +183,7 @@ program
       React.createElement(NavigateCommand, {
         direction: "top",
         options: { json: globalOpts.json },
-      })
+      }),
     );
   });
 
@@ -200,7 +197,7 @@ program
       React.createElement(NavigateCommand, {
         direction: "bottom",
         options: { json: globalOpts.json },
-      })
+      }),
     );
   });
 
@@ -211,7 +208,7 @@ program
   .description("Push branch and create/update pull request")
   .option(
     "-s, --stack",
-    "Submit entire stack (all branches from trunk to current)"
+    "Submit entire stack (all branches from trunk to current)",
   )
   .option("-d, --draft", "Create PR as draft")
   .option("-t, --title <title>", "PR title (default: derived from branch name)")
@@ -227,7 +224,7 @@ program
         reviewers: opts.reviewers,
         open: opts.open,
         options: { json: globalOpts.json },
-      })
+      }),
     );
   });
 
@@ -247,7 +244,7 @@ program
         reviewers: opts.reviewers,
         open: opts.open,
         options: { json: globalOpts.json },
-      })
+      }),
     );
   });
 
@@ -260,7 +257,7 @@ program
     render(
       React.createElement(SyncCommand, {
         options: { json: globalOpts.json },
-      })
+      }),
     );
   });
 
@@ -273,7 +270,7 @@ program
     render(
       React.createElement(CheckoutCommand, {
         options: { json: globalOpts.json },
-      })
+      }),
     );
   });
 
@@ -281,13 +278,15 @@ program
 program
   .command("branches")
   .alias("br")
-  .description("View and manage all branches - track/untrack branches for stacking")
+  .description(
+    "View and manage all branches - track/untrack branches for stacking",
+  )
   .action(() => {
     const globalOpts = program.opts();
     render(
       React.createElement(BranchesCommand, {
         options: { json: globalOpts.json },
-      })
+      }),
     );
   });
 
@@ -301,7 +300,7 @@ program
     render(
       React.createElement(StatusCommand, {
         options: { json: globalOpts.json },
-      })
+      }),
     );
   });
 
@@ -316,7 +315,7 @@ program
       React.createElement(MergeCommand, {
         force: opts.force,
         options: { json: globalOpts.json },
-      })
+      }),
     );
   });
 
@@ -334,7 +333,7 @@ program
         continue: opts.continue,
         abort: opts.abort,
         options: { json: globalOpts.json },
-      })
+      }),
     );
   });
 
@@ -350,7 +349,7 @@ program
       React.createElement(MoveCommand, {
         onto: opts.onto,
         options: { json: globalOpts.json },
-      })
+      }),
     );
   });
 
@@ -365,7 +364,7 @@ program
       React.createElement(RenameCommand, {
         newName,
         options: { json: globalOpts.json },
-      })
+      }),
     );
   });
 
