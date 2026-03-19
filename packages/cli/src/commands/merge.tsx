@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Box, Text } from "ink";
-import { createPile } from "@pile/core";
-import { createGitHub, PullRequest, getPRStatus } from "@pile/github";
+import { createPile, PileInstance } from "@pile/core";
+import { createGitHub, GitHubInstance, PullRequest, getPRStatus } from "@pile/github";
 import { Spinner } from "../components/Spinner.js";
 import {
   SuccessMessage,
@@ -20,11 +20,23 @@ interface BlockingReason {
   message: string;
 }
 
+interface MergedPR {
+  branch: string;
+  prNumber: number;
+  title: string;
+}
+
+interface BlockedPR {
+  branch: string;
+  prNumber: number;
+  title: string;
+  reasons: BlockingReason[];
+}
+
 type State =
   | "checking"
   | "merging"
   | "cleaning"
-  | "updating_children"
   | "success"
   | "blocked"
   | "no_pr"
@@ -117,14 +129,13 @@ export function MergeCommand({
 }: MergeCommandProps): React.ReactElement {
   const [state, setState] = useState<State>("checking");
   const [error, setError] = useState<string | null>(null);
-  const [mergedBranch, setMergedBranch] = useState<string>("");
-  const [prNumber, setPrNumber] = useState<number | null>(null);
+  const [currentMerging, setCurrentMerging] = useState<string>("");
+  const [mergedPRs, setMergedPRs] = useState<MergedPR[]>([]);
+  const [blockedPR, setBlockedPR] = useState<BlockedPR | null>(null);
   const [mergeMethod, setMergeMethod] = useState<string>("squash");
-  const [blockingReasons, setBlockingReasons] = useState<BlockingReason[]>([]);
-  const [prTitle, setPrTitle] = useState<string>("");
 
   useEffect(() => {
-    async function merge() {
+    async function mergeStack() {
       try {
         const pile = await createPile();
 
@@ -145,7 +156,6 @@ export function MergeCommand({
         setMergeMethod(method);
 
         const currentBranch = await pile.git.getCurrentBranch();
-        setMergedBranch(currentBranch);
 
         if (currentBranch === trunk) {
           if (options.json) {
@@ -174,119 +184,124 @@ export function MergeCommand({
           return;
         }
 
-        // Find the PR for this branch
-        const pr = await github.prs.findByBranch(currentBranch);
-
-        if (!pr) {
-          if (options.json) {
-            console.log(
-              formatJson(
-                createResult(false, null, "No open PR found for this branch")
-              )
-            );
-            process.exit(1);
-          }
-          setState("no_pr");
-          return;
+        // Build the stack from trunk to current branch (bottom-up order)
+        const stackBranches: string[] = [];
+        let branch = currentBranch;
+        while (branch && branch !== trunk) {
+          stackBranches.unshift(branch); // Add to front so bottom is first
+          const parent = pile.state.getParent(branch);
+          branch = parent ?? "";
         }
 
-        setPrNumber(pr.number);
+        const merged: MergedPR[] = [];
 
-        // Get full PR data with mergeable status
-        const fullPr = await github.prs.get(pr.number);
-        setPrTitle(fullPr.title);
+        // Merge each branch in the stack from bottom to top
+        for (const branchToMerge of stackBranches) {
+          setCurrentMerging(branchToMerge);
 
-        // Check for blocking reasons
-        const reasons = getBlockingReasons(fullPr);
+          // Check if this branch's PR is already merged
+          const existingPr = await github.prs.findByBranchAnyState(branchToMerge);
+          if (existingPr?.merged) {
+            // Already merged, clean up and continue
+            await cleanupMergedBranch(pile, github, branchToMerge, trunk);
+            merged.push({
+              branch: branchToMerge,
+              prNumber: existingPr.number,
+              title: existingPr.title,
+            });
+            continue;
+          }
 
-        if (reasons.length > 0 && !force) {
-          setBlockingReasons(reasons);
-          if (options.json) {
-            console.log(
-              formatJson(
-                createResult(
-                  false,
-                  {
-                    prNumber: pr.number,
-                    blocking: reasons,
-                  },
-                  "PR cannot be merged"
+          // Find the open PR for this branch
+          const pr = await github.prs.findByBranch(branchToMerge);
+
+          if (!pr) {
+            if (options.json) {
+              console.log(
+                formatJson(
+                  createResult(false, null, `No open PR found for branch: ${branchToMerge}`)
                 )
-              )
-            );
-            process.exit(1);
-          }
-          setState("blocked");
-          return;
-        }
-
-        // Merge the PR
-        setState("merging");
-        await github.prs.merge(pr.number, method);
-
-        // Get children before cleaning up
-        const children = pile.state.getChildren(currentBranch);
-        const parent = pile.state.getParent(currentBranch);
-        const newParent = parent ?? trunk;
-
-        // Update children's parent and PR bases
-        if (children.length > 0) {
-          setState("updating_children");
-          for (const child of children) {
-            const childRel = pile.state.getBranchRelationship(child);
-            if (childRel) {
-              pile.state.setBranchRelationship(child, {
-                ...childRel,
-                parent: newParent,
-              });
-
-              // Update the child's PR base on GitHub
-              if (childRel.prNumber) {
-                try {
-                  await github.prs.update({
-                    number: childRel.prNumber,
-                    base: newParent,
-                  });
-                } catch {
-                  // PR might not exist or other error
-                }
-              }
+              );
+              process.exit(1);
             }
+            setError(`No open PR found for branch: ${branchToMerge}`);
+            setMergedPRs(merged);
+            setState("no_pr");
+            return;
           }
+
+          // Get full PR data with mergeable status
+          const fullPr = await github.prs.get(pr.number);
+
+          // Check for blocking reasons
+          const reasons = getBlockingReasons(fullPr);
+
+          if (reasons.length > 0 && !force) {
+            setBlockedPR({
+              branch: branchToMerge,
+              prNumber: pr.number,
+              title: fullPr.title,
+              reasons,
+            });
+            setMergedPRs(merged);
+            if (options.json) {
+              console.log(
+                formatJson(
+                  createResult(
+                    false,
+                    {
+                      merged,
+                      blockedAt: {
+                        branch: branchToMerge,
+                        prNumber: pr.number,
+                        blocking: reasons,
+                      },
+                    },
+                    `PR #${pr.number} cannot be merged`
+                  )
+                )
+              );
+              process.exit(1);
+            }
+            setState("blocked");
+            return;
+          }
+
+          // Merge the PR
+          setState("merging");
+          await github.prs.merge(pr.number, method);
+
+          merged.push({
+            branch: branchToMerge,
+            prNumber: pr.number,
+            title: fullPr.title,
+          });
+
+          // Clean up the merged branch
+          setState("cleaning");
+          await cleanupMergedBranch(pile, github, branchToMerge, trunk);
         }
 
-        // Clean up: remove tracking and switch to parent
-        setState("cleaning");
-        pile.state.removeBranchRelationship(currentBranch);
-
-        // Switch to parent branch
-        await pile.git.checkout(newParent);
-
-        // Delete the local branch
-        try {
-          await pile.git.deleteBranch(currentBranch, true);
-        } catch {
-          // Branch might still be checked out or other issue
-        }
-
-        // Fetch to update trunk
+        // Fetch and update trunk
         await pile.git.fetch(true);
-        if (newParent === trunk) {
-          try {
-            await pile.git.pull(trunk);
-          } catch {
-            // Might fail if not tracking
-          }
+        await pile.git.checkout(trunk);
+        try {
+          await pile.git.pull(trunk);
+        } catch {
+          // Might fail if not tracking
         }
+
+        setMergedPRs(merged);
 
         if (options.json) {
           console.log(
             formatJson(
               createResult(true, {
-                branch: currentBranch,
-                prNumber: pr.number,
+                merged: merged.map((m) => ({
+                  branch: m.branch,
+                  prNumber: m.prNumber,
+                })),
                 mergeMethod: method,
-                childrenUpdated: children.length,
               })
             )
           );
@@ -305,7 +320,7 @@ export function MergeCommand({
       }
     }
 
-    merge();
+    mergeStack();
   }, [options.json, force]);
 
   if (options.json) {
@@ -314,32 +329,52 @@ export function MergeCommand({
 
   switch (state) {
     case "checking":
-      return <Spinner label="Checking PR status..." />;
+      return <Spinner label="Checking stack..." />;
     case "merging":
-      return <Spinner label={`Merging PR #${prNumber} (${mergeMethod})...`} />;
-    case "updating_children":
-      return <Spinner label="Updating child branches..." />;
+      return <Spinner label={`Merging ${currentMerging}...`} />;
     case "cleaning":
-      return <Spinner label="Cleaning up..." />;
+      return <Spinner label={`Cleaning up ${currentMerging}...`} />;
     case "success":
       return (
         <Box flexDirection="column">
           <SuccessMessage>
-            Merged PR #{prNumber} for {mergedBranch}
+            Merged {mergedPRs.length} PR{mergedPRs.length !== 1 ? "s" : ""} in stack
           </SuccessMessage>
-          <Text color="gray">  Method: {mergeMethod}</Text>
-          <Text color="gray">  Branch deleted and children reparented</Text>
+          <Box flexDirection="column" marginTop={1}>
+            {mergedPRs.map((pr) => (
+              <Box key={pr.branch}>
+                <Text color="green">  ✓ </Text>
+                <Text>#{pr.prNumber} {pr.branch}</Text>
+              </Box>
+            ))}
+          </Box>
+          <Box marginTop={1}>
+            <Text color="gray">  Method: {mergeMethod}</Text>
+          </Box>
         </Box>
       );
     case "blocked":
       return (
         <Box flexDirection="column">
+          {mergedPRs.length > 0 && (
+            <Box flexDirection="column" marginBottom={1}>
+              <SuccessMessage>
+                Merged {mergedPRs.length} PR{mergedPRs.length !== 1 ? "s" : ""}
+              </SuccessMessage>
+              {mergedPRs.map((pr) => (
+                <Box key={pr.branch}>
+                  <Text color="green">  ✓ </Text>
+                  <Text>#{pr.prNumber} {pr.branch}</Text>
+                </Box>
+              ))}
+            </Box>
+          )}
           <WarningMessage>
-            PR #{prNumber} cannot be merged
+            PR #{blockedPR?.prNumber} cannot be merged
           </WarningMessage>
-          <Text color="gray">  {prTitle}</Text>
+          <Text color="gray">  {blockedPR?.branch}: {blockedPR?.title}</Text>
           <Box flexDirection="column" marginTop={1}>
-            {blockingReasons.map((reason, i) => {
+            {blockedPR?.reasons.map((reason, i) => {
               const { icon, color } = getReasonIcon(reason.type);
               return (
                 <Box key={i}>
@@ -360,8 +395,21 @@ export function MergeCommand({
     case "no_pr":
       return (
         <Box flexDirection="column">
-          <WarningMessage>No open PR for this branch</WarningMessage>
-          <Text color="gray">Run `pile submit` to create a PR first.</Text>
+          {mergedPRs.length > 0 && (
+            <Box flexDirection="column" marginBottom={1}>
+              <SuccessMessage>
+                Merged {mergedPRs.length} PR{mergedPRs.length !== 1 ? "s" : ""}
+              </SuccessMessage>
+              {mergedPRs.map((pr) => (
+                <Box key={pr.branch}>
+                  <Text color="green">  ✓ </Text>
+                  <Text>#{pr.prNumber} {pr.branch}</Text>
+                </Box>
+              ))}
+            </Box>
+          )}
+          <WarningMessage>{error || "No open PR for branch in stack"}</WarningMessage>
+          <Text color="gray">Run `pile submit -s` to create PRs for the stack.</Text>
         </Box>
       );
     case "no_github":
@@ -387,5 +435,53 @@ export function MergeCommand({
       return <ErrorMessage>{error}</ErrorMessage>;
     default:
       return <></>;
+  }
+}
+
+async function cleanupMergedBranch(
+  pile: PileInstance,
+  github: GitHubInstance,
+  branch: string,
+  trunk: string
+): Promise<void> {
+  // Get children before cleaning up
+  const children = pile.state.getChildren(branch);
+  const parent = pile.state.getParent(branch);
+  const newParent = parent ?? trunk;
+
+  // Update children's parent and PR bases
+  for (const child of children) {
+    const childRel = pile.state.getBranchRelationship(child);
+    if (childRel) {
+      pile.state.setBranchRelationship(child, {
+        ...childRel,
+        parent: newParent,
+      });
+
+      // Update the child's PR base on GitHub
+      if (childRel.prNumber) {
+        try {
+          await github.prs.update({
+            number: childRel.prNumber,
+            base: newParent,
+          });
+        } catch {
+          // PR might not exist or other error
+        }
+      }
+    }
+  }
+
+  // Remove tracking
+  pile.state.removeBranchRelationship(branch);
+
+  // Delete the local branch (if not currently on it)
+  try {
+    const current = await pile.git.getCurrentBranch();
+    if (current !== branch) {
+      await pile.git.deleteBranch(branch, true);
+    }
+  } catch {
+    // Branch might not exist or other issue
   }
 }
