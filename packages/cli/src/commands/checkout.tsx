@@ -26,6 +26,7 @@ type State =
   | "selecting"
   | "checking_out"
   | "success"
+  | "already_on_branch"
   | "aborted"
   | "not_initialized"
   | "error";
@@ -163,8 +164,10 @@ export function CheckoutCommand({
       } else if (key.return) {
         const selected = branches[selectedIndex];
         if (selected) {
-          if (selected.isCurrent || selected.isTrunk) {
-            exit();
+          if (selected.isCurrent) {
+            // Already on this branch
+            setState("already_on_branch");
+            setTimeout(() => exit(), 100);
           } else if (pileInstance) {
             setState("checking_out");
             pileInstance.git
@@ -294,6 +297,8 @@ export function CheckoutCommand({
           })}
         </Box>
       );
+    case "already_on_branch":
+      return <Text color="gray">Already on this branch</Text>;
     case "aborted":
       return <Text color="gray">Checkout aborted</Text>;
     case "not_initialized":
