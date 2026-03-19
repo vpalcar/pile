@@ -41,11 +41,13 @@ program
 
 // create command
 program
-  .command("create <name>")
+  .command("create [name]")
   .alias("c")
   .description("Create a new stacked branch")
-  .option("-m, --message <message>", "Commit message for staged changes")
+  .requiredOption("-m, --message <message>", "Commit message (required)")
   .option("-a, --all", "Stage all changes before creating branch")
+  .option("-u, --update", "Stage all tracked file changes (git add -u)")
+  .option("-i, --insert", "Insert branch between current branch and its children")
   .action((name, opts) => {
     const globalOpts = program.opts();
     render(
@@ -53,6 +55,8 @@ program
         name,
         message: opts.message,
         all: opts.all,
+        update: opts.update,
+        insert: opts.insert,
         options: { json: globalOpts.json },
       })
     );
