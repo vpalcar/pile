@@ -225,7 +225,7 @@ export function RestackCommand({
           <WarningMessage>Rebase conflict in {currentBranch}</WarningMessage>
           <Box flexDirection="column" marginTop={1}>
             <Text>Resolve the conflicts, then run:</Text>
-            <Text color="cyan">{"  "}git add &lt;files&gt;</Text>
+            <Text color="cyan">{"  "}pile add &lt;files&gt;</Text>
             <Text color="cyan">{"  "}pile restack --continue</Text>
           </Box>
           <Box marginTop={1}>
