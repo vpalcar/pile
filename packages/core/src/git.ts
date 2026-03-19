@@ -143,6 +143,14 @@ export class GitOperations {
     }
   }
 
+  async stash(): Promise<void> {
+    await this.git.stash();
+  }
+
+  async stashPop(): Promise<void> {
+    await this.git.stash(["pop"]);
+  }
+
   /**
    * Find the merge-base (common ancestor) between two refs.
    * This is useful as a fallback when the stored base commit no longer exists.
