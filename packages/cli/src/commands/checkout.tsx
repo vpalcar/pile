@@ -26,6 +26,7 @@ type State =
   | "selecting"
   | "checking_out"
   | "success"
+  | "aborted"
   | "not_initialized"
   | "error";
 
@@ -180,7 +181,8 @@ export function CheckoutCommand({
           }
         }
       } else if (input === "q" || key.escape) {
-        exit();
+        setState("aborted");
+        setTimeout(() => exit(), 100);
       }
     },
     { isActive: state === "selecting" }
@@ -292,6 +294,8 @@ export function CheckoutCommand({
           })}
         </Box>
       );
+    case "aborted":
+      return <Text color="gray">Checkout aborted</Text>;
     case "not_initialized":
       return (
         <ErrorMessage>Pile not initialized. Run `pile init` first.</ErrorMessage>
