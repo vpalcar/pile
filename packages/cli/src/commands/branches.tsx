@@ -98,7 +98,8 @@ export function BranchesCommand({
       // Add children first (they appear above in the inverted tree)
       for (let index = 0; index < children.length; index++) {
         const child = children[index];
-        const childDepth = hasMultipleChildren && index > 0 ? depth + 1 : depth;
+        // Each sibling gets its own column (depth increases for each)
+        const childDepth = hasMultipleChildren ? depth + index : depth;
         addBranchAndChildren(child, childDepth);
       }
 
