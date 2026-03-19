@@ -3,13 +3,13 @@ import { Box, Text } from "ink";
 import { createPile } from "@pile/core";
 import { createGitHub } from "@pile/github";
 import { Spinner } from "../components/Spinner.js";
+import { Link } from "../components/Link.js";
 import {
   SuccessMessage,
   ErrorMessage,
   WarningMessage,
   InfoMessage,
 } from "../components/Message.js";
-import { Link } from "../components/Link.js";
 import { OutputOptions, formatJson, createResult } from "../utils/output.js";
 import { openUrl } from "../utils/browser.js";
 
@@ -72,7 +72,6 @@ export function SubmitCommand({
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<PRResult[]>([]);
   const [queuedResults, setQueuedResults] = useState<QueuedResult[]>([]);
-  const [shouldOpenPR, setShouldOpenPR] = useState(false);
 
   useEffect(() => {
     async function submit() {
@@ -92,11 +91,8 @@ export function SubmitCommand({
 
         const config = pile.state.getConfig();
         const trunk = config?.trunk ?? "main";
+        const shouldOpenPR = open || config?.autoOpenPR;
         const current = await pile.git.getCurrentBranch();
-
-        // Check if we should auto-open PR links
-        const autoOpen = open || config?.autoOpenPR;
-        setShouldOpenPR(autoOpen ?? false);
 
         if (current === trunk) {
           if (options.json) {
@@ -223,6 +219,11 @@ export function SubmitCommand({
                 prUrl: pr.html_url,
                 created: true,
               });
+
+              // Open newly created PR in browser if requested
+              if (shouldOpenPR) {
+                openUrl(pr.html_url);
+              }
             }
           } catch (prErr) {
             if (isNetworkError(prErr)) {
@@ -251,13 +252,6 @@ export function SubmitCommand({
 
         setResults(prResults);
         setQueuedResults(queued);
-
-        // Open PR URLs in browser if configured
-        if (autoOpen && prResults.length > 0) {
-          for (const pr of prResults) {
-            openUrl(pr.prUrl);
-          }
-        }
 
         if (options.json) {
           console.log(
@@ -309,7 +303,10 @@ export function SubmitCommand({
                 {result.created ? "Created" : "Updated"} PR #{result.prNumber} for{" "}
                 {result.branch}
               </SuccessMessage>
-              <Text>  <Link url={result.prUrl}>{result.prUrl}</Link></Text>
+              <Box>
+                <Text>  </Text>
+                <Link url={result.prUrl}>{result.prUrl}</Link>
+              </Box>
             </Box>
           ))}
           {queuedResults.length > 0 && (

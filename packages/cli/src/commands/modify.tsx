@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Box, Text, useInput, useApp } from "ink";
 import { createPile, PileInstance } from "@pile/core";
 import { Spinner } from "../components/Spinner.js";
-import { SuccessMessage, ErrorMessage } from "../components/Message.js";
+import { SuccessMessage, ErrorMessage, WarningMessage } from "../components/Message.js";
 import { OutputOptions, formatJson, createResult } from "../utils/output.js";
 
 export interface ModifyCommandProps {
@@ -84,7 +84,7 @@ export function ModifyCommand({
         const hasChanges = await pile.git.hasUncommittedChanges();
 
         // Check for changes
-        if (stagedFiles.length === 0) {
+        if (stagedFiles.length === 0 && !message) {
           if (!hasChanges) {
             if (options.json) {
               console.log(
@@ -138,7 +138,7 @@ export function ModifyCommand({
 
       // Recheck staged files after staging
       const stagedFiles = await pile.git.getStagedFiles();
-      if (stagedFiles.length === 0) {
+      if (stagedFiles.length === 0 && !message) {
         if (options.json) {
           console.log(
             formatJson(createResult(false, null, "No changes to commit"))
@@ -232,23 +232,21 @@ export function ModifyCommand({
       );
     case "no_changes":
       return (
-        <Box flexDirection="column">
-          <ErrorMessage>No changes to commit</ErrorMessage>
-          <Text color="gray">Stage changes or use -a/--all to stage all changes</Text>
-        </Box>
+        <WarningMessage>
+          No changes to amend. Stage changes with -a or -u, or provide a new message with -m.
+        </WarningMessage>
       );
     case "on_trunk":
       return (
-        <ErrorMessage>Cannot modify trunk branch. Create a branch first.</ErrorMessage>
+        <WarningMessage>
+          Cannot modify trunk branch. Create a stacked branch first.
+        </WarningMessage>
       );
     case "aborted":
       return <Text color="gray">Aborted</Text>;
     case "not_initialized":
       return (
-        <Box flexDirection="column">
-          <ErrorMessage>Pile not initialized</ErrorMessage>
-          <Text color="gray">Run `pile init` first</Text>
-        </Box>
+        <ErrorMessage>Pile not initialized. Run `pile init` first.</ErrorMessage>
       );
     case "error":
       return <ErrorMessage>{error}</ErrorMessage>;

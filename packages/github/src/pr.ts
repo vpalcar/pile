@@ -62,7 +62,7 @@ export class PROperations {
   }
 
   /**
-   * Find PR for a specific branch
+   * Find PR for a specific branch (open only)
    */
   async findByBranch(branchName: string): Promise<PullRequest | null> {
     const { data } = await this.client.api.pulls.list({
@@ -76,6 +76,25 @@ export class PROperations {
       return null;
     }
 
+    return this.enrichPR(data[0]);
+  }
+
+  /**
+   * Find PR for a specific branch (any state: open, closed, merged)
+   */
+  async findByBranchAnyState(branchName: string): Promise<PullRequest | null> {
+    const { data } = await this.client.api.pulls.list({
+      owner: this.client.repoOwner,
+      repo: this.client.repoName,
+      head: `${this.client.repoOwner}:${branchName}`,
+      state: "all",
+    });
+
+    if (data.length === 0) {
+      return null;
+    }
+
+    // Return the most recent PR
     return this.enrichPR(data[0]);
   }
 
@@ -202,6 +221,9 @@ export class PROperations {
     const reviews = await this.getReviews(pr.number);
     const checks = await this.getCheckStatus(pr.head.sha);
 
+    // If merged_at exists, the PR was merged (list endpoint may not include merged field)
+    const isMerged = pr.merged === true || pr.merged_at != null;
+
     return {
       number: pr.number,
       title: pr.title,
@@ -213,7 +235,7 @@ export class PROperations {
       html_url: pr.html_url,
       mergeable: pr.mergeable ?? null,
       mergeable_state: pr.mergeable_state ?? "",
-      merged: pr.merged ?? false,
+      merged: isMerged,
       merged_at: pr.merged_at ?? null,
       created_at: pr.created_at,
       updated_at: pr.updated_at,

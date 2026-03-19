@@ -51,7 +51,7 @@ export function InitCommand({
               formatJson(
                 createResult(
                   true,
-                  { trunk: config?.trunk },
+                  { trunk: config?.trunk, autoOpenPR: config?.autoOpenPR },
                   undefined,
                   "Already initialized"
                 )
@@ -95,7 +95,12 @@ export function InitCommand({
         if (options.json) {
           console.log(
             formatJson(
-              createResult(true, { trunk: defaultTrunk }, undefined, "Initialized")
+              createResult(
+                true,
+                { trunk: defaultTrunk, autoOpenPR: openPr ?? false },
+                undefined,
+                "Initialized"
+              )
             )
           );
           process.exit(0);
@@ -114,7 +119,7 @@ export function InitCommand({
     }
 
     init();
-  }, [trunk, options.json]);
+  }, [trunk, openPr, options.json]);
 
   if (options.json) {
     return <></>;

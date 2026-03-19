@@ -25,6 +25,7 @@ export {
   outputResult,
   type OutputOptions,
 } from "./utils/output.js";
+export { openUrl } from "./utils/browser.js";
 
 // Commands
 export { InitCommand, type InitCommandProps } from "./commands/init.js";
@@ -49,3 +50,7 @@ export {
   ModifyCommand,
   type ModifyCommandProps,
 } from "./commands/modify.js";
+export {
+  StatusCommand,
+  type StatusCommandProps,
+} from "./commands/status.js";
