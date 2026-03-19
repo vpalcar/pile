@@ -25,6 +25,12 @@ interface QueueResult {
   failed: number;
 }
 
+interface CleanedBranch {
+  branch: string;
+  reason: "merged" | "closed";
+  prNumber?: number;
+}
+
 type State =
   | "checking"
   | "processing_queue"
@@ -32,6 +38,7 @@ type State =
   | "updating_trunk"
   | "restacking"
   | "refreshing_prs"
+  | "cleaning_branches"
   | "success"
   | "conflict"
   | "not_initialized"
@@ -43,6 +50,7 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
   const [restackResults, setRestackResults] = useState<RestackResult[]>([]);
   const [conflictBranch, setConflictBranch] = useState<string | null>(null);
   const [queueResult, setQueueResult] = useState<QueueResult | null>(null);
+  const [cleanedBranches, setCleanedBranches] = useState<CleanedBranch[]>([]);
 
   useEffect(() => {
     async function sync() {
@@ -62,6 +70,8 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
 
         const repoRoot = await pile.git.getRepoRoot();
         const github = await createGitHub(`${repoRoot}/.pile`);
+        const trunk = pile.stack.getTrunk();
+        const currentBranch = await pile.git.getCurrentBranch();
 
         // Process pending operations if GitHub is available
         if (github && pile.state.hasPendingOperations()) {
@@ -120,21 +130,97 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
           return;
         }
 
-        // Refresh PR cache
+        // Refresh PR cache and check for merged/closed branches
         setState("refreshing_prs");
+        const cleaned: CleanedBranch[] = [];
+
         if (github) {
           const trackedBranches = pile.stack.getAllTrackedBranches();
+          const branchesToClean: Array<{ branch: string; reason: "merged" | "closed"; prNumber?: number; parent: string | null }> = [];
+
           for (const branch of trackedBranches) {
             try {
-              const pr = await github.prs.findByBranch(branch);
+              // Check for open PRs first
+              let pr = await github.prs.findByBranch(branch);
+
               if (pr) {
+                // PR exists and is open
                 github.cache.cachePR(pr);
+              } else {
+                // Check if PR was merged or closed
+                pr = await github.prs.findByBranchAnyState(branch);
+
+                if (pr) {
+                  if (pr.merged) {
+                    const parent = pile.state.getParent(branch);
+                    branchesToClean.push({
+                      branch,
+                      reason: "merged",
+                      prNumber: pr.number,
+                      parent
+                    });
+                  } else if (pr.state === "closed") {
+                    const parent = pile.state.getParent(branch);
+                    branchesToClean.push({
+                      branch,
+                      reason: "closed",
+                      prNumber: pr.number,
+                      parent
+                    });
+                  }
+                }
               }
             } catch {
               // Ignore errors when refreshing individual PRs
             }
           }
+
+          // Clean up merged/closed branches
+          if (branchesToClean.length > 0) {
+            setState("cleaning_branches");
+
+            for (const { branch, reason, prNumber, parent } of branchesToClean) {
+              try {
+                // Get children of this branch before deleting
+                const children = pile.state.getChildren(branch);
+
+                // Reparent children to this branch's parent
+                const newParent = parent ?? trunk;
+                for (const child of children) {
+                  const childRel = pile.state.getBranchRelationship(child);
+                  if (childRel) {
+                    pile.state.setBranchRelationship(child, {
+                      ...childRel,
+                      parent: newParent,
+                    });
+                  }
+                }
+
+                // If we're on this branch, switch to trunk first
+                const nowCurrentBranch = await pile.git.getCurrentBranch();
+                if (nowCurrentBranch === branch) {
+                  await pile.git.checkout(trunk);
+                }
+
+                // Remove from pile tracking
+                pile.state.removeBranchRelationship(branch);
+
+                // Delete the local branch
+                try {
+                  await pile.git.deleteBranch(branch, true);
+                } catch {
+                  // Branch might not exist locally (only remote)
+                }
+
+                cleaned.push({ branch, reason, prNumber });
+              } catch {
+                // Ignore errors when cleaning individual branches
+              }
+            }
+          }
         }
+
+        setCleanedBranches(cleaned);
 
         if (options.json) {
           console.log(
@@ -142,6 +228,7 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
               createResult(true, {
                 restacked: result.restacked,
                 queue: queueResult,
+                cleaned,
               })
             )
           );
@@ -180,6 +267,8 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
       return <Spinner label="Restacking branches..." />;
     case "refreshing_prs":
       return <Spinner label="Refreshing PR statuses..." />;
+    case "cleaning_branches":
+      return <Spinner label="Cleaning up merged/closed branches..." />;
     case "success":
       return (
         <Box flexDirection="column">
@@ -198,6 +287,19 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
                 )}
               </Box>
             )}
+          {cleanedBranches.length > 0 && (
+            <Box flexDirection="column" marginTop={1}>
+              <Text color="gray">Cleaned up branches:</Text>
+              {cleanedBranches.map((item) => (
+                <Text key={item.branch} color="magenta">
+                  {"  "}✓ {item.branch}{" "}
+                  <Text color="gray">
+                    ({item.reason}{item.prNumber ? ` PR #${item.prNumber}` : ""})
+                  </Text>
+                </Text>
+              ))}
+            </Box>
+          )}
           {restackResults.length > 0 && (
             <Box flexDirection="column" marginTop={1}>
               <Text color="gray">Restacked branches:</Text>
@@ -212,8 +314,8 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
               ))}
             </Box>
           )}
-          {restackResults.length === 0 && (
-            <Text color="gray">No branches to restack.</Text>
+          {restackResults.length === 0 && cleanedBranches.length === 0 && (
+            <Text color="gray">No branches to restack or clean.</Text>
           )}
         </Box>
       );
