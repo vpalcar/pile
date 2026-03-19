@@ -16,6 +16,8 @@ import { StatusCommand } from "../commands/status.js";
 import { MergeCommand } from "../commands/merge.js";
 import { RestackCommand } from "../commands/restack.js";
 import { AddCommand } from "../commands/add.js";
+import { MoveCommand } from "../commands/move.js";
+import { RenameCommand } from "../commands/rename.js";
 
 const program = new Command();
 
@@ -331,6 +333,37 @@ program
       React.createElement(RestackCommand, {
         continue: opts.continue,
         abort: opts.abort,
+        options: { json: globalOpts.json },
+      })
+    );
+  });
+
+// move command
+program
+  .command("move")
+  .alias("mv")
+  .description("Move current branch onto a different parent")
+  .option("-o, --onto <branch>", "Target parent branch")
+  .action((opts) => {
+    const globalOpts = program.opts();
+    render(
+      React.createElement(MoveCommand, {
+        onto: opts.onto,
+        options: { json: globalOpts.json },
+      })
+    );
+  });
+
+// rename command
+program
+  .command("rename <new-name>")
+  .alias("rn")
+  .description("Rename the current branch")
+  .action((newName) => {
+    const globalOpts = program.opts();
+    render(
+      React.createElement(RenameCommand, {
+        newName,
         options: { json: globalOpts.json },
       })
     );
