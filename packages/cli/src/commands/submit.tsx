@@ -1,0 +1,354 @@
+import React, { useState, useEffect } from "react";
+import { Box, Text } from "ink";
+import { createPile } from "@pile/core";
+import { createGitHub } from "@pile/github";
+import { Spinner } from "../components/Spinner.js";
+import {
+  SuccessMessage,
+  ErrorMessage,
+  WarningMessage,
+  InfoMessage,
+} from "../components/Message.js";
+import { OutputOptions, formatJson, createResult } from "../utils/output.js";
+
+export interface SubmitCommandProps {
+  stack?: boolean;
+  draft?: boolean;
+  title?: string;
+  reviewers?: string[];
+  options: OutputOptions;
+}
+
+interface PRResult {
+  branch: string;
+  prNumber: number;
+  prUrl: string;
+  created: boolean;
+}
+
+interface QueuedResult {
+  branch: string;
+  operation: string;
+}
+
+type State =
+  | "checking"
+  | "pushing"
+  | "creating_pr"
+  | "updating_pr"
+  | "submitting_stack"
+  | "success"
+  | "queued"
+  | "no_github"
+  | "not_initialized"
+  | "on_trunk"
+  | "error";
+
+function isNetworkError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const message = err.message.toLowerCase();
+  return (
+    message.includes("network") ||
+    message.includes("enotfound") ||
+    message.includes("econnrefused") ||
+    message.includes("timeout") ||
+    message.includes("socket") ||
+    message.includes("unable to resolve")
+  );
+}
+
+export function SubmitCommand({
+  stack,
+  draft,
+  title,
+  reviewers,
+  options,
+}: SubmitCommandProps): React.ReactElement {
+  const [state, setState] = useState<State>("checking");
+  const [error, setError] = useState<string | null>(null);
+  const [results, setResults] = useState<PRResult[]>([]);
+  const [queuedResults, setQueuedResults] = useState<QueuedResult[]>([]);
+
+  useEffect(() => {
+    async function submit() {
+      try {
+        const pile = await createPile();
+
+        if (!pile.state.isInitialized()) {
+          if (options.json) {
+            console.log(
+              formatJson(createResult(false, null, "Pile not initialized"))
+            );
+            process.exit(1);
+          }
+          setState("not_initialized");
+          return;
+        }
+
+        const config = pile.state.getConfig();
+        const trunk = config?.trunk ?? "main";
+        const current = await pile.git.getCurrentBranch();
+
+        if (current === trunk) {
+          if (options.json) {
+            console.log(
+              formatJson(
+                createResult(false, null, "Cannot submit from trunk branch")
+              )
+            );
+            process.exit(1);
+          }
+          setState("on_trunk");
+          return;
+        }
+
+        const repoRoot = await pile.git.getRepoRoot();
+        const github = await createGitHub(`${repoRoot}/.pile`);
+
+        if (!github) {
+          if (options.json) {
+            console.log(
+              formatJson(
+                createResult(
+                  false,
+                  null,
+                  "GitHub not configured. Set GITHUB_TOKEN or run `gh auth login`"
+                )
+              )
+            );
+            process.exit(1);
+          }
+          setState("no_github");
+          return;
+        }
+
+        // Determine branches to submit
+        const branchesToSubmit: string[] = [];
+        if (stack) {
+          setState("submitting_stack");
+          let branch = current;
+          const stackBranches = [branch];
+          let parent = pile.state.getParent(branch);
+          while (parent && parent !== trunk) {
+            stackBranches.unshift(parent);
+            parent = pile.state.getParent(parent);
+          }
+          branchesToSubmit.push(...stackBranches);
+        } else {
+          branchesToSubmit.push(current);
+        }
+
+        const prResults: PRResult[] = [];
+        const queued: QueuedResult[] = [];
+
+        for (const branch of branchesToSubmit) {
+          // Push branch
+          setState("pushing");
+          try {
+            await pile.git.pushSetUpstream(branch);
+          } catch {
+            try {
+              await pile.git.push(branch, true);
+            } catch (pushErr) {
+              if (isNetworkError(pushErr)) {
+                pile.state.queueOperation({
+                  type: "push",
+                  payload: { branch, force: true },
+                });
+                queued.push({ branch, operation: "create_pr" });
+                continue;
+              }
+              throw new Error(`Failed to push ${branch}: ${pushErr}`);
+            }
+          }
+
+          // Create or update PR
+          const parent = pile.state.getParent(branch);
+          const baseBranch = parent ?? trunk;
+
+          try {
+            const existingPR = await github.prs.findByBranch(branch);
+
+            if (existingPR) {
+              setState("updating_pr");
+              if (existingPR.base.ref !== baseBranch) {
+                await github.prs.update({
+                  number: existingPR.number,
+                  base: baseBranch,
+                });
+              }
+              github.cache.cachePR(existingPR);
+              pile.stack.setPRInfo(branch, existingPR.number, existingPR.html_url);
+              prResults.push({
+                branch,
+                prNumber: existingPR.number,
+                prUrl: existingPR.html_url,
+                created: false,
+              });
+            } else {
+              setState("creating_pr");
+              const prTitle =
+                title ?? branch.split("/").pop()?.replace(/-/g, " ") ?? branch;
+              const stackInfo = stack
+                ? `Part of a stack based on \`${trunk}\``
+                : "";
+              const description = stackInfo;
+
+              const pr = await github.prs.create({
+                title: prTitle,
+                body: description,
+                head: branch,
+                base: baseBranch,
+                draft: draft ?? false,
+              });
+
+              if (reviewers && reviewers.length > 0) {
+                await github.prs.requestReviewers(pr.number, reviewers);
+              }
+
+              github.cache.cachePR(pr);
+              pile.stack.setPRInfo(branch, pr.number, pr.html_url);
+              prResults.push({
+                branch,
+                prNumber: pr.number,
+                prUrl: pr.html_url,
+                created: true,
+              });
+            }
+          } catch (prErr) {
+            if (isNetworkError(prErr)) {
+              const prTitle =
+                title ?? branch.split("/").pop()?.replace(/-/g, " ") ?? branch;
+              const stackInfo = stack
+                ? `Part of a stack based on \`${trunk}\``
+                : "";
+              pile.state.queueOperation({
+                type: "create_pr",
+                payload: {
+                  branch,
+                  title: prTitle,
+                  body: stackInfo,
+                  base: baseBranch,
+                  draft: draft ?? false,
+                  reviewers,
+                },
+              });
+              queued.push({ branch, operation: "create_pr" });
+            } else {
+              throw prErr;
+            }
+          }
+        }
+
+        setResults(prResults);
+        setQueuedResults(queued);
+
+        if (options.json) {
+          console.log(
+            formatJson(createResult(true, { prs: prResults, queued }))
+          );
+          process.exit(0);
+        }
+
+        if (queued.length > 0 && prResults.length === 0) {
+          setState("queued");
+        } else {
+          setState("success");
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (options.json) {
+          console.log(formatJson(createResult(false, null, message)));
+          process.exit(1);
+        }
+        setError(message);
+        setState("error");
+      }
+    }
+
+    submit();
+  }, [stack, draft, title, reviewers, options.json]);
+
+  if (options.json) {
+    return <></>;
+  }
+
+  switch (state) {
+    case "checking":
+      return <Spinner label="Checking repository state..." />;
+    case "pushing":
+      return <Spinner label="Pushing branch..." />;
+    case "creating_pr":
+      return <Spinner label="Creating pull request..." />;
+    case "updating_pr":
+      return <Spinner label="Updating pull request..." />;
+    case "submitting_stack":
+      return <Spinner label="Submitting stack..." />;
+    case "success":
+      return (
+        <Box flexDirection="column">
+          {results.map((result) => (
+            <Box key={result.branch} flexDirection="column">
+              <SuccessMessage>
+                {result.created ? "Created" : "Updated"} PR #{result.prNumber} for{" "}
+                {result.branch}
+              </SuccessMessage>
+              <Text color="gray">  {result.prUrl}</Text>
+            </Box>
+          ))}
+          {queuedResults.length > 0 && (
+            <Box flexDirection="column" marginTop={1}>
+              <InfoMessage>Queued for later (offline):</InfoMessage>
+              {queuedResults.map((q) => (
+                <Text key={q.branch} color="yellow">
+                  {"  "}
+                  {q.branch}
+                </Text>
+              ))}
+              <Text color="gray">
+                {"  "}Run `pile sync` when online to process.
+              </Text>
+            </Box>
+          )}
+        </Box>
+      );
+    case "queued":
+      return (
+        <Box flexDirection="column">
+          <InfoMessage>Operations queued (offline mode)</InfoMessage>
+          {queuedResults.map((q) => (
+            <Text key={q.branch} color="yellow">
+              {"  "}
+              {q.branch} ({q.operation})
+            </Text>
+          ))}
+          <Text color="gray">
+            Run `pile sync` when online to process pending operations.
+          </Text>
+        </Box>
+      );
+    case "no_github":
+      return (
+        <Box flexDirection="column">
+          <ErrorMessage>GitHub not configured</ErrorMessage>
+          <Text color="gray">
+            Set GITHUB_TOKEN environment variable or run `gh auth login`
+          </Text>
+        </Box>
+      );
+    case "not_initialized":
+      return (
+        <ErrorMessage>Pile not initialized. Run `pile init` first.</ErrorMessage>
+      );
+    case "on_trunk":
+      return (
+        <WarningMessage>
+          Cannot submit from trunk branch. Create a branch first.
+        </WarningMessage>
+      );
+    case "error":
+      return <ErrorMessage>{error}</ErrorMessage>;
+    default:
+      return <></>;
+  }
+}
