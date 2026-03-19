@@ -250,41 +250,43 @@ export function CheckoutCommand({
             }
 
             if (isTrunk) {
+              const trunkColor = isSelected ? "cyan" : branch.isCurrent ? "blue" : undefined;
               return (
                 <Box key={branch.name}>
-                  <Text color={isSelected ? "cyan" : "gray"}>
+                  <Text color={isSelected ? "cyan" : undefined}>
                     {isSelected ? "› " : "  "}
                   </Text>
-                  <Text color={isSelected ? "cyan" : "gray"}>○</Text>
-                  <Text color="gray">{maxDepth > 0 ? "─┘" : "  "}</Text>
+                  <Text color={trunkColor}>○</Text>
+                  <Text dimColor>{maxDepth > 0 ? "─┘" : "  "}</Text>
                   <Text>{" ".repeat(maxDepth)} </Text>
-                  <Text color={isSelected ? "cyan" : "gray"} bold={isSelected}>
+                  <Text color={trunkColor} bold={isSelected || branch.isCurrent}>
                     {branch.name}
                   </Text>
+                  {branch.isCurrent && <Text color="blue"> (current)</Text>}
                 </Box>
               );
             }
 
-            const iconColor = isSelected
-              ? "yellow"
+            const branchColor = isSelected
+              ? "cyan"
               : branch.isCurrent
                 ? "blue"
-                : "gray";
+                : undefined;
 
             return (
               <Box key={branch.name}>
-                <Text color={isSelected ? "cyan" : "gray"}>
+                <Text color={isSelected ? "cyan" : undefined}>
                   {isSelected ? "› " : "  "}
                 </Text>
-                <Text color="gray">{prefix}</Text>
-                <Text color={iconColor} bold={isSelected || branch.isCurrent}>
+                <Text dimColor>{prefix}</Text>
+                <Text color={branchColor} bold={isSelected || branch.isCurrent}>
                   {status.icon}
                 </Text>
                 <Text>{" ".repeat(maxDepth - branch.depth + 2)} </Text>
-                <Text color={isSelected ? "cyan" : "gray"} bold={isSelected}>
+                <Text color={branchColor} bold={isSelected || branch.isCurrent}>
                   {branch.name}
                 </Text>
-                {branch.isCurrent && <Text color="gray"> (current)</Text>}
+                {branch.isCurrent && <Text color="blue"> (current)</Text>}
               </Box>
             );
           })}
