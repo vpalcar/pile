@@ -255,15 +255,25 @@ export function CheckoutCommand({
             }
 
             if (isTrunk) {
+              // Build the horizontal line connecting all branches
+              let trunkLine = "";
+              if (maxDepth > 0) {
+                for (let d = 0; d < maxDepth; d++) {
+                  trunkLine += "─┴";
+                }
+                trunkLine += "─┘";
+              }
+
               const trunkColor = isSelected ? "cyan" : branch.isCurrent ? "blue" : undefined;
+
               return (
                 <Box key={branch.name}>
                   <Text color={isSelected ? "cyan" : undefined}>
                     {isSelected ? "› " : "  "}
                   </Text>
                   <Text color={trunkColor}>○</Text>
-                  <Text dimColor>{maxDepth > 0 ? "─┘" : "  "}</Text>
-                  <Text>{" ".repeat(maxDepth)} </Text>
+                  <Text dimColor>{trunkLine}</Text>
+                  <Text> </Text>
                   <Text color={trunkColor} bold={isSelected || branch.isCurrent}>
                     {branch.name}
                   </Text>
