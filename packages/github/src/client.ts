@@ -114,3 +114,42 @@ export async function getGitHubConfig(repoPath?: string): Promise<GitHubConfig |
 export function createGitHubClient(config: GitHubConfig): GitHubClient {
   return new GitHubClient(config);
 }
+
+export interface CreateRepoOptions {
+  name: string;
+  description?: string;
+  private?: boolean;
+}
+
+export interface CreateRepoResult {
+  owner: string;
+  repo: string;
+  url: string;
+  sshUrl: string;
+  httpsUrl: string;
+}
+
+/**
+ * Create a new GitHub repository
+ */
+export async function createGitHubRepo(
+  token: string,
+  options: CreateRepoOptions
+): Promise<CreateRepoResult> {
+  const octokit = new Octokit({ auth: token });
+
+  const { data } = await octokit.repos.createForAuthenticatedUser({
+    name: options.name,
+    description: options.description,
+    private: options.private ?? false,
+    auto_init: false,
+  });
+
+  return {
+    owner: data.owner.login,
+    repo: data.name,
+    url: data.html_url,
+    sshUrl: data.ssh_url,
+    httpsUrl: data.clone_url,
+  };
+}
