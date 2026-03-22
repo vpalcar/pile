@@ -119,6 +119,28 @@ export function SubmitCommand({
         }
 
         const repoRoot = await pile.git.getRepoRoot();
+
+        // Check if there's a remote configured
+        const remote = await pile.git.getRemote();
+
+        if (!remote) {
+          if (options.json) {
+            console.log(
+              formatJson(
+                createResult(
+                  false,
+                  null,
+                  "No git remote configured. Run `pile init` to set up GitHub."
+                )
+              )
+            );
+            process.exit(1);
+          }
+          setError("No git remote configured. Run `pile init` to set up GitHub.");
+          setState("error");
+          return;
+        }
+
         const github = await createGitHub(`${repoRoot}/.pile`);
 
         if (!github) {
@@ -328,7 +350,15 @@ export function SubmitCommand({
           setState("success");
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        let message = err instanceof Error ? err.message : String(err);
+
+        // Provide helpful error messages for common issues
+        if (message.includes("base") && message.includes("invalid")) {
+          message = `Base branch "${trunk}" doesn't exist on GitHub. Push it first with: git push -u origin ${trunk}`;
+        } else if (message.includes("Repository not found") || message.includes("Not Found")) {
+          message = "Repository not found on GitHub. Make sure the remote is configured correctly.";
+        }
+
         if (options.json) {
           console.log(formatJson(createResult(false, null, message)));
           process.exit(1);
