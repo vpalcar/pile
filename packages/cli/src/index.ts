@@ -58,3 +58,19 @@ export {
   MergeCommand,
   type MergeCommandProps,
 } from "./commands/merge.js";
+export {
+  CloseCommand,
+  type CloseCommandProps,
+} from "./commands/close.js";
+export {
+  EditCommand,
+  type EditCommandProps,
+} from "./commands/edit.js";
+export {
+  RequestCommand,
+  type RequestCommandProps,
+} from "./commands/request.js";
+export {
+  ReviewCommand,
+  type ReviewCommandProps,
+} from "./commands/review.js";

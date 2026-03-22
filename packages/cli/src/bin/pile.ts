@@ -18,6 +18,11 @@ import { RestackCommand } from "../commands/restack.js";
 import { AddCommand } from "../commands/add.js";
 import { MoveCommand } from "../commands/move.js";
 import { RenameCommand } from "../commands/rename.js";
+import { CloseCommand } from "../commands/close.js";
+import { EditCommand } from "../commands/edit.js";
+import { RequestCommand } from "../commands/request.js";
+import { ReviewCommand } from "../commands/review.js";
+import { getSecretPileMessage, getPileWisdom } from "../utils/fun.js";
 
 const program = new Command();
 
@@ -366,6 +371,138 @@ program
         options: { json: globalOpts.json },
       }),
     );
+  });
+
+// close command
+program
+  .command("close")
+  .description("Close the current branch's PR without merging")
+  .option("--reopen", "Reopen a closed PR")
+  .action((opts) => {
+    const globalOpts = program.opts();
+    render(
+      React.createElement(CloseCommand, {
+        reopen: opts.reopen,
+        options: { json: globalOpts.json },
+      }),
+    );
+  });
+
+// edit command
+program
+  .command("edit")
+  .description("Edit the current branch's PR metadata")
+  .option("-t, --title <title>", "Update PR title")
+  .option("-b, --body [body]", "Update PR body (use '-' for stdin, omit value for editor)")
+  .option("--draft", "Convert PR to draft")
+  .option("--ready", "Mark PR as ready for review")
+  .option("--labels <labels>", "Set labels (comma-separated, replaces existing)")
+  .option("--add-labels <labels>", "Add labels (comma-separated, keeps existing)")
+  .option("--assignees <assignees>", "Set assignees (comma-separated)")
+  .option("--milestone <milestone>", "Set milestone")
+  .action(async (opts) => {
+    const globalOpts = program.opts();
+
+    // Handle stdin for body
+    let body = opts.body;
+    if (body === "-") {
+      // Read from stdin
+      let data = "";
+      process.stdin.setEncoding("utf8");
+      for await (const chunk of process.stdin) {
+        data += chunk;
+      }
+      body = data;
+    }
+
+    render(
+      React.createElement(EditCommand, {
+        title: opts.title,
+        body: body,
+        draft: opts.draft,
+        ready: opts.ready,
+        labels: opts.labels,
+        addLabels: opts.addLabels,
+        assignees: opts.assignees,
+        milestone: opts.milestone,
+        options: { json: globalOpts.json },
+      }),
+    );
+  });
+
+// request command
+program
+  .command("request [reviewers...]")
+  .description("Request review on the current branch's PR")
+  .option("-t, --team <teams...>", "Request review from teams")
+  .action((reviewers, opts) => {
+    const globalOpts = program.opts();
+    render(
+      React.createElement(RequestCommand, {
+        reviewers: reviewers || [],
+        teams: opts.team,
+        options: { json: globalOpts.json },
+      }),
+    );
+  });
+
+// review command
+program
+  .command("review")
+  .description("Submit a review on the current branch's PR")
+  .option("--approve", "Approve the PR")
+  .option("--request-changes", "Request changes on the PR")
+  .option("-m, --message <message>", "Review comment/message")
+  .action((opts) => {
+    const globalOpts = program.opts();
+    render(
+      React.createElement(ReviewCommand, {
+        approve: opts.approve,
+        requestChanges: opts.requestChanges,
+        message: opts.message,
+        options: { json: globalOpts.json },
+      }),
+    );
+  });
+
+// Easter egg: pile wisdom
+program
+  .command("wisdom", { hidden: true })
+  .description("Get some pile wisdom")
+  .action(() => {
+    console.log(getSecretPileMessage());
+  });
+
+// Easter egg: fortune cookie style wisdom
+program
+  .command("fortune", { hidden: true })
+  .description("Your pile fortune")
+  .action(() => {
+    console.log(`\n  🥠 ${getPileWisdom()}\n`);
+  });
+
+// Easter egg: what is pile?
+program
+  .command("wtf", { hidden: true })
+  .description("What is this pile?")
+  .action(() => {
+    console.log(`
+  pile (noun): /paɪl/
+
+  1. A heap of things laid on top of one another
+     "a pile of PRs waiting for review"
+
+  2. A large amount of something
+     "I've got a pile of work to do"
+
+  3. (informal) A large imposing building
+     "this codebase is quite a pile"
+
+  4. (slang) Something of poor quality
+     "if the tests fail, it's a pile of..."
+
+  Usage: You decide which definition applies to your code.
+`);
   });
 
 program.parse();

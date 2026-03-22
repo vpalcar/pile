@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Box } from "ink";
+import { Box, Text } from "ink";
 import { createPile, StackNode } from "@pile/core";
 import { createPRCacheManager } from "@pile/github";
 import { Spinner } from "../components/Spinner.js";
@@ -7,6 +7,7 @@ import { StackTree, CachedPRInfo } from "../components/StackTree.js";
 import { SyncStatus } from "../components/SyncStatus.js";
 import { ErrorMessage } from "../components/Message.js";
 import { OutputOptions, formatJson, stackToJson } from "../utils/output.js";
+import { getPileCountMessage } from "../utils/fun.js";
 
 export interface LogCommandProps {
   options: OutputOptions;
@@ -92,12 +93,23 @@ export function LogCommand({ options }: LogCommandProps): React.ReactElement {
     case "loading":
       return <Spinner label="Loading stack..." />;
     case "ready":
+      // Count total branches in all trees
+      const countBranches = (nodes: StackNode[]): number => {
+        return nodes.reduce((acc, node) => acc + 1 + countBranches(node.children), 0);
+      };
+      const totalBranches = countBranches(stackTrees);
+
       return (
         <Box flexDirection="column">
           <Box marginBottom={1}>
             <SyncStatus isOnline={true} pendingOps={pendingOps} />
           </Box>
           <StackTree trees={stackTrees} tree={null} trunk={trunk} prCache={prCache} />
+          {totalBranches > 0 && (
+            <Box marginTop={1}>
+              <Text color="gray" dimColor>  {getPileCountMessage(totalBranches)}</Text>
+            </Box>
+          )}
         </Box>
       );
     case "not_initialized":

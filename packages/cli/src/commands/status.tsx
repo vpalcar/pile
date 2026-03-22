@@ -6,6 +6,7 @@ import { Spinner } from "../components/Spinner.js";
 import { ErrorMessage } from "../components/Message.js";
 import { Link } from "../components/Link.js";
 import { OutputOptions, formatJson, createResult } from "../utils/output.js";
+import { formatStatusWithFlair, getStatusEmoji } from "../utils/fun.js";
 
 export interface StatusCommandProps {
   options: OutputOptions;
@@ -396,6 +397,13 @@ export function StatusCommand({
             <Text color="gray">
               {"  "}Created {formatTimeAgo(pr.created_at)} • Updated{" "}
               {formatTimeAgo(pr.updated_at)}
+            </Text>
+          </Box>
+
+          {/* Fun status flair */}
+          <Box marginTop={1}>
+            <Text color="gray" dimColor>
+              {"  "}{getStatusEmoji(status)} {formatStatusWithFlair(status).subtext}
             </Text>
           </Box>
         </Box>

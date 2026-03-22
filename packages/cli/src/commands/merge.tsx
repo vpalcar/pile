@@ -9,6 +9,7 @@ import {
   WarningMessage,
 } from "../components/Message.js";
 import { OutputOptions, formatJson, createResult } from "../utils/output.js";
+import { getMergeSuccessMessage, getRiskyTimeWarning } from "../utils/fun.js";
 
 export interface MergeCommandProps {
   force?: boolean;
@@ -349,7 +350,7 @@ export function MergeCommand({
             ))}
           </Box>
           <Box marginTop={1}>
-            <Text color="gray">  Method: {mergeMethod}</Text>
+            <Text color="gray">  {getMergeSuccessMessage()} </Text>
           </Box>
         </Box>
       );
