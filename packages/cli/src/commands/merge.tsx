@@ -292,6 +292,16 @@ export function MergeCommand({
           // Might fail if not tracking
         }
 
+        // Now that we're on trunk, delete any branches that couldn't be deleted earlier
+        // (because we were on them during cleanup)
+        for (const pr of merged) {
+          try {
+            await pile.git.deleteBranch(pr.branch, true);
+          } catch {
+            // Branch might already be deleted or other issue
+          }
+        }
+
         setMergedPRs(merged);
 
         if (options.json) {
