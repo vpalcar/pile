@@ -17,6 +17,9 @@ export {
   getGitHubToken,
   parseGitRemote,
   getGitHubConfig,
+  createGitHubRepo,
+  type CreateRepoOptions,
+  type CreateRepoResult,
 } from "./client.js";
 
 // PR operations

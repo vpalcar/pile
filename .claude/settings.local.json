@@ -13,7 +13,12 @@
       "Bash(./packages/cli/dist/bin/pile.js wisdom:*)",
       "Bash(./packages/cli/dist/bin/pile.js fortune:*)",
       "Bash(./packages/cli/dist/bin/pile.js wtf:*)",
-      "Bash(./packages/cli/dist/bin/pile.js modify:*)"
+      "Bash(./packages/cli/dist/bin/pile.js modify:*)",
+      "Bash(git commit:*)",
+      "Bash(while read line)",
+      "Bash(do echo \"$line\")",
+      "Bash(done)",
+      "Bash(git push:*)"
     ]
   }
 }
