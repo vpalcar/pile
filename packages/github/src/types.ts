@@ -28,6 +28,12 @@ export interface PullRequest {
   user: {
     login: string;
   };
+  assignees?: {
+    login: string;
+  }[];
+  labels?: {
+    name: string;
+  }[];
   reviewDecision?: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
   reviews: Review[];
   checks: CheckStatus;

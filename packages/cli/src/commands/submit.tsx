@@ -12,6 +12,7 @@ import {
 } from "../components/Message.js";
 import { OutputOptions, formatJson, createResult } from "../utils/output.js";
 import { openUrl } from "../utils/browser.js";
+import { getPileWisdom } from "../utils/fun.js";
 
 export interface SubmitCommandProps {
   stack?: boolean;

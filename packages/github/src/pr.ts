@@ -189,13 +189,132 @@ export class PROperations {
   /**
    * Request reviewers for a PR
    */
-  async requestReviewers(prNumber: number, reviewers: string[]): Promise<void> {
+  async requestReviewers(
+    prNumber: number,
+    reviewers: string[],
+    teamReviewers?: string[]
+  ): Promise<void> {
     await this.client.api.pulls.requestReviewers({
       owner: this.client.repoOwner,
       repo: this.client.repoName,
       pull_number: prNumber,
       reviewers,
+      team_reviewers: teamReviewers,
     });
+  }
+
+  /**
+   * Set labels on a PR (replaces existing labels)
+   */
+  async setLabels(prNumber: number, labels: string[]): Promise<void> {
+    await this.client.api.issues.setLabels({
+      owner: this.client.repoOwner,
+      repo: this.client.repoName,
+      issue_number: prNumber,
+      labels,
+    });
+  }
+
+  /**
+   * Add labels to a PR (keeps existing labels)
+   */
+  async addLabels(prNumber: number, labels: string[]): Promise<void> {
+    await this.client.api.issues.addLabels({
+      owner: this.client.repoOwner,
+      repo: this.client.repoName,
+      issue_number: prNumber,
+      labels,
+    });
+  }
+
+  /**
+   * Set assignees on a PR
+   */
+  async setAssignees(prNumber: number, assignees: string[]): Promise<void> {
+    // First remove existing assignees, then add new ones
+    const pr = await this.get(prNumber);
+    const currentAssignees = pr.assignees?.map((a) => a.login) ?? [];
+
+    if (currentAssignees.length > 0) {
+      await this.client.api.issues.removeAssignees({
+        owner: this.client.repoOwner,
+        repo: this.client.repoName,
+        issue_number: prNumber,
+        assignees: currentAssignees,
+      });
+    }
+
+    if (assignees.length > 0) {
+      await this.client.api.issues.addAssignees({
+        owner: this.client.repoOwner,
+        repo: this.client.repoName,
+        issue_number: prNumber,
+        assignees,
+      });
+    }
+  }
+
+  /**
+   * Create a review on a PR
+   */
+  async createReview(
+    prNumber: number,
+    event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT",
+    body?: string
+  ): Promise<void> {
+    await this.client.api.pulls.createReview({
+      owner: this.client.repoOwner,
+      repo: this.client.repoName,
+      pull_number: prNumber,
+      event,
+      body,
+    });
+  }
+
+  /**
+   * Convert PR to draft (requires GraphQL)
+   */
+  async convertToDraft(prNumber: number): Promise<void> {
+    // Get the PR node ID first
+    const { data: pr } = await this.client.api.pulls.get({
+      owner: this.client.repoOwner,
+      repo: this.client.repoName,
+      pull_number: prNumber,
+    });
+
+    const nodeId = pr.node_id;
+
+    await this.client.api.graphql(
+      `mutation($id: ID!) {
+        convertPullRequestToDraft(input: { pullRequestId: $id }) {
+          pullRequest { id }
+        }
+      }`,
+      { id: nodeId }
+    );
+  }
+
+  /**
+   * Mark PR as ready for review (requires GraphQL)
+   */
+  async markReadyForReview(prNumber: number): Promise<void> {
+    // Get the PR node ID first
+    const { data: pr } = await this.client.api.pulls.get({
+      owner: this.client.repoOwner,
+      repo: this.client.repoName,
+      pull_number: prNumber,
+    });
+
+    const nodeId = pr.node_id;
+
+    await this.client.api.graphql(
+      `mutation($id: ID!) {
+        markPullRequestReadyForReview(input: { pullRequestId: $id }) {
+          pullRequest { id }
+        }
+      }`,
+      { id: nodeId }
+    );
   }
 
   /**
@@ -217,6 +336,8 @@ export class PROperations {
     created_at: string;
     updated_at: string;
     user: { login: string } | null;
+    assignees?: { login: string }[] | null;
+    labels?: { name: string }[] | null;
   }): Promise<PullRequest> {
     const reviews = await this.getReviews(pr.number);
     const checks = await this.getCheckStatus(pr.head.sha);
@@ -242,6 +363,8 @@ export class PROperations {
       user: {
         login: pr.user?.login ?? "unknown",
       },
+      assignees: pr.assignees?.map((a) => ({ login: a.login })) ?? undefined,
+      labels: pr.labels?.map((l) => ({ name: l.name })) ?? undefined,
       reviews,
       checks,
     };
