@@ -603,9 +603,9 @@ export function InitCommand({
           exit();
         }
       } else if (step === "init_git_prompt") {
-        if (input === "y" || key.return) {
+        if (input === "y" || input === "Y" || key.return) {
           initGitRepo();
-        } else if (input === "n" || key.escape) {
+        } else if (input === "n" || input === "N" || key.escape) {
           exit();
         }
       } else if (step === "select_trunk") {
