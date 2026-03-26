@@ -7,13 +7,15 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   splitting: true,
+  noExternal: ["@pile/core", "@pile/github"],
   external: [
-    "@pile/core",
-    "@pile/github",
     "commander",
     "ink",
     "ink-spinner",
     "react",
     "react/jsx-runtime",
+    "simple-git",
+    "zod",
+    "@octokit/rest",
   ],
 });

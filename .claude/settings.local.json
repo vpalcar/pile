@@ -27,7 +27,9 @@
       "Bash(pile --help)",
       "Bash(node:*)",
       "Bash(PILE=\"node /Users/vidpalcar/Projects/Current/automation/pile/packages/cli/dist/bin/pile.js\")",
-      "Bash($PILE init:*)"
+      "Bash($PILE init:*)",
+      "Bash(pnpm pack:*)",
+      "Bash(npm pack:*)"
     ]
   }
 }

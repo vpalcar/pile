@@ -1,7 +1,27 @@
 {
-  "name": "@pile/cli",
+  "name": "pile-cli",
   "version": "0.1.0",
+  "description": "The AI-native stacked PR CLI for humans",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vpalcar/pile.git"
+  },
+  "homepage": "https://github.com/vpalcar/pile",
+  "bugs": {
+    "url": "https://github.com/vpalcar/pile/issues"
+  },
+  "keywords": [
+    "git",
+    "stacked-prs",
+    "pull-request",
+    "github",
+    "cli",
+    "stacked-diffs",
+    "code-review"
+  ],
+  "author": "Vid Palcar",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
@@ -13,21 +33,32 @@
       "types": "./dist/index.d.ts"
     }
   },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "tsup"
   },
   "dependencies": {
-    "@pile/core": "workspace:*",
-    "@pile/github": "workspace:*",
+    "@octokit/rest": "^21.0.0",
     "commander": "^12.1.0",
     "ink": "^5.2.1",
     "ink-spinner": "^5.0.0",
-    "react": "^18.3.1"
+    "react": "^18.3.1",
+    "simple-git": "^3.33.0",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@pile/core": "workspace:*",
+    "@pile/github": "workspace:*",
     "@types/node": "^20.19.37",
     "@types/react": "^18.3.28",
     "tsup": "^8.5.1",

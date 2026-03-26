@@ -17,12 +17,9 @@ importers:
 
   packages/cli:
     dependencies:
-      '@pile/core':
-        specifier: workspace:*
-        version: link:../core
-      '@pile/github':
-        specifier: workspace:*
-        version: link:../github
+      '@octokit/rest':
+        specifier: ^21.0.0
+        version: 21.1.1
       commander:
         specifier: ^12.1.0
         version: 12.1.0
@@ -35,7 +32,19 @@ importers:
       react:
         specifier: ^18.3.1
         version: 18.3.1
+      simple-git:
+        specifier: ^3.33.0
+        version: 3.33.0
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
     devDependencies:
+      '@pile/core':
+        specifier: workspace:*
+        version: link:../core
+      '@pile/github':
+        specifier: workspace:*
+        version: link:../github
       '@types/node':
         specifier: ^20.19.37
         version: 20.19.37
