@@ -177,6 +177,16 @@ export function CreateCommand({
 
           // If --all or --update is specified, proceed with staging
           if (!all && !update) {
+            if (!process.stdin.isTTY) {
+              const msg = "Unstaged changes detected. Use -a/--all or -u/--update flag to stage them.";
+              if (options.json) {
+                console.log(formatJson(createResult(false, null, msg)));
+                process.exit(1);
+              }
+              setError(msg);
+              setState("error");
+              return;
+            }
             setState("prompt_unstaged");
             return;
           }

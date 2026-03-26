@@ -172,6 +172,13 @@ export function CheckoutCommand({
           process.exit(0);
         }
 
+        if (!process.stdin.isTTY) {
+          setError("Interactive checkout requires a terminal. Use `pile checkout <branch>` instead.");
+          setState("error");
+          setTimeout(() => exit(), 100);
+          return;
+        }
+
         setState("selecting");
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

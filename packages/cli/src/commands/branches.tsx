@@ -158,6 +158,12 @@ export function BranchesCommand({
           process.exit(0);
         }
 
+        if (!process.stdin.isTTY) {
+          setError("Interactive branches view requires a terminal. Use `pile --json branches` instead.");
+          setState("error");
+          return;
+        }
+
         setState("browsing");
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
