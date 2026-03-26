@@ -65,11 +65,8 @@ pile log
 # Submit PRs for your stack
 pile submit --stack
 
-# Navigate the stack
-pile up      # Move to child branch
-pile down    # Move to parent branch
-pile top     # Move to top of stack
-pile bottom  # Move to bottom of stack
+# Switch branches interactively
+pile checkout
 ```
 
 ## Commands
@@ -79,12 +76,8 @@ pile bottom  # Move to bottom of stack
 | Command | Alias | Description |
 |---------|-------|-------------|
 | `pile create -m "message"` | `c` | Create a new stacked branch with a commit |
-| `pile log` | `ls` | View the branch stack tree |
-| `pile up` | | Move to the child branch |
-| `pile down` | | Move to the parent branch |
-| `pile top` | | Move to the top of the stack |
-| `pile bottom` | | Move to the bottom of the stack |
-| `pile co` | | Interactive branch checkout |
+| `pile log` | `l` | View the branch stack tree |
+| `pile checkout` | `co` | Interactive branch checkout |
 | `pile modify` | `m` | Amend or squash commits |
 | `pile rename` | `rn` | Rename the current branch |
 | `pile move` | `mv` | Move branch to a different parent |
@@ -97,6 +90,7 @@ pile bottom  # Move to bottom of stack
 |---------|-------|-------------|
 | `pile submit` | `s` | Push and create/update PR |
 | `pile submit --stack` | `s -s` | Submit all PRs in the stack |
+| `pile add` | `a` | Stage files for commit |
 | `pile status` | `st` | View PR status, reviews, CI checks |
 | `pile merge` | | Merge the PR (squash by default) |
 | `pile close` | | Close PR without merging |
