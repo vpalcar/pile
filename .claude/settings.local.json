@@ -20,7 +20,14 @@
       "Bash(done)",
       "Bash(git push:*)",
       "Bash(git stash:*)",
-      "Bash(git pull:*)"
+      "Bash(git pull:*)",
+      "Bash(grep -r \"async function\\\\|export function\\\\|export class\" /Users/vidpalcar/Projects/Current/automation/pile/packages/cli/src/commands/*.tsx)",
+      "Bash(pnpm install:*)",
+      "Bash(alias pile=\"node /Users/vidpalcar/Projects/Current/automation/pile/packages/cli/dist/bin/pile.js\")",
+      "Bash(pile --help)",
+      "Bash(node:*)",
+      "Bash(PILE=\"node /Users/vidpalcar/Projects/Current/automation/pile/packages/cli/dist/bin/pile.js\")",
+      "Bash($PILE init:*)"
     ]
   }
 }
