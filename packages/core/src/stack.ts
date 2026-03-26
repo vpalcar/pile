@@ -318,7 +318,21 @@ export class StackManager {
   }
 
   async deleteBranch(branchName: string, force = false): Promise<void> {
-    // Remove from tracking first
+    // Reparent children to the deleted branch's parent
+    const relationship = this.state.getBranchRelationship(branchName);
+    const parent = relationship?.parent ?? this.getTrunk();
+    const children = this.state.getChildren(branchName);
+    for (const child of children) {
+      const childRel = this.state.getBranchRelationship(child);
+      if (childRel) {
+        this.state.setBranchRelationship(child, {
+          ...childRel,
+          parent,
+        });
+      }
+    }
+
+    // Remove from tracking
     this.state.removeBranchRelationship(branchName);
 
     // Then delete the git branch
