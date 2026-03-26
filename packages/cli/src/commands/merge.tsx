@@ -482,7 +482,21 @@ async function cleanupMergedBranch(
             base: newParent,
           });
         } catch {
-          // PR might not exist or other error
+          // If retargeting to parent fails, try retargeting to trunk as fallback
+          if (newParent !== trunk) {
+            try {
+              await github.prs.update({
+                number: childRel.prNumber,
+                base: trunk,
+              });
+              pile.state.setBranchRelationship(child, {
+                ...childRel,
+                parent: trunk,
+              });
+            } catch {
+              // PR update failed entirely, will need manual fix
+            }
+          }
         }
       }
     }
