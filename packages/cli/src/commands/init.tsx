@@ -11,6 +11,21 @@ import {
 } from "../components/Message.js";
 import { OutputOptions, formatJson, createResult } from "../utils/output.js";
 import { execSync } from "node:child_process";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+
+function ensureGitignore(repoRoot: string) {
+  const gitignorePath = join(repoRoot, ".gitignore");
+  const entry = ".pile/";
+  if (existsSync(gitignorePath)) {
+    const content = readFileSync(gitignorePath, "utf-8");
+    if (!content.split("\n").some((line) => line.trim() === entry)) {
+      writeFileSync(gitignorePath, content.trimEnd() + "\n" + entry + "\n");
+    }
+  } else {
+    writeFileSync(gitignorePath, entry + "\n");
+  }
+}
 
 export interface InitCommandProps {
   trunk?: string;
@@ -202,6 +217,9 @@ export function InitCommand({
         autoOpenPR: openPr ?? false,
         mergeMethod: "squash",
       });
+
+      const repoRoot = await git.getRepoRoot();
+      ensureGitignore(repoRoot);
 
       if (options.json) {
         console.log(
@@ -563,6 +581,9 @@ export function InitCommand({
         autoOpenPR: wizardState.autoOpenPR,
         mergeMethod: wizardState.mergeMethod,
       });
+
+      const repoRoot = await pile.git.getRepoRoot();
+      ensureGitignore(repoRoot);
 
       setTimeout(() => setStep("summary"), 500);
     } catch (err) {
