@@ -242,7 +242,22 @@ export function SubmitCommand({
           const baseBranch = parent ?? trunk;
 
           try {
-            const existingPR = await github.prs.findByBranch(branch);
+            // Check stored PR number first (survives moves/renames), then fall back to API lookup
+            const storedRel = pile.state.getBranchRelationship(branch);
+            let existingPR: Awaited<ReturnType<typeof github.prs.findByBranch>> = null;
+            if (storedRel?.prNumber) {
+              try {
+                const stored = await github.prs.get(storedRel.prNumber);
+                if (stored && stored.state === "open") {
+                  existingPR = stored;
+                }
+              } catch {
+                // Stored PR might be invalid, fall back to API lookup
+              }
+            }
+            if (!existingPR) {
+              existingPR = await github.prs.findByBranch(branch);
+            }
 
             if (existingPR) {
               setState("updating_pr");
