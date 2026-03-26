@@ -29,7 +29,11 @@
       "Bash(PILE=\"node /Users/vidpalcar/Projects/Current/automation/pile/packages/cli/dist/bin/pile.js\")",
       "Bash($PILE init:*)",
       "Bash(pnpm pack:*)",
-      "Bash(npm pack:*)"
+      "Bash(npm pack:*)",
+      "Bash(gh pr:*)",
+      "Bash(mkdir -p /Users/vidpalcar/Projects/Current/automation/pile-test)",
+      "Read(//Users/vidpalcar/Projects/Current/automation/**)",
+      "Bash(git clean:*)"
     ]
   }
 }
