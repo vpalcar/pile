@@ -87,10 +87,21 @@ export function CloseCommand({
           return;
         }
 
-        // Find PR for current branch (any state for reopen, open for close)
-        const pr = reopen
-          ? await github.prs.findByBranchAnyState(currentBranch)
-          : await github.prs.findByBranch(currentBranch);
+        // Find PR - check stored PR number first (survives renames), then API lookup
+        const rel = pile.state.getBranchRelationship(currentBranch);
+        let pr = null;
+        if (rel?.prNumber) {
+          try {
+            pr = await github.prs.get(rel.prNumber);
+          } catch {
+            // Stored PR might be invalid
+          }
+        }
+        if (!pr) {
+          pr = reopen
+            ? await github.prs.findByBranchAnyState(currentBranch)
+            : await github.prs.findByBranch(currentBranch);
+        }
 
         if (!pr) {
           if (options.json) {
