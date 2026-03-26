@@ -5,6 +5,7 @@ import { Spinner } from "../components/Spinner.js";
 import { SuccessMessage, ErrorMessage } from "../components/Message.js";
 import { OutputOptions, formatJson, createResult } from "../utils/output.js";
 import { execSync } from "node:child_process";
+import { resolve, relative } from "node:path";
 
 export interface AddCommandProps {
   files: string[];
@@ -51,9 +52,12 @@ export function AddCommand({
         } else if (update) {
           await pile.git.stageUpdated();
         } else if (files.length > 0) {
-          // Stage specific files
+          // Stage specific files - resolve paths relative to cwd then make relative to repo root
+          const cwd = process.cwd();
           for (const file of files) {
-            execSync(`git add "${file}"`, {
+            const absPath = resolve(cwd, file);
+            const relPath = relative(repoRoot, absPath);
+            execSync(`git add "${relPath}"`, {
               cwd: repoRoot,
               encoding: "utf-8",
               stdio: ["pipe", "pipe", "pipe"],
