@@ -19,6 +19,7 @@ import { AddCommand } from "../commands/add.js";
 import { MoveCommand } from "../commands/move.js";
 import { RenameCommand } from "../commands/rename.js";
 import { CloseCommand } from "../commands/close.js";
+import { DeleteCommand } from "../commands/delete.js";
 import { EditCommand } from "../commands/edit.js";
 import { RequestCommand } from "../commands/request.js";
 import { ReviewCommand } from "../commands/review.js";
@@ -292,6 +293,22 @@ program
     render(
       React.createElement(CloseCommand, {
         reopen: opts.reopen,
+        options: { json: globalOpts.json },
+      }),
+    );
+  });
+
+// delete command
+program
+  .command("delete")
+  .alias("del")
+  .description("Delete the current branch, close its PR, and switch to parent")
+  .option("-f, --force", "Force delete even if branch has children (reparents them)")
+  .action((opts) => {
+    const globalOpts = program.opts();
+    render(
+      React.createElement(DeleteCommand, {
+        force: opts.force,
         options: { json: globalOpts.json },
       }),
     );

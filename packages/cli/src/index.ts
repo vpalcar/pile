@@ -59,6 +59,10 @@ export {
   type CloseCommandProps,
 } from "./commands/close.js";
 export {
+  DeleteCommand,
+  type DeleteCommandProps,
+} from "./commands/delete.js";
+export {
   EditCommand,
   type EditCommandProps,
 } from "./commands/edit.js";
