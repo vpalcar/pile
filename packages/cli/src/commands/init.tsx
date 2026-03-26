@@ -165,10 +165,17 @@ export function InitCommand({
   async function runNonInteractive() {
     try {
       // First check if we're in a git repo and init if needed
-      const git = createGitOperations(process.cwd());
+      const cwd = process.cwd();
+      const git = createGitOperations(cwd);
       const isGitRepo = await git.isGitRepo();
       if (!isGitRepo) {
         await git.initRepo();
+      } else {
+        // Check if cwd is a subdirectory of another repo — if so, init a new repo here
+        const repoRoot = await git.getRepoRoot();
+        if (repoRoot !== cwd) {
+          await git.initRepo();
+        }
       }
 
       // Now create the full pile instance
@@ -253,10 +260,19 @@ export function InitCommand({
   async function checkGitRepo() {
     try {
       // First check if we're in a git repo
-      const git = createGitOperations(process.cwd());
+      const cwd = process.cwd();
+      const git = createGitOperations(cwd);
       const isGitRepo = await git.isGitRepo();
 
       if (!isGitRepo) {
+        setWizardState((s) => ({ ...s, isGitRepo: false }));
+        setStep("init_git_prompt");
+        return;
+      }
+
+      // Check if cwd is a subdirectory of another repo — treat as not initialized
+      const repoRoot = await git.getRepoRoot();
+      if (repoRoot !== cwd) {
         setWizardState((s) => ({ ...s, isGitRepo: false }));
         setStep("init_git_prompt");
         return;
