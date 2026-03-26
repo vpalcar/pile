@@ -165,7 +165,19 @@ export function StatusCommand({
           return;
         }
 
-        const prFromList = await github.prs.findByBranchAnyState(currentBranch);
+        // Check stored PR number first (survives renames), then API lookup
+        const rel = pile.state.getBranchRelationship(currentBranch);
+        let prFromList = null;
+        if (rel?.prNumber) {
+          try {
+            prFromList = await github.prs.get(rel.prNumber);
+          } catch {
+            // Stored PR might be invalid
+          }
+        }
+        if (!prFromList) {
+          prFromList = await github.prs.findByBranchAnyState(currentBranch);
+        }
 
         if (!prFromList) {
           if (options.json) {
