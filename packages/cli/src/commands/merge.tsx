@@ -268,6 +268,11 @@ export function MergeCommand({
             return;
           }
 
+          // Auto-mark draft as ready when forcing merge
+          if (force && fullPr.draft) {
+            await github.prs.markReadyForReview(pr.number);
+          }
+
           // Merge the PR
           setState("merging");
           await github.prs.merge(pr.number, method);
