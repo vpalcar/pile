@@ -65,8 +65,10 @@ pile log
 # Submit PRs for your stack
 pile submit --stack
 
-# Switch branches interactively
-pile checkout
+# Switch branches
+pile checkout            # Interactive selector
+pile checkout main       # Go to trunk
+pile checkout my-branch  # Go to specific branch
 ```
 
 ## Commands
@@ -77,7 +79,8 @@ pile checkout
 |---------|-------|-------------|
 | `pile create -m "message"` | `c` | Create a new stacked branch with a commit |
 | `pile log` | `l` | View the branch stack tree |
-| `pile checkout` | `co` | Interactive branch checkout |
+| `pile checkout [branch]` | `co` | Checkout a branch (interactive if no branch given) |
+| `pile delete` | `del` | Delete current branch, close PR, switch to parent |
 | `pile modify` | `m` | Amend or squash commits |
 | `pile rename` | `rn` | Rename the current branch |
 | `pile move` | `mv` | Move branch to a different parent |
