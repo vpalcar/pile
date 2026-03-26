@@ -179,6 +179,13 @@ export function SubmitCommand({
         const prResults: PRResult[] = [];
         const queued: QueuedResult[] = [];
 
+        // Ensure trunk exists on remote before creating PRs
+        try {
+          await pile.git.pushSetUpstream(trunk);
+        } catch {
+          // Trunk may already exist on remote, that's fine
+        }
+
         for (const branch of branchesToSubmit) {
           // Check if this branch's PR is already merged - skip it
           try {
