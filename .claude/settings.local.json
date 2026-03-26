@@ -34,7 +34,9 @@
       "Bash(mkdir -p /Users/vidpalcar/Projects/Current/automation/pile-test)",
       "Read(//Users/vidpalcar/Projects/Current/automation/**)",
       "Bash(git clean:*)",
-      "Bash(gh repo:*)"
+      "Bash(gh repo:*)",
+      "Bash(cd:*)",
+      "Bash(gh release:*)"
     ]
   }
 }
