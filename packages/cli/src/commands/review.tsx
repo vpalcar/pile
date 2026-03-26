@@ -163,7 +163,13 @@ export function ReviewCommand({
         setResult(reviewResult);
         setState("success");
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        let message = err instanceof Error ? err.message : String(err);
+        // Friendly error messages for common GitHub API errors
+        if (message.toLowerCase().includes("approve your own")) {
+          message = "You cannot approve your own pull request.";
+        } else if (message.toLowerCase().includes("not a collaborator")) {
+          message = "You are not a collaborator on this repository.";
+        }
         if (options.json) {
           console.log(formatJson(createResult(false, null, message)));
           process.exit(1);
