@@ -60,15 +60,10 @@ export class GitOperations {
   }
 
   async getBranchCommits(branch: string, since?: string): Promise<Commit[]> {
-    const options: string[] = ["--format=%H|%s|%an|%aI"];
-    if (since) {
-      options.push(`${since}..${branch}`);
-    } else {
-      options.push(branch);
-    }
+    const range = since ? `${since}..${branch}` : branch;
 
     try {
-      const result = await this.git.log(options);
+      const result = await this.git.log([range]);
       return result.all.map((log) => ({
         hash: log.hash,
         message: log.message,
