@@ -1,0 +1,36 @@
+{
+  "name": "@pile/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "pile": "./dist/bin/pile.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@pile/core": "workspace:*",
+    "@pile/github": "workspace:*",
+    "commander": "^12.1.0",
+    "ink": "^5.2.1",
+    "ink-spinner": "^5.0.0",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.37",
+    "@types/react": "^18.3.28",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
+  }
+}

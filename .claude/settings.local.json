@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(git -C /Users/vidpalcar/Projects/Current/automation/bricks/pile log --oneline)",
+      "Bash(pnpm build:*)",
+      "Bash(pnpm typecheck:*)",
+      "Bash(git rebase:*)",
+      "Bash(git checkout:*)",
+      "Bash(./packages/cli/dist/bin/pile.js create:*)",
+      "Bash(./packages/cli/dist/bin/pile.js submit:*)",
+      "Bash(./packages/cli/dist/bin/pile.js edit:*)",
+      "Bash(./packages/cli/dist/bin/pile.js wisdom:*)",
+      "Bash(./packages/cli/dist/bin/pile.js fortune:*)",
+      "Bash(./packages/cli/dist/bin/pile.js wtf:*)",
+      "Bash(./packages/cli/dist/bin/pile.js modify:*)",
+      "Bash(git commit:*)",
+      "Bash(while read line)",
+      "Bash(do echo \"$line\")",
+      "Bash(done)",
+      "Bash(git push:*)",
+      "Bash(git stash:*)",
+      "Bash(git pull:*)"
+    ]
+  }
+}
