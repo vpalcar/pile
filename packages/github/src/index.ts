@@ -18,8 +18,11 @@ export {
   parseGitRemote,
   getGitHubConfig,
   createGitHubRepo,
+  getGitHubUserInfo,
   type CreateRepoOptions,
   type CreateRepoResult,
+  type GitHubOrg,
+  type GitHubUser,
 } from "./client.js";
 
 // PR operations

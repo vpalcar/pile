@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Box, Text, useInput, useApp } from "ink";
 import { createPile, createGitOperations, PileInstance } from "@pile/core";
-import { getGitHubToken, getGitHubConfig, createGitHubRepo as createGitHubRepoAPI } from "@pile/github";
+import { getGitHubToken, getGitHubConfig, createGitHubRepo as createGitHubRepoAPI, getGitHubUserInfo, type GitHubUser } from "@pile/github";
 import { Spinner } from "../components/Spinner.js";
 import {
   SuccessMessage,
@@ -27,6 +27,10 @@ type WizardStep =
   | "checking_remote"
   | "setup_remote_prompt"
   | "add_remote_input"
+  | "loading_user_info"
+  | "create_repo_name"
+  | "create_repo_visibility"
+  | "create_repo_owner"
   | "creating_repo"
   | "adding_remote"
   | "checking_auth"
@@ -54,6 +58,13 @@ interface WizardState {
   mergeMethodIndex: number;
   remoteOptionIndex: number;
   autoOpenPR: boolean;
+  // Repo creation
+  repoName: string;
+  repoIsPrivate: boolean;
+  repoVisibilityIndex: number;
+  repoOwners: Array<{ login: string; name: string | null; isOrg: boolean }>;
+  repoOwnerIndex: number;
+  githubUser: GitHubUser | null;
 }
 
 const MERGE_METHODS = [
@@ -120,6 +131,13 @@ export function InitCommand({
     mergeMethodIndex: 0,
     remoteOptionIndex: 0,
     autoOpenPR: openPr ?? false,
+    // Repo creation
+    repoName: process.cwd().split("/").pop() || "my-repo",
+    repoIsPrivate: false,
+    repoVisibilityIndex: 0,
+    repoOwners: [],
+    repoOwnerIndex: 0,
+    githubUser: null,
   });
 
   // Handle non-interactive mode (--json or with flags)
@@ -349,6 +367,40 @@ export function InitCommand({
     }
   }
 
+  async function startRepoCreation() {
+    setStep("loading_user_info");
+    try {
+      const token = getGitHubToken();
+      if (!token) {
+        setError("GitHub authentication required. Set GITHUB_TOKEN environment variable.");
+        setStep("error");
+        return;
+      }
+
+      // Fetch user info to get orgs
+      const userInfo = await getGitHubUserInfo(token);
+
+      // Build list of possible owners (personal account + orgs)
+      const owners: Array<{ login: string; name: string | null; isOrg: boolean }> = [
+        { login: userInfo.login, name: userInfo.name, isOrg: false },
+        ...userInfo.orgs.map((org) => ({ login: org.login, name: org.name, isOrg: true })),
+      ];
+
+      setWizardState((s) => ({
+        ...s,
+        githubUser: userInfo,
+        repoOwners: owners,
+        repoOwnerIndex: 0,
+      }));
+
+      setStep("create_repo_name");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(`Failed to fetch user info: ${message}`);
+      setStep("error");
+    }
+  }
+
   async function createGitHubRepo() {
     setStep("creating_repo");
     try {
@@ -359,13 +411,15 @@ export function InitCommand({
         return;
       }
 
-      // Get repo name from current directory
-      const repoName = process.cwd().split("/").pop() || "my-repo";
+      // Get selected owner
+      const selectedOwner = wizardState.repoOwners[wizardState.repoOwnerIndex];
+      const isOrg = selectedOwner?.isOrg ?? false;
 
       // Create repo via GitHub API
       const result = await createGitHubRepoAPI(token, {
-        name: repoName,
-        private: false,
+        name: wizardState.repoName,
+        private: wizardState.repoIsPrivate,
+        org: isOrg ? selectedOwner.login : undefined,
       });
 
       // Add remote origin
@@ -396,7 +450,7 @@ export function InitCommand({
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes("name already exists")) {
-        setError(`Repository "${process.cwd().split("/").pop()}" already exists on GitHub.`);
+        setError(`Repository "${wizardState.repoName}" already exists on GitHub.`);
       } else if (message.includes("401") || message.includes("Bad credentials")) {
         setError("Invalid GitHub token. Check your GITHUB_TOKEN environment variable.");
       } else {
@@ -490,6 +544,18 @@ export function InitCommand({
         await pile.git.createInitialCommit(wizardState.selectedTrunk);
       }
 
+      // Push trunk to remote if we have one (needed for new repos)
+      if (wizardState.hasRemote) {
+        try {
+          execSync(`git push -u origin ${wizardState.selectedTrunk}`, {
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+        } catch {
+          // Push might fail, that's ok - user can push manually
+        }
+      }
+
       pile.state.saveConfig({
         trunk: wizardState.selectedTrunk,
         remote: "origin",
@@ -561,7 +627,7 @@ export function InitCommand({
           if (wizardState.hasGitHubAuth) {
             // 3 options: Create, Add existing, Skip
             if (wizardState.remoteOptionIndex === 0) {
-              createGitHubRepo();
+              startRepoCreation();
             } else if (wizardState.remoteOptionIndex === 1) {
               setStep("add_remote_input");
             } else {
@@ -577,6 +643,57 @@ export function InitCommand({
           }
         } else if (key.escape) {
           exit();
+        }
+      } else if (step === "create_repo_name") {
+        if (key.return && wizardState.repoName.trim()) {
+          setStep("create_repo_visibility");
+        } else if (key.escape) {
+          setStep("setup_remote_prompt");
+        } else if (key.backspace || key.delete) {
+          setWizardState((s) => ({
+            ...s,
+            repoName: s.repoName.slice(0, -1),
+          }));
+        } else if (input && !key.ctrl && !key.meta) {
+          setWizardState((s) => ({
+            ...s,
+            repoName: s.repoName + input,
+          }));
+        }
+      } else if (step === "create_repo_visibility") {
+        if (key.upArrow || key.downArrow) {
+          setWizardState((s) => ({
+            ...s,
+            repoVisibilityIndex: s.repoVisibilityIndex === 0 ? 1 : 0,
+            repoIsPrivate: s.repoVisibilityIndex === 0,
+          }));
+        } else if (key.return) {
+          // If user has orgs, show owner selection
+          if (wizardState.repoOwners.length > 1) {
+            setStep("create_repo_owner");
+          } else {
+            createGitHubRepo();
+          }
+        } else if (key.escape) {
+          setStep("create_repo_name");
+        }
+      } else if (step === "create_repo_owner") {
+        const maxOwnerIndex = wizardState.repoOwners.length - 1;
+
+        if (key.upArrow) {
+          setWizardState((s) => ({
+            ...s,
+            repoOwnerIndex: Math.max(0, s.repoOwnerIndex - 1),
+          }));
+        } else if (key.downArrow) {
+          setWizardState((s) => ({
+            ...s,
+            repoOwnerIndex: Math.min(maxOwnerIndex, s.repoOwnerIndex + 1),
+          }));
+        } else if (key.return) {
+          createGitHubRepo();
+        } else if (key.escape) {
+          setStep("create_repo_visibility");
         }
       } else if (step === "add_remote_input") {
         if (key.return && wizardState.remoteInput.trim()) {
@@ -646,6 +763,9 @@ export function InitCommand({
         "select_trunk",
         "setup_remote_prompt",
         "add_remote_input",
+        "create_repo_name",
+        "create_repo_visibility",
+        "create_repo_owner",
         "auth_help",
         "select_merge_method",
         "auto_open_prompt",
@@ -740,12 +860,10 @@ export function InitCommand({
       return <Spinner label="Checking GitHub remote..." />;
 
     case "setup_remote_prompt": {
-      const repoName = process.cwd().split("/").pop() || "my-repo";
-
       // Build options based on auth state
       const remoteOptions = wizardState.hasGitHubAuth
         ? [
-            { label: `Create new repo "${repoName}" on GitHub`, value: "create" },
+            { label: `Create new repo "${wizardState.repoName}" on GitHub`, value: "create" },
             { label: "Add existing remote URL", value: "add" },
             { label: "Skip for now", value: "skip" },
           ]
@@ -810,13 +928,120 @@ export function InitCommand({
         </Box>
       );
 
-    case "creating_repo":
+    case "loading_user_info":
       return (
         <Box flexDirection="column">
           <Text color="cyan">{WELCOME_ART}</Text>
-          <Spinner label="Creating GitHub repository..." />
+          <Spinner label="Loading GitHub account info..." />
         </Box>
       );
+
+    case "create_repo_name":
+      return (
+        <Box flexDirection="column">
+          <Text color="cyan">{WELCOME_ART}</Text>
+          <Box flexDirection="column">
+            <Text bold>Create GitHub repository</Text>
+            <Box marginTop={1}>
+              <Text color="gray">Repository name:</Text>
+            </Box>
+            <Box marginTop={1}>
+              <Text color="cyan">› </Text>
+              <Text>{wizardState.repoName}</Text>
+              <Text color="cyan">█</Text>
+            </Box>
+            <Box marginTop={1}>
+              <Text color="gray" dimColor>enter confirm  esc back</Text>
+            </Box>
+          </Box>
+        </Box>
+      );
+
+    case "create_repo_visibility": {
+      const visibilityOptions = [
+        { label: "Public", desc: "Anyone can see this repository" },
+        { label: "Private", desc: "Only you and collaborators can access" },
+      ];
+
+      return (
+        <Box flexDirection="column">
+          <Text color="cyan">{WELCOME_ART}</Text>
+          <Box flexDirection="column">
+            <Text bold>Repository visibility</Text>
+            <Text color="gray" dimColor>
+              ↑↓ navigate  enter select  esc back
+            </Text>
+            <Box flexDirection="column" marginTop={1}>
+              {visibilityOptions.map((opt, index) => {
+                const isSelected = index === wizardState.repoVisibilityIndex;
+                return (
+                  <Box key={opt.label}>
+                    <Text color={isSelected ? "cyan" : undefined}>
+                      {isSelected ? "› " : "  "}
+                    </Text>
+                    <Text color={isSelected ? "cyan" : undefined} bold={isSelected}>
+                      {opt.label}
+                    </Text>
+                    <Text color="gray" dimColor>
+                      {" "}- {opt.desc}
+                    </Text>
+                  </Box>
+                );
+              })}
+            </Box>
+          </Box>
+        </Box>
+      );
+    }
+
+    case "create_repo_owner": {
+      return (
+        <Box flexDirection="column">
+          <Text color="cyan">{WELCOME_ART}</Text>
+          <Box flexDirection="column">
+            <Text bold>Where to create the repository?</Text>
+            <Text color="gray" dimColor>
+              ↑↓ navigate  enter select  esc back
+            </Text>
+            <Box flexDirection="column" marginTop={1}>
+              {wizardState.repoOwners.map((owner, index) => {
+                const isSelected = index === wizardState.repoOwnerIndex;
+                return (
+                  <Box key={owner.login}>
+                    <Text color={isSelected ? "cyan" : undefined}>
+                      {isSelected ? "› " : "  "}
+                    </Text>
+                    <Text color={isSelected ? "cyan" : undefined} bold={isSelected}>
+                      {owner.login}
+                    </Text>
+                    {owner.isOrg && (
+                      <Text color="gray" dimColor> (organization)</Text>
+                    )}
+                    {!owner.isOrg && (
+                      <Text color="gray" dimColor> (personal)</Text>
+                    )}
+                    {owner.name && (
+                      <Text color="gray" dimColor> - {owner.name}</Text>
+                    )}
+                  </Box>
+                );
+              })}
+            </Box>
+          </Box>
+        </Box>
+      );
+    }
+
+    case "creating_repo": {
+      const owner = wizardState.repoOwners[wizardState.repoOwnerIndex];
+      const repoPath = owner ? `${owner.login}/${wizardState.repoName}` : wizardState.repoName;
+      return (
+        <Box flexDirection="column">
+          <Text color="cyan">{WELCOME_ART}</Text>
+          <Spinner label={`Creating ${repoPath}...`} />
+        </Box>
+      );
+    }
 
     case "adding_remote":
       return (

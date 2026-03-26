@@ -119,6 +119,7 @@ export interface CreateRepoOptions {
   name: string;
   description?: string;
   private?: boolean;
+  org?: string; // If provided, create in this org instead of personal account
 }
 
 export interface CreateRepoResult {
@@ -127,6 +128,38 @@ export interface CreateRepoResult {
   url: string;
   sshUrl: string;
   httpsUrl: string;
+}
+
+export interface GitHubOrg {
+  login: string;
+  name: string | null;
+}
+
+export interface GitHubUser {
+  login: string;
+  name: string | null;
+  orgs: GitHubOrg[];
+}
+
+/**
+ * Get current user info and their organizations
+ */
+export async function getGitHubUserInfo(token: string): Promise<GitHubUser> {
+  const octokit = new Octokit({ auth: token });
+
+  const [userResponse, orgsResponse] = await Promise.all([
+    octokit.users.getAuthenticated(),
+    octokit.orgs.listForAuthenticatedUser(),
+  ]);
+
+  return {
+    login: userResponse.data.login,
+    name: userResponse.data.name,
+    orgs: orgsResponse.data.map((org) => ({
+      login: org.login,
+      name: org.description ?? null,
+    })),
+  };
 }
 
 /**
@@ -138,12 +171,27 @@ export async function createGitHubRepo(
 ): Promise<CreateRepoResult> {
   const octokit = new Octokit({ auth: token });
 
-  const { data } = await octokit.repos.createForAuthenticatedUser({
-    name: options.name,
-    description: options.description,
-    private: options.private ?? false,
-    auto_init: false,
-  });
+  let data;
+  if (options.org) {
+    // Create in organization
+    const response = await octokit.repos.createInOrg({
+      org: options.org,
+      name: options.name,
+      description: options.description,
+      private: options.private ?? false,
+      auto_init: false,
+    });
+    data = response.data;
+  } else {
+    // Create in personal account
+    const response = await octokit.repos.createForAuthenticatedUser({
+      name: options.name,
+      description: options.description,
+      private: options.private ?? false,
+      auto_init: false,
+    });
+    data = response.data;
+  }
 
   return {
     owner: data.owner.login,
