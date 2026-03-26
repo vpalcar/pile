@@ -4,3 +4,4 @@ dist/
 .pile/
 *.log
 .DS_Store
+.claude/
