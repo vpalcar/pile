@@ -31,11 +31,7 @@ export { openUrl } from "./utils/browser.js";
 export { InitCommand, type InitCommandProps } from "./commands/init.js";
 export { CreateCommand, type CreateCommandProps } from "./commands/create.js";
 export { LogCommand, type LogCommandProps } from "./commands/log.js";
-export {
-  NavigateCommand,
-  type NavigateCommandProps,
-  type Direction,
-} from "./commands/navigate.js";
+
 export { SubmitCommand, type SubmitCommandProps } from "./commands/submit.js";
 export { SyncCommand, type SyncCommandProps } from "./commands/sync.js";
 export {
