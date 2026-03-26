@@ -175,13 +175,14 @@ program
 
 // co command (checkout)
 program
-  .command("checkout")
+  .command("checkout [branch]")
   .alias("co")
-  .description("Interactive branch selector - navigate and checkout branches")
-  .action(() => {
+  .description("Checkout a branch (interactive if no branch specified)")
+  .action((branch) => {
     const globalOpts = program.opts();
     render(
       React.createElement(CheckoutCommand, {
+        branch,
         options: { json: globalOpts.json },
       }),
     );

@@ -8,6 +8,7 @@ import { OutputOptions, formatJson, createResult } from "../utils/output.js";
 import { PRStatusType } from "../components/StackTree.js";
 
 export interface CheckoutCommandProps {
+  branch?: string;
   options: OutputOptions;
 }
 
@@ -32,6 +33,7 @@ type State =
   | "error";
 
 export function CheckoutCommand({
+  branch: targetBranch,
   options,
 }: CheckoutCommandProps): React.ReactElement {
   const { exit } = useApp();
@@ -62,6 +64,38 @@ export function CheckoutCommand({
         const config = pile.state.getConfig();
         const trunkBranch = config?.trunk ?? "main";
         const currentBranch = await pile.git.getCurrentBranch();
+
+        // Direct checkout when branch name is provided
+        if (targetBranch) {
+          if (targetBranch === currentBranch) {
+            if (options.json) {
+              console.log(formatJson(createResult(true, { branch: targetBranch }, undefined, "Already on this branch")));
+              process.exit(0);
+            }
+            setState("already_on_branch");
+            setTimeout(() => exit(), 100);
+            return;
+          }
+          try {
+            await pile.git.checkout(targetBranch);
+            if (options.json) {
+              console.log(formatJson(createResult(true, { branch: targetBranch }, undefined, `Switched to ${targetBranch}`)));
+              process.exit(0);
+            }
+            setCheckedOutBranch(targetBranch);
+            setState("success");
+            setTimeout(() => exit(), 100);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            if (options.json) {
+              console.log(formatJson(createResult(false, null, message)));
+              process.exit(1);
+            }
+            setError(message);
+            setState("error");
+          }
+          return;
+        }
 
         // Load PR cache
         const repoRoot = await pile.git.getRepoRoot();
