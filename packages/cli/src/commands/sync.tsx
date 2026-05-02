@@ -98,6 +98,7 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
         const repoRoot = await pile.git.getRepoRoot();
         const github = await createGitHub(`${repoRoot}/.pile`);
         const trunk = pile.stack.getTrunk();
+        const originalBranch = await pile.git.getCurrentBranch();
 
         // Process pending operations if GitHub is available
         if (github && pile.state.hasPendingOperations()) {
@@ -139,9 +140,9 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
           // Trunk might not have a remote
         }
 
-        // Restack using the new state-managed flow
+        // Restack only the current branch's stack
         setState("restacking");
-        const result = await pile.stack.startRestack();
+        const result = await pile.stack.startRestack(originalBranch);
         setRestackResult(result);
 
         // Check for conflicts
@@ -172,48 +173,44 @@ export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
           const allLocalBranches = await pile.git.getAllBranches();
           const branchesToClean: Array<{ branch: string; reason: "merged" | "closed"; prNumber?: number; parent: string | null }> = [];
 
-          // Check all local branches (tracked and untracked) for merged/closed PRs
-          for (const branch of allLocalBranches) {
-            // Skip trunk
-            if (branch === trunk) continue;
-
-            try {
-              // Check for open PRs first
-              let pr = await github.prs.findByBranch(branch);
-
-              if (pr) {
-                // PR exists and is open
-                github.cache.cachePR(pr);
-              } else {
-                // Check if PR was merged or closed
-                pr = await github.prs.findByBranchAnyState(branch);
+          // Check all local branches in parallel for merged/closed PRs
+          const branchChecks = allLocalBranches
+            .filter((branch) => branch !== trunk)
+            .map(async (branch) => {
+              try {
+                // Check for open PRs first
+                let pr = await github.prs.findByBranch(branch);
 
                 if (pr) {
-                  if (pr.merged) {
-                    const parent = trackedBranches.includes(branch)
-                      ? pile.state.getParent(branch)
-                      : null;
-                    branchesToClean.push({
-                      branch,
-                      reason: "merged",
-                      prNumber: pr.number,
-                      parent
-                    });
-                  } else if (pr.state === "closed") {
-                    const parent = trackedBranches.includes(branch)
-                      ? pile.state.getParent(branch)
-                      : null;
-                    branchesToClean.push({
-                      branch,
-                      reason: "closed",
-                      prNumber: pr.number,
-                      parent
-                    });
+                  github.cache.cachePR(pr);
+                } else {
+                  // Check if PR was merged or closed
+                  pr = await github.prs.findByBranchAnyState(branch);
+
+                  if (pr) {
+                    if (pr.merged) {
+                      const parent = trackedBranches.includes(branch)
+                        ? pile.state.getParent(branch)
+                        : null;
+                      return { branch, reason: "merged" as const, prNumber: pr.number, parent };
+                    } else if (pr.state === "closed") {
+                      const parent = trackedBranches.includes(branch)
+                        ? pile.state.getParent(branch)
+                        : null;
+                      return { branch, reason: "closed" as const, prNumber: pr.number, parent };
+                    }
                   }
                 }
+              } catch {
+                // Ignore errors when refreshing individual PRs
               }
-            } catch {
-              // Ignore errors when refreshing individual PRs
+              return null;
+            });
+
+          const results = await Promise.all(branchChecks);
+          for (const result of results) {
+            if (result) {
+              branchesToClean.push(result);
             }
           }
 

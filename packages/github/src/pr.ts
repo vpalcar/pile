@@ -28,7 +28,7 @@ export class PROperations {
       draft: params.draft,
     });
 
-    return this.enrichPR(data);
+    return this.toPullRequest(data);
   }
 
   /**
@@ -45,13 +45,26 @@ export class PROperations {
       state: params.state,
     });
 
-    return this.enrichPR(data);
+    return this.toPullRequest(data);
   }
 
   /**
    * Get a pull request by number
    */
   async get(prNumber: number): Promise<PullRequest> {
+    const { data } = await this.client.api.pulls.get({
+      owner: this.client.repoOwner,
+      repo: this.client.repoName,
+      pull_number: prNumber,
+    });
+
+    return this.toPullRequest(data);
+  }
+
+  /**
+   * Get a pull request by number with full review/check details
+   */
+  async getEnriched(prNumber: number): Promise<PullRequest> {
     const { data } = await this.client.api.pulls.get({
       owner: this.client.repoOwner,
       repo: this.client.repoName,
@@ -76,7 +89,7 @@ export class PROperations {
       return null;
     }
 
-    return this.enrichPR(data[0]);
+    return this.toPullRequest(data[0]);
   }
 
   /**
@@ -95,13 +108,26 @@ export class PROperations {
     }
 
     // Return the most recent PR
-    return this.enrichPR(data[0]);
+    return this.toPullRequest(data[0]);
   }
 
   /**
    * List all open PRs
    */
   async listOpen(): Promise<PullRequest[]> {
+    const { data } = await this.client.api.pulls.list({
+      owner: this.client.repoOwner,
+      repo: this.client.repoName,
+      state: "open",
+    });
+
+    return data.map((pr) => this.toPullRequest(pr));
+  }
+
+  /**
+   * List all open PRs with full review/check details
+   */
+  async listOpenEnriched(): Promise<PullRequest[]> {
     const { data } = await this.client.api.pulls.list({
       owner: this.client.repoOwner,
       repo: this.client.repoName,
@@ -315,6 +341,55 @@ export class PROperations {
       }`,
       { id: nodeId }
     );
+  }
+
+  /**
+   * Convert raw PR data to PullRequest without fetching reviews/checks
+   */
+  private toPullRequest(pr: {
+    number: number;
+    title: string;
+    body: string | null;
+    state: string;
+    draft?: boolean;
+    head: { ref: string; sha: string };
+    base: { ref: string; sha: string };
+    html_url: string;
+    mergeable?: boolean | null;
+    mergeable_state?: string;
+    merged?: boolean;
+    merged_at?: string | null;
+    created_at: string;
+    updated_at: string;
+    user: { login: string } | null;
+    assignees?: { login: string }[] | null;
+    labels?: { name: string }[] | null;
+  }): PullRequest {
+    const isMerged = pr.merged === true || pr.merged_at != null;
+
+    return {
+      number: pr.number,
+      title: pr.title,
+      body: pr.body,
+      state: pr.state as PullRequest["state"],
+      draft: pr.draft ?? false,
+      head: pr.head,
+      base: pr.base,
+      html_url: pr.html_url,
+      mergeable: pr.mergeable ?? null,
+      mergeable_state: pr.mergeable_state ?? "",
+      merged: isMerged,
+      merged_at: pr.merged_at ?? null,
+      created_at: pr.created_at,
+      updated_at: pr.updated_at,
+      user: {
+        login: pr.user?.login ?? "unknown",
+      },
+      assignees: pr.assignees?.map((a) => ({ login: a.login })) ?? undefined,
+      labels: pr.labels?.map((l) => ({ name: l.name })) ?? undefined,
+      reviews: [],
+      checks: { state: null, total: 0, passed: 0, failed: 0, pending: 0 },
+    };
   }
 
   /**

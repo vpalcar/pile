@@ -179,88 +179,79 @@ export function SubmitCommand({
         const prResults: PRResult[] = [];
         const queued: QueuedResult[] = [];
 
-        // Ensure trunk exists on remote before creating PRs
+        // Push all branches (including trunk) in a single git command
+        setState("pushing");
         try {
-          await pile.git.pushSetUpstream(trunk);
-        } catch {
-          // Trunk may already exist on remote, that's fine
+          await pile.git.pushMultiple([trunk, ...branchesToSubmit], true);
+        } catch (pushErr) {
+          if (isNetworkError(pushErr)) {
+            for (const branch of branchesToSubmit) {
+              pile.state.queueOperation({
+                type: "push",
+                payload: { branch, force: true },
+              });
+              queued.push({ branch, operation: "create_pr" });
+            }
+            setResults(prResults);
+            setQueuedResults(queued);
+            setTrunk(trunk);
+            if (options.json) {
+              console.log(
+                formatJson(createResult(true, { prs: prResults, queued }))
+              );
+              process.exit(0);
+            }
+            if (queued.length > 0 && prResults.length === 0) {
+              setState("queued");
+            } else {
+              setState("success");
+            }
+            return;
+          }
+          // Non-network push error — fall back to individual pushes below
         }
 
-        for (const branch of branchesToSubmit) {
-          // Check if this branch's PR is already merged - skip it
-          try {
-            const existingPr = await github.prs.findByBranchAnyState(branch);
-            if (existingPr?.merged) {
-              // Branch already merged, clean it up and skip
-              pile.state.removeBranchRelationship(branch);
-              continue;
-            }
-          } catch {
-            // Ignore errors, proceed with submit
-          }
-
-          // Push branch
-          setState("pushing");
-          try {
-            await pile.git.pushSetUpstream(branch);
-          } catch {
-            try {
-              await pile.git.push(branch, true);
-            } catch (pushErr) {
-              if (isNetworkError(pushErr)) {
-                pile.state.queueOperation({
-                  type: "push",
-                  payload: { branch, force: true },
-                });
-                queued.push({ branch, operation: "create_pr" });
-                continue;
+        // Look up existing PRs for all branches in parallel
+        setState("creating_pr");
+        const existingPRs = await Promise.all(
+          branchesToSubmit.map(async (branch) => {
+            const storedRel = pile.state.getBranchRelationship(branch);
+            if (storedRel?.prNumber) {
+              try {
+                const stored = await github.prs.get(storedRel.prNumber);
+                if (stored && stored.state === "open") {
+                  return { branch, pr: stored };
+                }
+              } catch {
+                // Fall through to branch lookup
               }
-              throw new Error(`Failed to push ${branch}: ${pushErr}`);
             }
-          }
+            const pr = await github.prs.findByBranch(branch);
+            return { branch, pr };
+          })
+        );
 
-          // Create or update PR - use trunk as base if parent was merged
+        // Process each branch: create or update PR
+        for (const { branch, pr: existingPR } of existingPRs) {
+          // Determine base branch
           let parent = pile.state.getParent(branch);
 
-          // Check if parent was merged
+          // Check if parent was merged (only if parent has an existing PR in our results)
           if (parent && parent !== trunk) {
-            try {
-              const parentPr = await github.prs.findByBranchAnyState(parent);
-              if (parentPr?.merged) {
-                // Parent was merged, update this branch to use trunk as base
-                parent = trunk;
-                const rel = pile.state.getBranchRelationship(branch);
-                if (rel) {
-                  pile.state.setBranchRelationship(branch, { ...rel, parent: trunk });
-                }
+            const parentResult = existingPRs.find(r => r.branch === parent);
+            if (parentResult?.pr?.merged) {
+              parent = trunk;
+              const rel = pile.state.getBranchRelationship(branch);
+              if (rel) {
+                pile.state.setBranchRelationship(branch, { ...rel, parent: trunk });
               }
-            } catch {
-              // Ignore errors
             }
           }
 
           const baseBranch = parent ?? trunk;
 
           try {
-            // Check stored PR number first (survives moves/renames), then fall back to API lookup
-            const storedRel = pile.state.getBranchRelationship(branch);
-            let existingPR: Awaited<ReturnType<typeof github.prs.findByBranch>> = null;
-            if (storedRel?.prNumber) {
-              try {
-                const stored = await github.prs.get(storedRel.prNumber);
-                if (stored && stored.state === "open") {
-                  existingPR = stored;
-                }
-              } catch {
-                // Stored PR might be invalid, fall back to API lookup
-              }
-            }
-            if (!existingPR) {
-              existingPR = await github.prs.findByBranch(branch);
-            }
-
-            if (existingPR) {
-              setState("updating_pr");
+            if (existingPR && !existingPR.merged) {
               if (existingPR.base.ref !== baseBranch) {
                 await github.prs.update({
                   number: existingPR.number,
@@ -275,22 +266,23 @@ export function SubmitCommand({
                 prUrl: existingPR.html_url,
                 created: false,
               });
+            } else if (existingPR?.merged) {
+              // Branch already merged, clean it up and skip
+              pile.state.removeBranchRelationship(branch);
             } else {
-              setState("creating_pr");
-              // Use stored title from create, or fall back to branch name
+              // Create new PR
               const storedTitle = pile.state.getTitle(branch);
               const prTitle = title ?? storedTitle ?? branch;
               const stackInfo = stack
                 ? `Part of a stack based on \`${trunk}\``
                 : "";
-              const description = stackInfo;
 
               const pr = await github.prs.create({
                 title: prTitle,
-                body: description,
+                body: stackInfo,
                 head: branch,
                 base: baseBranch,
-                draft: draft ?? false,
+                draft: draft ?? true,
               });
 
               if (reviewers && reviewers.length > 0) {
@@ -325,7 +317,7 @@ export function SubmitCommand({
                   title: prTitle,
                   body: stackInfo,
                   base: baseBranch,
-                  draft: draft ?? false,
+                  draft: draft ?? true,
                   reviewers,
                 },
               });

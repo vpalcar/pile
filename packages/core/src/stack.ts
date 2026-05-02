@@ -502,11 +502,47 @@ export class StackManager {
   }
 
   /**
-   * Start a new restack operation with state management
+   * Get branches to restack for the stack containing the given branch
    */
-  async startRestack(): Promise<RestackResult> {
+  getBranchesToRestackForStack(branchName: string): string[] {
+    const trunk = this.getTrunk();
+
+    // Walk up to find the root of this branch's stack
+    let root = branchName;
+    while (true) {
+      const parent = this.state.getParent(root);
+      if (!parent || parent === trunk) break;
+      root = parent;
+    }
+
+    // If the branch is trunk or not tracked, return empty
+    if (root === trunk || !this.state.getBranchRelationship(root)) {
+      return [];
+    }
+
+    // Collect this root and all its descendants
+    const branches: string[] = [];
+    const collectBranches = (branch: string) => {
+      branches.push(branch);
+      const children = this.state.getChildren(branch);
+      for (const child of children) {
+        collectBranches(child);
+      }
+    };
+    collectBranches(root);
+
+    return branches;
+  }
+
+  /**
+   * Start a new restack operation with state management
+   * If onlyForBranch is provided, only restack the stack containing that branch
+   */
+  async startRestack(onlyForBranch?: string): Promise<RestackResult> {
     const currentBranch = await this.git.getCurrentBranch();
-    const branches = this.getBranchesToRestack();
+    const branches = onlyForBranch
+      ? this.getBranchesToRestackForStack(onlyForBranch)
+      : this.getBranchesToRestack();
 
     if (branches.length === 0) {
       return { success: true, completed: [], remaining: [] };
