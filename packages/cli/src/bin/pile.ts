@@ -23,6 +23,7 @@ import { DeleteCommand } from "../commands/delete.js";
 import { EditCommand } from "../commands/edit.js";
 import { RequestCommand } from "../commands/request.js";
 import { ReviewCommand } from "../commands/review.js";
+import { DiffCommand } from "../commands/diff.js";
 import { getSecretPileMessage, getPileWisdom } from "../utils/fun.js";
 
 const program = new Command();
@@ -214,6 +215,20 @@ program
     const globalOpts = program.opts();
     render(
       React.createElement(StatusCommand, {
+        options: { json: globalOpts.json },
+      }),
+    );
+  });
+
+// diff command
+program
+  .command("diff")
+  .alias("d")
+  .description("Show changes in current branch compared to its parent")
+  .action(() => {
+    const globalOpts = program.opts();
+    render(
+      React.createElement(DiffCommand, {
         options: { json: globalOpts.json },
       }),
     );

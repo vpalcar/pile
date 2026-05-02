@@ -246,6 +246,32 @@ export class GitOperations {
     }
   }
 
+  /**
+   * Get list of files changed between two refs with their status.
+   */
+  async getDiffFiles(
+    base: string,
+    head: string
+  ): Promise<Array<{ path: string; status: string }>> {
+    try {
+      const result = await this.git.raw([
+        "diff",
+        "--name-status",
+        `${base}...${head}`,
+      ]);
+      if (!result.trim()) return [];
+      return result
+        .trim()
+        .split("\n")
+        .map((line) => {
+          const [status, ...pathParts] = line.split("\t");
+          return { status: status.charAt(0), path: pathParts.join("\t") };
+        });
+    } catch {
+      return [];
+    }
+  }
+
   async push(branch: string, force = false): Promise<void> {
     const args = force ? ["--force-with-lease"] : [];
     await this.git.push("origin", branch, args);
