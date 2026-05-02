@@ -255,6 +255,18 @@ export class GitOperations {
     await this.git.push(["-u", "origin", branch]);
   }
 
+  /**
+   * Push multiple branches in a single git command.
+   * Much faster than pushing one at a time.
+   */
+  async pushMultiple(branches: string[], force = false): Promise<void> {
+    const args = ["push", "origin", ...branches];
+    if (force) {
+      args.push("--force-with-lease");
+    }
+    await this.git.raw(args);
+  }
+
   async fetch(prune = true): Promise<void> {
     const args = prune ? ["--prune"] : [];
     await this.git.fetch(args);

@@ -192,8 +192,8 @@ export function StatusCommand({
           return;
         }
 
-        // Fetch full PR data to get mergeable status (list doesn't include it)
-        const pr = await github.prs.get(prFromList.number);
+        // Fetch full PR data with reviews/checks for status display
+        const pr = await github.prs.getEnriched(prFromList.number);
         const status = getPRStatus(pr);
 
         if (options.json) {
