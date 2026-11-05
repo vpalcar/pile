@@ -15,6 +15,7 @@ import {
   exitWithError,
   toCommandError,
 } from "../utils/output.js";
+import { useFailureExitCode } from "../utils/exit-code.js";
 
 const CONFLICT_HINT =
   "Resolve the conflicts, `git add` the files, then run `pile restack --continue` (or `pile restack --abort`).";
@@ -55,6 +56,8 @@ export function RestackCommand({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<RestackResult | null>(null);
   const [currentBranch, setCurrentBranch] = useState<string>("");
+
+  useFailureExitCode(state, ["conflict", "error", "not_initialized", "no_restack"]);
 
   useEffect(() => {
     async function run() {

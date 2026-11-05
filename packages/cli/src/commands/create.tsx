@@ -12,6 +12,7 @@ import {
   exitNeedsInput,
   toCommandError,
 } from "../utils/output.js";
+import { useFailureExitCode } from "../utils/exit-code.js";
 
 export interface CreateCommandProps {
   name?: string;
@@ -70,6 +71,7 @@ export function CreateCommand({
 }: CreateCommandProps): React.ReactElement {
   const { exit } = useApp();
   const [state, setState] = useState<State>("checking");
+  useFailureExitCode(state, ["no_staged", "not_initialized", "no_changes", "aborted", "error"]);
   const [error, setError] = useState<string | null>(null);
   const [parentBranch, setParentBranch] = useState("");
   const [branchName, setBranchName] = useState<string>("");

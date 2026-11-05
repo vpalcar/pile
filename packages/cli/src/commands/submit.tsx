@@ -19,6 +19,7 @@ import {
 } from "../utils/output.js";
 import { openUrl } from "../utils/browser.js";
 import { getPileWisdom } from "../utils/fun.js";
+import { useFailureExitCode } from "../utils/exit-code.js";
 
 export interface SubmitCommandProps {
   stack?: boolean;
@@ -84,6 +85,7 @@ export function SubmitCommand({
   options,
 }: SubmitCommandProps): React.ReactElement {
   const [state, setState] = useState<State>("checking");
+  useFailureExitCode(state, ["no_github", "not_initialized", "on_trunk", "error"]);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<PRResult[]>([]);
   const [queuedResults, setQueuedResults] = useState<QueuedResult[]>([]);

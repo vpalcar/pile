@@ -12,6 +12,7 @@ import {
   toCommandError,
 } from "../utils/output.js";
 import { spawnSync } from "node:child_process";
+import { useFailureExitCode } from "../utils/exit-code.js";
 
 export interface AddCommandProps {
   files: string[];
@@ -31,6 +32,7 @@ export function AddCommand({
   options,
 }: AddCommandProps): React.ReactElement {
   const [state, setState] = useState<State>("checking");
+  useFailureExitCode(state, ["no_changes", "error"]);
   const [error, setError] = useState<string | null>(null);
   const [stagedFiles, setStagedFiles] = useState<string[]>([]);
 

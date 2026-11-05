@@ -11,6 +11,7 @@ import {
   exitNeedsInput,
   toCommandError,
 } from "../utils/output.js";
+import { useFailureExitCode } from "../utils/exit-code.js";
 
 export interface ModifyCommandProps {
   all?: boolean;
@@ -42,6 +43,7 @@ export function ModifyCommand({
 }: ModifyCommandProps): React.ReactElement {
   const { exit } = useApp();
   const [state, setState] = useState<State>("checking");
+  useFailureExitCode(state, ["not_initialized", "no_changes", "on_trunk", "aborted", "error"]);
   const [error, setError] = useState<string | null>(null);
   const [branchName, setBranchName] = useState<string>("");
   const [commitHash, setCommitHash] = useState<string | null>(null);

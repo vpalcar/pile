@@ -15,6 +15,7 @@ import {
   exitWithError,
   toCommandError,
 } from "../utils/output.js";
+import { useFailureExitCode } from "../utils/exit-code.js";
 
 const CLEANUP_HINT = "Rerun with --yes to delete merged and closed branches without a prompt.";
 const CONFLICT_HINT =
@@ -66,6 +67,7 @@ type State =
 export function SyncCommand({ options }: SyncCommandProps): React.ReactElement {
   const { exit } = useApp();
   const [state, setState] = useState<State>("checking");
+  useFailureExitCode(state, ["conflict", "restack_in_progress", "not_initialized", "error"]);
   const [error, setError] = useState<string | null>(null);
   const [restackResult, setRestackResult] = useState<RestackResult | null>(null);
   const [conflictBranch, setConflictBranch] = useState<string | null>(null);
