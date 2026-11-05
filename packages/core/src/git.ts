@@ -1,409 +1,426 @@
-import simpleGit, { SimpleGit } from "simple-git";
+import { existsSync } from "node:fs";
 import { Commit, SyncStatus } from "./schemas.js";
+import { GitError, mapLimit, runGit } from "./exec.js";
+
+export interface RebaseResult {
+  success: boolean;
+  conflicts: boolean;
+}
+
+/** Snapshot of every local and remote-tracking branch head, read in one git call. */
+export interface RefSnapshot {
+  /** Local branch name -> commit SHA */
+  local: Map<string, string>;
+  /** Remote-tracking ref without the `refs/remotes/` prefix (e.g. `origin/main`) -> commit SHA */
+  remote: Map<string, string>;
+}
+
+const FIELD = "\x1f";
+const RECORD = "\x1e";
+const COMMIT_FORMAT = `--format=%H${FIELD}%s${FIELD}%an${FIELD}%aI${RECORD}`;
+
+/** How many git processes may run at once for batched reads. */
+const READ_CONCURRENCY = 8;
+
+function parseCommits(output: string): Commit[] {
+  return output
+    .split(RECORD)
+    .map((record) => record.trim())
+    .filter(Boolean)
+    .map((record) => {
+      const [hash, message, author, date] = record.split(FIELD);
+      return { hash, message, author, date };
+    });
+}
 
 export class GitOperations {
-  private git: SimpleGit;
+  private readonly cwd: string | undefined;
+  private remote = "origin";
+  private gitDir: string | null = null;
+
+  /**
+   * Called after git commands that rewrite `branch.<name>.*` config sections
+   * (branch delete and rename), so cached pile state can be refreshed.
+   */
+  onConfigChanged?: () => void;
 
   constructor(repoPath?: string) {
-    this.git = simpleGit(repoPath);
+    this.cwd = repoPath;
   }
 
-  async isGitRepo(): Promise<boolean> {
+  /** Remote used for push, fetch and sync status (defaults to `origin`). */
+  get remoteName(): string {
+    return this.remote;
+  }
+
+  setRemoteName(remote: string): void {
+    this.remote = remote;
+  }
+
+  run(args: string[]): Promise<string> {
+    return runGit(args, { cwd: this.cwd });
+  }
+
+  private async tryRun(args: string[]): Promise<string | null> {
     try {
-      await this.git.status();
-      return true;
-    } catch {
-      return false;
+      return await this.run(args);
+    } catch (error) {
+      if (error instanceof GitError) return null;
+      throw error;
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Repository
+
+  async isGitRepo(): Promise<boolean> {
+    return (await this.tryRun(["rev-parse", "--is-inside-work-tree"])) === "true";
   }
 
   async initRepo(): Promise<void> {
-    await this.git.init();
+    await this.run(["init"]);
   }
 
   async createInitialCommit(branchName = "main"): Promise<void> {
-    // Create an empty initial commit
-    await this.git.raw(["checkout", "-b", branchName]);
-    await this.git.raw([
-      "commit",
-      "--allow-empty",
-      "-m",
-      "Initial commit",
-    ]);
-  }
-
-  async getCurrentBranch(): Promise<string> {
-    const result = await this.git.revparse(["--abbrev-ref", "HEAD"]);
-    return result.trim();
-  }
-
-  async getAllBranches(): Promise<string[]> {
-    const result = await this.git.branchLocal();
-    return result.all;
-  }
-
-  async getRemoteBranches(): Promise<string[]> {
-    const result = await this.git.branch(["-r"]);
-    return result.all;
-  }
-
-  async createBranch(name: string, startPoint?: string): Promise<void> {
-    if (startPoint) {
-      await this.git.checkoutBranch(name, startPoint);
-    } else {
-      await this.git.checkoutLocalBranch(name);
-    }
-  }
-
-  async checkout(branch: string): Promise<void> {
-    await this.git.checkout(branch);
-  }
-
-  async getBranchCommits(branch: string, since?: string): Promise<Commit[]> {
-    const options: string[] = ["--format=%H|%s|%an|%aI"];
-    if (since) {
-      options.push(`${since}..${branch}`);
-    } else {
-      options.push(branch);
-    }
-
-    try {
-      const result = await this.git.log(options);
-      return result.all.map((log) => ({
-        hash: log.hash,
-        message: log.message,
-        author: log.author_name,
-        date: log.date,
-      }));
-    } catch {
-      return [];
-    }
-  }
-
-  async getCommitsBetween(base: string, head: string): Promise<Commit[]> {
-    try {
-      const result = await this.git.log([`${base}..${head}`]);
-      return result.all.map((log) => ({
-        hash: log.hash,
-        message: log.message,
-        author: log.author_name,
-        date: log.date,
-      }));
-    } catch {
-      return [];
-    }
-  }
-
-  async rebase(onto: string): Promise<{ success: boolean; conflicts: boolean }> {
-    try {
-      await this.git.rebase([onto]);
-      return { success: true, conflicts: false };
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      if (errorMessage.includes("CONFLICT") || errorMessage.includes("conflict")) {
-        return { success: false, conflicts: true };
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * Rebase using --onto to avoid reapplying commits already in the parent.
-   * git rebase --onto <newParent> <oldBase> <branch>
-   * This takes commits from oldBase..branch and replays them onto newParent.
-   */
-  async rebaseOnto(
-    newParent: string,
-    oldBase: string,
-    branch: string
-  ): Promise<{ success: boolean; conflicts: boolean }> {
-    try {
-      await this.git.rebase(["--onto", newParent, oldBase, branch]);
-      return { success: true, conflicts: false };
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      if (errorMessage.includes("CONFLICT") || errorMessage.includes("conflict")) {
-        return { success: false, conflicts: true };
-      }
-      throw error;
-    }
-  }
-
-  async getCommitHash(ref: string): Promise<string> {
-    const result = await this.git.revparse([ref]);
-    return result.trim();
-  }
-
-  async commitExists(hash: string): Promise<boolean> {
-    try {
-      await this.git.catFile(["-t", hash]);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  async stash(): Promise<void> {
-    await this.git.stash();
-  }
-
-  async stashPop(): Promise<void> {
-    await this.git.stash(["pop"]);
-  }
-
-  /**
-   * Find the merge-base (common ancestor) between two refs.
-   * This is useful as a fallback when the stored base commit no longer exists.
-   */
-  async getMergeBase(ref1: string, ref2: string): Promise<string | null> {
-    try {
-      const result = await this.git.raw(["merge-base", ref1, ref2]);
-      return result.trim();
-    } catch {
-      return null;
-    }
-  }
-
-  async rebaseAbort(): Promise<void> {
-    await this.git.rebase(["--abort"]);
-  }
-
-  async rebaseContinue(): Promise<{ success: boolean; conflicts: boolean }> {
-    try {
-      await this.git.rebase(["--continue"]);
-      return { success: true, conflicts: false };
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      if (errorMessage.includes("CONFLICT") || errorMessage.includes("conflict")) {
-        return { success: false, conflicts: true };
-      }
-      throw error;
-    }
-  }
-
-  async hasUncommittedChanges(): Promise<boolean> {
-    const status = await this.git.status();
-    return !status.isClean();
-  }
-
-  async getStagedFiles(): Promise<string[]> {
-    const status = await this.git.status();
-    return status.staged;
-  }
-
-  async stageAll(): Promise<void> {
-    await this.git.add("-A");
-  }
-
-  async stageUpdated(): Promise<void> {
-    await this.git.add("-u");
-  }
-
-  async commit(message: string): Promise<string> {
-    const result = await this.git.commit(message);
-    return result.commit;
-  }
-
-  async amendCommit(message?: string): Promise<string> {
-    const args = ["--amend"];
-    if (message) {
-      args.push("-m", message);
-    } else {
-      args.push("--no-edit");
-    }
-    const result = await this.git.commit(args);
-    return result.commit;
-  }
-
-  /**
-   * Squash all commits on the current branch since parent into a single commit.
-   * Uses soft reset to parent and recommit.
-   */
-  async squashCommits(parent: string, message: string): Promise<string> {
-    // Get the merge base with parent
-    const mergeBase = await this.getMergeBase("HEAD", parent);
-    if (!mergeBase) {
-      throw new Error("Could not find merge base with parent");
-    }
-
-    // Soft reset to merge base (keeps all changes staged)
-    await this.git.reset(["--soft", mergeBase]);
-
-    // Commit with the new message
-    const result = await this.git.commit(message);
-    return result.commit;
-  }
-
-  /**
-   * Get the number of commits between two refs.
-   */
-  async getCommitCount(from: string, to: string): Promise<number> {
-    try {
-      const result = await this.git.raw(["rev-list", "--count", `${from}..${to}`]);
-      return parseInt(result.trim(), 10);
-    } catch {
-      return 0;
-    }
-  }
-
-  /**
-   * Get list of files changed between two refs with their status.
-   */
-  async getDiffFiles(
-    base: string,
-    head: string
-  ): Promise<Array<{ path: string; status: string }>> {
-    try {
-      const result = await this.git.raw([
-        "diff",
-        "--name-status",
-        `${base}...${head}`,
-      ]);
-      if (!result.trim()) return [];
-      return result
-        .trim()
-        .split("\n")
-        .map((line) => {
-          const [status, ...pathParts] = line.split("\t");
-          return { status: status.charAt(0), path: pathParts.join("\t") };
-        });
-    } catch {
-      return [];
-    }
-  }
-
-  async push(branch: string, force = false): Promise<void> {
-    const args = force ? ["--force-with-lease"] : [];
-    await this.git.push("origin", branch, args);
-  }
-
-  async pushSetUpstream(branch: string): Promise<void> {
-    await this.git.push(["-u", "origin", branch]);
-  }
-
-  /**
-   * Push multiple branches in a single git command.
-   * Much faster than pushing one at a time.
-   */
-  async pushMultiple(branches: string[], force = false): Promise<void> {
-    const args = ["push", "origin", ...branches];
-    if (force) {
-      args.push("--force-with-lease");
-    }
-    await this.git.raw(args);
-  }
-
-  async fetch(prune = true): Promise<void> {
-    const args = prune ? ["--prune"] : [];
-    await this.git.fetch(args);
-  }
-
-  async pull(branch?: string): Promise<void> {
-    if (branch) {
-      await this.git.pull("origin", branch);
-    } else {
-      await this.git.pull();
-    }
-  }
-
-  async getBranchSyncStatus(branch: string, remote = "origin"): Promise<SyncStatus> {
-    try {
-      const remoteBranch = `${remote}/${branch}`;
-
-      // Check if remote branch exists
-      const remoteBranches = await this.getRemoteBranches();
-      if (!remoteBranches.includes(remoteBranch)) {
-        return "pending";
-      }
-
-      // Get ahead/behind counts
-      const result = await this.git.raw([
-        "rev-list",
-        "--left-right",
-        "--count",
-        `${branch}...${remoteBranch}`,
-      ]);
-
-      const [ahead, behind] = result.trim().split("\t").map(Number);
-
-      if (ahead === 0 && behind === 0) {
-        return "synced";
-      } else if (ahead > 0 && behind === 0) {
-        return "ahead";
-      } else if (ahead === 0 && behind > 0) {
-        return "behind";
-      } else {
-        return "conflict";
-      }
-    } catch {
-      return "pending";
-    }
-  }
-
-  async deleteBranch(branch: string, force = false): Promise<void> {
-    await this.git.deleteLocalBranch(branch, force);
-  }
-
-  async deleteRemoteBranch(branch: string, remote = "origin"): Promise<void> {
-    await this.git.push(remote, `:${branch}`);
-  }
-
-  async branchExists(branch: string): Promise<boolean> {
-    const branches = await this.getAllBranches();
-    return branches.includes(branch);
-  }
-
-  async getRemote(): Promise<string | null> {
-    try {
-      const result = await this.git.remote(["-v"]);
-      if (!result) return null;
-      const match = result.match(/origin\s+(\S+)/);
-      return match ? match[1] : null;
-    } catch {
-      return null;
-    }
+    await this.run(["checkout", "-b", branchName]);
+    await this.run(["commit", "--allow-empty", "-m", "Initial commit"]);
   }
 
   async getRepoRoot(): Promise<string> {
-    const result = await this.git.revparse(["--show-toplevel"]);
-    return result.trim();
+    return this.run(["rev-parse", "--show-toplevel"]);
+  }
+
+  /** Absolute path of the common git directory (shared by all worktrees). */
+  async getGitDir(): Promise<string> {
+    if (!this.gitDir) {
+      this.gitDir = await this.run(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    }
+    return this.gitDir;
+  }
+
+  async getRemote(): Promise<string | null> {
+    return this.tryRun(["remote", "get-url", this.remote]);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Branches and refs
+
+  async getCurrentBranch(): Promise<string> {
+    const branch = await this.tryRun(["symbolic-ref", "--short", "-q", "HEAD"]);
+    return branch || "HEAD";
+  }
+
+  async getRefs(): Promise<RefSnapshot> {
+    const output = await this.run([
+      "for-each-ref",
+      `--format=%(refname)${FIELD}%(objectname)${FIELD}%(symref)`,
+      "refs/heads",
+      "refs/remotes",
+    ]);
+    const local = new Map<string, string>();
+    const remote = new Map<string, string>();
+    for (const line of output.split("\n")) {
+      if (!line) continue;
+      const [ref, sha, symref] = line.split(FIELD);
+      if (symref) continue; // e.g. refs/remotes/origin/HEAD
+      if (ref.startsWith("refs/heads/")) {
+        local.set(ref.slice("refs/heads/".length), sha);
+      } else if (ref.startsWith("refs/remotes/")) {
+        remote.set(ref.slice("refs/remotes/".length), sha);
+      }
+    }
+    return { local, remote };
+  }
+
+  async getAllBranches(): Promise<string[]> {
+    return [...(await this.getRefs()).local.keys()];
+  }
+
+  async getRemoteBranches(): Promise<string[]> {
+    return [...(await this.getRefs()).remote.keys()];
+  }
+
+  async branchExists(branch: string): Promise<boolean> {
+    return (await this.tryRun(["rev-parse", "--verify", "-q", `refs/heads/${branch}`])) !== null;
+  }
+
+  async createBranch(name: string, startPoint?: string): Promise<void> {
+    await this.run(["checkout", "-b", name, ...(startPoint ? [startPoint] : [])]);
+  }
+
+  async checkout(branch: string): Promise<void> {
+    await this.run(["switch", branch]);
+  }
+
+  async deleteBranch(branch: string, force = false): Promise<void> {
+    await this.run(["branch", force ? "-D" : "-d", branch]);
+    this.onConfigChanged?.();
+  }
+
+  async renameBranch(oldName: string, newName: string): Promise<void> {
+    await this.run(["branch", "-m", oldName, newName]);
+    this.onConfigChanged?.();
+  }
+
+  async deleteRemoteBranch(branch: string, remote = this.remote): Promise<void> {
+    await this.run(["push", remote, "--delete", branch]);
+  }
+
+  async getCommitHash(ref: string): Promise<string> {
+    return this.run(["rev-parse", "--verify", `${ref}^{commit}`]);
+  }
+
+  async commitExists(hash: string): Promise<boolean> {
+    return (await this.tryRun(["cat-file", "-e", `${hash}^{commit}`])) !== null;
+  }
+
+  async isAncestor(ancestor: string, descendant: string): Promise<boolean> {
+    return (await this.tryRun(["merge-base", "--is-ancestor", ancestor, descendant])) !== null;
+  }
+
+  async getMergeBase(ref1: string, ref2: string): Promise<string | null> {
+    return this.tryRun(["merge-base", ref1, ref2]);
   }
 
   /**
    * Find the likely parent branch by checking merge-base with candidates.
-   * Returns the branch with the closest common ancestor.
+   * Returns the branch with the fewest commits between the merge-base and `branch`.
    */
   async findLikelyParent(branch: string, candidates: string[]): Promise<string | null> {
-    if (candidates.length === 0) return null;
-
-    let bestCandidate: string | null = null;
-    let minDistance = Infinity;
-
-    for (const candidate of candidates) {
-      if (candidate === branch) continue;
-
-      try {
+    const distances = await mapLimit(
+      candidates.filter((c) => c !== branch),
+      READ_CONCURRENCY,
+      async (candidate) => {
         const mergeBase = await this.getMergeBase(branch, candidate);
-        if (!mergeBase) continue;
+        if (!mergeBase) return { candidate, distance: Infinity };
+        return { candidate, distance: await this.getCommitCount(mergeBase, branch) };
+      },
+    );
+    const best = distances.reduce<{ candidate: string; distance: number } | null>(
+      (min, d) => (d.distance < (min?.distance ?? Infinity) ? d : min),
+      null,
+    );
+    return best?.candidate ?? null;
+  }
 
-        // Count commits between merge-base and branch head
-        const result = await this.git.raw([
-          "rev-list",
-          "--count",
-          `${mergeBase}..${branch}`,
-        ]);
-        const distance = parseInt(result.trim(), 10);
+  // ---------------------------------------------------------------------------
+  // Commits
 
-        if (distance < minDistance) {
-          minDistance = distance;
-          bestCandidate = candidate;
-        }
-      } catch {
-        // Skip this candidate
-      }
+  async getBranchCommits(branch: string, since?: string): Promise<Commit[]> {
+    const range = since ? `${since}..${branch}` : branch;
+    const output = await this.tryRun(["log", COMMIT_FORMAT, range, "--"]);
+    return output ? parseCommits(output) : [];
+  }
+
+  async getCommitsBetween(base: string, head: string): Promise<Commit[]> {
+    return this.getBranchCommits(head, base);
+  }
+
+  /** Commits for many `base..head` ranges, read in parallel. */
+  async getCommitsForRanges(
+    ranges: Array<{ base: string; head: string }>,
+  ): Promise<Commit[][]> {
+    return mapLimit(ranges, READ_CONCURRENCY, ({ base, head }) =>
+      this.getCommitsBetween(base, head),
+    );
+  }
+
+  async getCommitCount(from: string, to: string): Promise<number> {
+    const output = await this.tryRun(["rev-list", "--count", `${from}..${to}`]);
+    return output ? parseInt(output, 10) : 0;
+  }
+
+  async hasUncommittedChanges(): Promise<boolean> {
+    return (await this.run(["status", "--porcelain"])).length > 0;
+  }
+
+  async getStagedFiles(): Promise<string[]> {
+    const output = await this.run(["diff", "--cached", "--name-only", "-z"]);
+    return output.split("\0").filter(Boolean);
+  }
+
+  async stageAll(): Promise<void> {
+    await this.run(["add", "-A"]);
+  }
+
+  async stageUpdated(): Promise<void> {
+    await this.run(["add", "-u"]);
+  }
+
+  async stageFiles(files: string[]): Promise<void> {
+    if (files.length > 0) await this.run(["add", "--", ...files]);
+  }
+
+  async commit(message: string): Promise<string> {
+    await this.run(["commit", "-m", message]);
+    return this.getCommitHash("HEAD");
+  }
+
+  async amendCommit(message?: string): Promise<string> {
+    await this.run(["commit", "--amend", ...(message ? ["-m", message] : ["--no-edit"])]);
+    return this.getCommitHash("HEAD");
+  }
+
+  /** Squash all commits since `parent` into one, keeping the working tree as is. */
+  async squashCommits(parent: string, message: string): Promise<string> {
+    const mergeBase = await this.getMergeBase("HEAD", parent);
+    if (!mergeBase) {
+      throw new Error(`Could not find merge base with ${parent}`);
     }
+    await this.run(["reset", "--soft", mergeBase]);
+    return this.commit(message);
+  }
 
-    return bestCandidate;
+  async stash(): Promise<void> {
+    await this.run(["stash", "push"]);
+  }
+
+  async stashPop(): Promise<void> {
+    await this.run(["stash", "pop"]);
+  }
+
+  async getDiffFiles(base: string, head: string): Promise<Array<{ path: string; status: string }>> {
+    const output = await this.tryRun(["diff", "--name-status", "-z", `${base}...${head}`]);
+    if (!output) return [];
+    const parts = output.split("\0").filter(Boolean);
+    const files: Array<{ path: string; status: string }> = [];
+    for (let i = 0; i < parts.length; ) {
+      const status = parts[i++].charAt(0);
+      // Renames and copies list the old path, then the new one.
+      if (status === "R" || status === "C") i++;
+      files.push({ status, path: parts[i++] });
+    }
+    return files;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Rebase
+
+  async isRebaseInProgress(): Promise<boolean> {
+    // Rebase state lives in the per-worktree git dir, so let git resolve the paths.
+    const output = await this.run([
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-path",
+      "rebase-merge",
+      "--git-path",
+      "rebase-apply",
+    ]);
+    return output.split("\n").some((path) => existsSync(path));
+  }
+
+  private async runRebase(args: string[]): Promise<RebaseResult> {
+    try {
+      await this.run(["rebase", ...args]);
+      return { success: true, conflicts: false };
+    } catch (error) {
+      if (error instanceof GitError && (await this.isRebaseInProgress())) {
+        return { success: false, conflicts: true };
+      }
+      throw error;
+    }
+  }
+
+  async rebase(onto: string): Promise<RebaseResult> {
+    return this.runRebase([onto]);
+  }
+
+  /**
+   * Replays `oldBase..branch` onto `newParent`, skipping commits already in the parent.
+   * Equivalent to `git rebase --onto <newParent> <oldBase> <branch>`.
+   */
+  async rebaseOnto(newParent: string, oldBase: string, branch: string): Promise<RebaseResult> {
+    return this.runRebase(["--onto", newParent, oldBase, branch]);
+  }
+
+  async rebaseContinue(): Promise<RebaseResult> {
+    return this.runRebase(["--continue"]);
+  }
+
+  async rebaseAbort(): Promise<void> {
+    await this.run(["rebase", "--abort"]);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Remote
+
+  async fetch(prune = true): Promise<void> {
+    await this.run(["fetch", ...(prune ? ["--prune"] : []), this.remote]);
+  }
+
+  /** Pulls with fast-forward only, so a diverged trunk is reported instead of merged. */
+  async pull(branch?: string): Promise<void> {
+    await this.run(["pull", "--ff-only", ...(branch ? [this.remote, branch] : [])]);
+  }
+
+  /**
+   * Fast-forwards a local branch to its remote-tracking ref without checking it out.
+   * Returns false when the branch has diverged (nothing is changed then).
+   */
+  async fastForward(branch: string): Promise<boolean> {
+    const remoteRef = `refs/remotes/${this.remote}/${branch}`;
+    const [local, remote] = await Promise.all([
+      this.tryRun(["rev-parse", "--verify", "-q", `refs/heads/${branch}`]),
+      this.tryRun(["rev-parse", "--verify", "-q", remoteRef]),
+    ]);
+    if (!local || !remote || local === remote) return true;
+    if (!(await this.isAncestor(local, remote))) return false;
+
+    if ((await this.getCurrentBranch()) === branch) {
+      await this.run(["merge", "--ff-only", remoteRef]);
+    } else {
+      await this.run(["update-ref", `refs/heads/${branch}`, remote, local]);
+    }
+    return true;
+  }
+
+  async push(branch: string, force = false): Promise<void> {
+    await this.pushMultiple([branch], force);
+  }
+
+  async pushSetUpstream(branch: string): Promise<void> {
+    await this.run(["push", "-u", this.remote, branch]);
+  }
+
+  /** Pushes several branches in one git call. */
+  async pushMultiple(branches: string[], force = false): Promise<void> {
+    if (branches.length === 0) return;
+    await this.run([
+      "push",
+      ...(force ? ["--force-with-lease"] : []),
+      this.remote,
+      ...branches.map((b) => `refs/heads/${b}:refs/heads/${b}`),
+    ]);
+  }
+
+  async getBranchSyncStatus(branch: string, remote = this.remote): Promise<SyncStatus> {
+    const [status] = await this.getSyncStatuses([branch], remote);
+    return status;
+  }
+
+  /**
+   * Sync status of many branches against the remote. Reads all refs in one call and
+   * only counts ahead/behind for branches whose local and remote heads differ.
+   */
+  async getSyncStatuses(
+    branches: string[],
+    remote = this.remote,
+    refs?: RefSnapshot,
+  ): Promise<SyncStatus[]> {
+    const snapshot = refs ?? (await this.getRefs());
+    return mapLimit(branches, READ_CONCURRENCY, async (branch) => {
+      const localSha = snapshot.local.get(branch);
+      const remoteSha = snapshot.remote.get(`${remote}/${branch}`);
+      if (!localSha || !remoteSha) return "pending";
+      if (localSha === remoteSha) return "synced";
+
+      const counts = await this.tryRun(["rev-list", "--left-right", "--count", `${localSha}...${remoteSha}`]);
+      if (!counts) return "pending";
+      const [ahead, behind] = counts.split(/\s+/).map(Number);
+      if (ahead > 0 && behind === 0) return "ahead";
+      if (ahead === 0 && behind > 0) return "behind";
+      return "conflict";
+    });
   }
 }
 
