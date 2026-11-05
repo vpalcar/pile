@@ -52,6 +52,15 @@ export function InboxPage({ inbox, session, loading }: { inbox: Inbox | undefine
   const [query, setQuery] = useState("");
   const [cursor, setCursor] = usePersisted<string | null>("pile:inbox-cursor", null);
   const searchRef = useRef<HTMLInputElement>(null);
+  // The filter bar gets a hairline border once it sticks to the top.
+  const sentinel = useRef<HTMLDivElement>(null);
+  const [stuck, setStuck] = useState(false);
+  useEffect(() => {
+    if (!sentinel.current) return;
+    const observer = new IntersectionObserver(([entry]) => setStuck(!entry.isIntersecting), { threshold: 0 });
+    observer.observe(sentinel.current);
+    return () => observer.disconnect();
+  }, []);
 
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -117,7 +126,7 @@ export function InboxPage({ inbox, session, loading }: { inbox: Inbox | undefine
           {greeting()}
           {viewer ? `, ${viewer}` : ""}
         </h1>
-        <p className="max-w-[64ch] text-sm text-fg-2">
+        <p className="max-w-[72ch] text-sm text-fg-2 text-pretty">
           {loading && !inbox
             ? "Loading pull requests…"
             : waiting > 0
@@ -128,7 +137,13 @@ export function InboxPage({ inbox, session, loading }: { inbox: Inbox | undefine
         </p>
       </header>
 
-      <div className="sticky top-0 z-10 mb-2 mt-7 flex items-center gap-3 bg-gradient-to-b from-bg from-70% to-transparent py-2.5">
+      <div ref={sentinel} className="mt-7 h-px" aria-hidden />
+      <div
+        className={cx(
+          "sticky top-0 z-10 -mx-8 mb-2 flex items-center gap-3 border-b bg-bg/95 px-8 py-2.5 backdrop-blur-xl transition-colors",
+          stuck ? "border-line" : "border-transparent",
+        )}
+      >
         <div className="inline-flex items-center gap-0.5 rounded-[10px] border border-line bg-panel p-[3px]" role="tablist">
           {FILTERS.map(([id, label], i) => (
             <button
@@ -156,11 +171,11 @@ export function InboxPage({ inbox, session, loading }: { inbox: Inbox | undefine
           ))}
         </div>
         <span className="flex-1" />
-        <label className="relative flex h-8 w-[300px] items-center">
+        <label className="relative flex h-9 w-[300px] items-center max-[900px]:w-[220px]">
           <Search size={13} className="pointer-events-none absolute left-2.5 text-fg-3" />
           <input
             ref={searchRef}
-            className="h-8 w-full rounded-lg border border-line bg-panel pl-8 pr-8 text-[12.5px] text-fg outline-none transition-[border-color,box-shadow] placeholder:text-fg-3 focus:border-line-3 focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+            className="h-9 w-full rounded-lg border border-line bg-panel pl-8 pr-8 text-[12.5px] text-fg outline-none transition-[border-color,box-shadow] placeholder:text-fg-3 focus:border-line-3 focus:shadow-[0_0_0_3px_var(--accent-soft)]"
             placeholder="Filter by title, branch or author"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -253,7 +268,7 @@ function StackCluster({ cluster, cursor, onHover }: { cluster: Cluster; cursor: 
         {shown.map((item, i) => (
           <div key={item.id} className={cx(i === 0 && "rail-first", i === shown.length - 1 && "rail-last")}>
             {!open && i === 2 && (
-              <button className={cx(ROW_GRID, "mb-1 h-8 w-full rounded-lg px-4 text-left text-xs text-fg-3 hover:bg-hover hover:text-fg-2")} onClick={() => setOpen(true)}>
+              <button className={cx(ROW_GRID, "mb-1 h-8 w-full rounded-lg px-[9px] text-left text-xs text-fg-3 hover:bg-hover hover:text-fg-2")} onClick={() => setOpen(true)}>
                 <span className="rail-node rail-dashed" />
                 <span>{cluster.items.length - 3} more in this stack</span>
               </button>
@@ -288,10 +303,15 @@ const Row = memo(function Row({ item, active, onHover, stacked }: { item: InboxI
       href={item.ref.kind === "pr" ? `#/pr/${item.ref.number}` : `#/branch/${encodeURIComponent(item.ref.name)}`}
       className={cx(
         ROW_GRID,
-        "group relative min-h-[58px] px-4 py-2.5 text-fg no-underline transition-[background,border-color,box-shadow] duration-150",
-        stacked
-          ? cx("rounded-[10px] border", active ? "border-accent/40 bg-accent-soft" : "border-transparent hover:bg-hover")
-          : cx("rounded-xl border bg-panel", active ? "border-accent/55 shadow-[0_0_0_3px_var(--accent-soft)]" : "border-line hover:border-line-2 hover:bg-panel-2"),
+        "group relative min-h-[58px] py-2.5 text-fg no-underline transition-[background,border-color] duration-150",
+        // Stacked rows sit 7px inside their card; matching padding keeps every column
+        // (icon, title, status, size, time) on the same x as standalone rows.
+        stacked ? "rounded-[10px] px-[9px]" : "rounded-xl px-4",
+        active
+          ? "border border-accent/50 bg-accent-soft"
+          : stacked
+            ? "border border-transparent hover:bg-hover"
+            : "border border-line bg-panel hover:border-line-2 hover:bg-panel-2",
       )}
       onClick={(e) => {
         e.preventDefault();

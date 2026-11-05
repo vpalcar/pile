@@ -192,7 +192,7 @@ function ProgressRing({ done, total }: { done: number; total: number }) {
   return (
     <span className="mr-1 inline-flex items-center gap-2 text-xs leading-none text-fg-2" data-tip="Files you've marked as viewed" data-kbd="v">
       <svg width="16" height="16" viewBox="0 0 18 18" className="shrink-0" aria-hidden>
-        <circle cx="9" cy="9" r={r} fill="none" stroke="var(--surface-3)" strokeWidth="2.2" />
+        <circle cx="9" cy="9" r={r} fill="none" stroke="var(--border-2)" strokeWidth="2.2" />
         <circle
           cx="9"
           cy="9"
@@ -309,8 +309,8 @@ const FileTree = memo(function FileTree({
               <Check size={12} strokeWidth={2.5} className="text-ok" />
             ) : (
               <span className="flex shrink-0 gap-1 font-mono text-[10.5px] tabular">
-                {file.additions > 0 && <span className="text-ok">+{file.additions}</span>}
-                {file.deletions > 0 && <span className="text-bad">−{file.deletions}</span>}
+                {file.additions > 0 && <span className="text-ok">+{file.additions.toLocaleString()}</span>}
+                {file.deletions > 0 && <span className="text-bad">−{file.deletions.toLocaleString()}</span>}
               </span>
             )}
           </button>

@@ -124,69 +124,70 @@ function Shell() {
   const waiting = inbox.data?.groups.find((g) => g.id === "needs_review")?.items.length ?? 0;
   const refreshing = (inbox.loading && !!inbox.data) || (detail.loading && !!detail.data);
 
-  const navLink = "inline-flex h-8 items-center gap-2 rounded-lg px-2.5 font-medium leading-none text-fg-2 transition-colors hover:bg-hover hover:text-fg [&_svg]:shrink-0";
+  // Every control in the bar is 28px tall.
+  const navLink = "inline-flex h-7 shrink-0 items-center gap-2 rounded-lg px-2.5 font-medium leading-none text-fg-2 transition-colors hover:bg-hover hover:text-fg [&_svg]:shrink-0";
 
   return (
     <div className="flex h-full flex-col">
       <nav className="relative z-30 flex h-[var(--topbar-h)] shrink-0 items-center gap-1.5 border-b border-line bg-bg/80 pl-3 pr-3.5 backdrop-blur-xl backdrop-saturate-150">
-        <button className="flex h-8 items-center gap-2 rounded-lg px-1.5 text-fg hover:bg-hover" onClick={goInbox} data-tip="Inbox" data-kbd="g">
+        <button className="flex h-7 shrink-0 items-center gap-2 rounded-lg px-1.5 text-fg hover:bg-hover" onClick={goInbox} data-tip="Inbox" data-kbd="g">
           <BrandMark />
           <span className="text-sm font-semibold leading-none tracking-tight">pile</span>
         </button>
         {repo && (
-          <a className={cx(navLink, "gap-1 no-underline")} href={repo.url} target="_blank" rel="noreferrer">
+          <a className={cx(navLink, "gap-1 no-underline max-[1000px]:hidden")} href={repo.url} target="_blank" rel="noreferrer">
             {repo.owner}
             <span className="text-fg-4">/</span>
             {repo.name}
           </a>
         )}
-        <span className="mx-1 h-[18px] w-px bg-line-2" />
+        <span className="mx-1 h-[18px] w-px shrink-0 bg-line-2 max-[1000px]:hidden" />
         <button className={cx(navLink, !route.ref && "bg-active text-fg")} onClick={goInbox}>
           <InboxIcon size={14} />
           Inbox
           {waiting > 0 && <span className="grid h-[18px] min-w-[18px] place-items-center rounded-full bg-accent px-1.5 text-[11px] font-semibold leading-none text-white tabular">{waiting}</span>}
         </button>
         {route.ref && (
-          <div className="flex min-w-0 animate-fade-in items-center gap-2 text-fg-2">
+          <div className="flex min-w-0 flex-1 animate-fade-in items-center gap-2 text-fg-2">
             <ChevronRight size={14} className="shrink-0 text-fg-4" />
             <PRStateIcon state={detail.data?.state ?? current?.state ?? "open"} size={14} />
             <span className="shrink-0 text-fg-3 tabular">{route.ref.kind === "pr" ? `#${route.ref.number}` : route.ref.name}</span>
-            <b className="max-w-[42vw] truncate font-medium text-fg">{detail.data?.title ?? current?.title ?? ""}</b>
+            <b className="min-w-0 truncate font-medium text-fg">{detail.data?.title ?? current?.title ?? ""}</b>
           </div>
         )}
-        <span className="flex-1" />
+        {!route.ref && <span className="flex-1" />}
         {route.ref && index >= 0 && (
-          <div className="mr-1 flex items-center gap-0.5 text-xs text-fg-3 tabular">
-            <Button variant="ghost" size="sm" icon onClick={() => step(-1)} disabled={index <= 0} data-tip="Previous" data-kbd="[">
+          <div className="mr-1 flex shrink-0 items-center gap-0.5 whitespace-nowrap text-xs text-fg-3 tabular">
+            <Button variant="ghost" icon onClick={() => step(-1)} disabled={index <= 0} data-tip="Previous" data-kbd="[">
               <ChevronLeft size={14} />
             </Button>
             <span className="px-0.5">
               {index + 1} of {items.length}
             </span>
-            <Button variant="ghost" size="sm" icon onClick={() => step(1)} disabled={index >= items.length - 1} data-tip="Next" data-kbd="]">
+            <Button variant="ghost" icon onClick={() => step(1)} disabled={index >= items.length - 1} data-tip="Next" data-kbd="]">
               <ChevronRight size={14} />
             </Button>
           </div>
         )}
         {detail.data?.url && route.ref && (
-          <a className={cx(buttonClass({ variant: "ghost", size: "sm" }), "no-underline")} href={detail.data.url} target="_blank" rel="noreferrer" data-kbd="o" data-tip="Open on GitHub">
-            GitHub <ExternalLink size={12} />
+          <a className={cx(buttonClass({ variant: "ghost" }), "no-underline")} href={detail.data.url} target="_blank" rel="noreferrer" data-kbd="o" data-tip="Open on GitHub">
+            <span className="max-[1100px]:hidden">GitHub</span> <ExternalLink size={13} />
           </a>
         )}
         <span id="topbar-actions" className="contents" />
         <button
-          className="mx-1 inline-flex h-8 items-center gap-2 rounded-lg border border-line bg-panel pl-2.5 pr-1.5 text-[12.5px] leading-none text-fg-3 transition-colors hover:border-line-2 hover:text-fg-2"
+          className="mx-1 inline-flex h-7 shrink-0 items-center gap-2 rounded-lg border border-line bg-panel pl-2.5 pr-1.5 text-[12.5px] leading-none text-fg-3 transition-colors hover:border-line-2 hover:text-fg-2"
           onClick={() => setPalette(true)}
         >
           <Search size={13} className="shrink-0" />
-          <span className="mr-5">Search</span>
+          <span className="mr-5 max-[1000px]:hidden">Search</span>
           <Kbd>{modKey}</Kbd>
           <Kbd>K</Kbd>
         </button>
-        <Button variant="ghost" size="sm" icon data-tip={`Theme: ${theme}`} onClick={() => setTheme(theme === "system" ? "dark" : theme === "dark" ? "light" : "system")}>
+        <Button variant="ghost" icon data-tip={`Theme: ${theme}`} onClick={() => setTheme(theme === "system" ? "dark" : theme === "dark" ? "light" : "system")}>
           {theme === "light" ? <Sun size={14} /> : <Moon size={14} />}
         </Button>
-        <Button variant="ghost" size="sm" icon data-tip="Refresh" data-kbd="⇧ R" onClick={refresh} className={refreshing ? "[&_svg]:animate-spin" : ""}>
+        <Button variant="ghost" icon data-tip="Refresh" data-kbd="⇧ R" onClick={refresh} className={refreshing ? "[&_svg]:animate-spin" : ""}>
           <RefreshCw size={14} />
         </Button>
         {session.data?.viewer && (

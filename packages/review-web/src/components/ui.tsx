@@ -105,7 +105,7 @@ export function StatusBadge({ status, size = "md" }: { status: Readiness; size?:
         size === "sm" ? "h-5 px-2 text-[11px]" : "h-[22px] px-2.5 text-[11.5px]",
         TONES[status.tone],
       )}
-      data-tip={status.detail}
+      data-tip={status.detail.replace(/`/g, "")}
     >
       <i className={cx("size-1.5 shrink-0 rounded-full", status.tone === "gray" ? "bg-fg-3" : "bg-current", status.tone === "blue" && "shadow-[0_0_0_3px_var(--accent-soft)]")} />
       {status.label}
@@ -227,36 +227,45 @@ export function TooltipLayer() {
 }
 
 // -----------------------------------------------------------------------------
-// Toasts
+// Toasts: bottom-right, at most three. A toast with a key replaces the previous one
+// with the same key (so "Posting…" can become "Posted" or an error), and all toasts
+// clear when you move to another page.
 
 interface Toast {
   id: number;
+  key?: string;
   content: ReactNode;
   leaving?: boolean;
 }
 
-const ToastContext = createContext<(content: ReactNode) => void>(() => {});
+type ShowToast = (content: ReactNode, options?: { key?: string }) => void;
+const ToastContext = createContext<ShowToast>(() => {});
 export const useToast = () => useContext(ToastContext);
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const id = useRef(0);
-  const show = useCallback((content: ReactNode) => {
-    const toast = { id: ++id.current, content };
-    setToasts((all) => [...all.slice(-2), toast]);
-    setTimeout(() => setToasts((all) => all.map((t) => (t.id === toast.id ? { ...t, leaving: true } : t))), 3200);
-    setTimeout(() => setToasts((all) => all.filter((t) => t.id !== toast.id)), 3400);
+  const show = useCallback<ShowToast>((content, options = {}) => {
+    const toast = { id: ++id.current, key: options.key, content };
+    setToasts((all) => [...all.filter((t) => !options.key || t.key !== options.key).slice(-2), toast]);
+    setTimeout(() => setToasts((all) => all.map((t) => (t.id === toast.id ? { ...t, leaving: true } : t))), 3500);
+    setTimeout(() => setToasts((all) => all.filter((t) => t.id !== toast.id)), 3700);
+  }, []);
+  useEffect(() => {
+    const clear = () => setToasts([]);
+    window.addEventListener("hashchange", clear);
+    return () => window.removeEventListener("hashchange", clear);
   }, []);
   return (
     <ToastContext.Provider value={show}>
       {children}
-      <div className="fixed bottom-5 left-1/2 z-[90] flex -translate-x-1/2 flex-col items-center gap-2" role="status" aria-live="polite">
+      <div className="pointer-events-none fixed bottom-5 right-5 z-[90] flex flex-col items-end gap-2" role="status" aria-live="polite">
         {toasts.map((t) => (
           <div
             key={t.id}
             className={cx(
-              "flex h-10 animate-toast-in items-center gap-2.5 rounded-xl bg-panel-3 pl-3 pr-2 font-medium text-fg shadow-pop [&_svg]:shrink-0",
-              t.leaving && "opacity-0 transition-opacity duration-200",
+              "pointer-events-auto flex h-10 animate-toast-in items-center gap-2.5 rounded-xl border border-line-2 bg-panel-2 pl-3 pr-3 font-medium text-fg shadow-pop transition-opacity duration-200 [&:has(button)]:pr-1.5 [&_code]:text-xs [&_svg]:shrink-0",
+              t.leaving && "opacity-0",
             )}
           >
             {t.content}
@@ -270,26 +279,50 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 /** Closes on outside click and Escape. */
 export function useDismiss(open: boolean, onClose: () => void) {
   const ref = useRef<HTMLDivElement>(null);
+  // Read the latest callback through a ref, so the listeners stay attached across
+  // re-renders (a new inline onClose each render must not detach them).
+  const close = useRef(onClose);
+  close.current = onClose;
   useEffect(() => {
     if (!open) return;
-    const click = (event: MouseEvent) => {
-      if (ref.current && !ref.current.contains(event.target as Node)) onClose();
+    const openedAt = performance.now();
+    // Capture phase: nothing on the page can stop it from arriving. Events that began
+    // before the popover opened (the click that opened it) are ignored.
+    const pointer = (event: PointerEvent) => {
+      if (event.timeStamp < openedAt) return;
+      if (ref.current && !ref.current.contains(event.target as Node)) close.current();
     };
     const key = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.stopPropagation();
-        onClose();
+        close.current();
       }
     };
-    const timer = setTimeout(() => document.addEventListener("mousedown", click));
+    document.addEventListener("pointerdown", pointer, true);
     window.addEventListener("keydown", key, true);
     return () => {
-      clearTimeout(timer);
-      document.removeEventListener("mousedown", click);
+      document.removeEventListener("pointerdown", pointer, true);
       window.removeEventListener("keydown", key, true);
     };
-  }, [open, onClose]);
+  }, [open]);
   return ref;
+}
+
+/** Text with `code` spans (used for status explanations). */
+export function RichText({ text }: { text: string }) {
+  return (
+    <>
+      {text.split(/(`[^`]+`)/).map((part, i) =>
+        part.startsWith("`") ? (
+          <code key={i} className="rounded bg-panel-3 px-1 py-px text-[11.5px] text-fg">
+            {part.slice(1, -1)}
+          </code>
+        ) : (
+          part
+        ),
+      )}
+    </>
+  );
 }
 
 /** Section label, used in the rail and above lists. */

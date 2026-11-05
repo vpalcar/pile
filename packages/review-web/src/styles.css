@@ -268,12 +268,12 @@
   .markdown hr { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
   .markdown .task-list-item { list-style: none; margin-left: -20px; }
   .markdown input[type="checkbox"] {
-    appearance: none; width: 14px; height: 14px; margin: 0 7px 0 0; border-radius: 4px; vertical-align: -2px;
-    border: 1.5px solid var(--border-3); background: var(--surface); display: inline-grid; place-items: center;
+    appearance: none; width: 14px; height: 14px; margin: -2px 7px 0 0; border-radius: 4px; vertical-align: middle;
+    border: 1.5px solid var(--border-3); background: var(--surface); display: inline-grid; place-items: center; position: relative;
   }
   .markdown input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
   .markdown input[type="checkbox"]:checked::after {
-    content: ""; width: 7px; height: 4px; margin-top: -2px; border-left: 2px solid white; border-bottom: 2px solid white; transform: rotate(-45deg);
+    content: ""; position: absolute; width: 7px; height: 4px; margin-top: -2px; border-left: 2px solid white; border-bottom: 2px solid white; transform: rotate(-45deg);
   }
 
   /* Diff table */
@@ -295,11 +295,14 @@
   .diff-table mark.w-del { background: var(--del-word); color: inherit; border-radius: 2px; }
   .diff-table .split-divider { background: var(--border); }
   .diff-table tr.hunk td { background: var(--hunk-bg); color: var(--hunk-text); }
-  .diff-table tr.thread > td { padding: 8px 16px 12px 72px; font: 13px/1.55 var(--font-sans); white-space: normal; }
+  /* Threads start where the code does: after both gutters (unified) or one (split). */
+  .diff-table tr.thread > td { padding: 8px 16px 12px 138px; font: 13px/1.55 var(--font-sans); white-space: normal; }
+  .diff-table tr.split-thread > td { padding: 8px 12px 12px 68px; }
+  .diff-table tr.split-thread > td:empty, .diff-table tr.split-thread > td.split-divider { padding: 0; }
 
   /* The "+" shown on hover over a line number: a centred square inside the gutter. */
   .add-comment {
-    position: absolute; left: 3px; top: 1px; width: 18px; height: 18px; border-radius: 5px;
+    position: absolute; left: 4px; top: 1px; width: 18px; height: 18px; border-radius: 5px;
     display: none; align-items: center; justify-content: center; padding: 0;
     background: var(--accent); color: white; border: 0; z-index: 2;
     box-shadow: 0 2px 8px -2px color-mix(in srgb, var(--accent) 60%, transparent);

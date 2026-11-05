@@ -59,8 +59,8 @@ function getHighlighter(): Promise<HighlighterCore> {
   highlighter ??= Promise.all([
     import("shiki/core"),
     import("shiki/engine/javascript"),
-    import("@shikijs/themes/github-dark-default"),
-    import("@shikijs/themes/github-light-default"),
+    import("@shikijs/themes/one-dark-pro"),
+    import("@shikijs/themes/one-light"),
   ]).then(([{ createHighlighterCore }, { createJavaScriptRegexEngine }, dark, light]) =>
     createHighlighterCore({
       themes: [

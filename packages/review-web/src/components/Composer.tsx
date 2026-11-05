@@ -50,6 +50,8 @@ export function Composer({ placeholder, submitLabel, onSubmit, onCancel, autoFoc
       await onSubmit(body);
       setText("");
       if (draftKey) writeDraft(draftKey, "");
+    } catch {
+      // The caller reports the error; keep the text so nothing is lost.
     } finally {
       setBusy(false);
     }
@@ -69,7 +71,11 @@ export function Composer({ placeholder, submitLabel, onSubmit, onCancel, autoFoc
         rows={1}
         value={text}
         placeholder={placeholder}
-        onFocus={() => setFocused(true)}
+        onFocus={(e) => {
+          setFocused(true);
+          const box = e.currentTarget.parentElement;
+          requestAnimationFrame(() => box?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
+        }}
         onBlur={() => setFocused(false)}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {

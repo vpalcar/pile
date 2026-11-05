@@ -27,7 +27,7 @@ export function readiness({ state, decision, checks, unpushed }: Signals): Readi
   if (state === "merged") return { label: "Merged", detail: "Merged into the base branch.", tone: "purple", rank: 8 };
   if (state === "closed") return { label: "Closed", detail: "Closed without merging.", tone: "gray", rank: 9 };
   if (state === "local") {
-    return { label: "Local", detail: "Only on this machine. Run pile submit to open a pull request.", tone: "amber", rank: 6 };
+    return { label: "Local", detail: "Only on this machine. Run `pile submit` to open a pull request.", tone: "amber", rank: 6 };
   }
   if (state === "draft") return { label: "Draft", detail: "Not ready for review yet.", tone: "gray", rank: 5 };
   if (checks?.state === "failure") {
@@ -47,19 +47,8 @@ export function readiness({ state, decision, checks, unpushed }: Signals): Readi
 export const itemReadiness = (item: InboxItem): Readiness =>
   readiness({ state: item.state, decision: item.reviewDecision, checks: item.checks, unpushed: item.local?.unpushed });
 
-export function detailReadiness(detail: Detail): Readiness {
-  const states = detail.reviewers.map((r) => r.state);
-  const decision: InboxItem["reviewDecision"] = states.includes("changes_requested")
-    ? "changes_requested"
-    : states.includes("approved") && !states.includes("requested")
-      ? "approved"
-      : states.includes("requested")
-        ? "review_required"
-        : states.length > 0
-          ? "commented"
-          : null;
-  return readiness({ state: detail.state, decision, checks: detail.checksSummary, unpushed: !!detail.local && detail.local.ahead > 0 });
-}
+export const detailReadiness = (detail: Detail): Readiness =>
+  readiness({ state: detail.state, decision: detail.reviewDecision, checks: detail.checksSummary, unpushed: !!detail.local && detail.local.ahead > 0 });
 
 /** Stack entries use what the inbox knows about them, falling back to their state. */
 export function entryReadiness(entry: StackEntry, items: InboxItem[]): Readiness {

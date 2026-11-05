@@ -78,7 +78,24 @@ export const FileDiff = memo(function FileDiff(props: Props) {
         </div>
         <DiffStat additions={file.additions} deletions={file.deletions} />
         <span className="flex-1" />
-        <Button variant="ghost" size="sm" icon data-tip="Copy path" onClick={() => copy(file.path).then((ok) => ok && toast(<>Copied <code>{file.path}</code></>))}>
+        <Button
+          variant="ghost"
+          size="sm"
+          icon
+          data-tip="Copy path"
+          onClick={() =>
+            copy(file.path).then(
+              (ok) =>
+                ok &&
+                toast(
+                  <>
+                    <Copy size={14} className="text-fg-3" /> Copied <code>{file.path}</code>
+                  </>,
+                  { key: "copy" },
+                ),
+            )
+          }
+        >
           <Copy size={13} />
         </Button>
         {props.webUrl && (
@@ -109,7 +126,7 @@ export const FileDiff = memo(function FileDiff(props: Props) {
           </div>
         ) : tooLarge ? (
           <div className="flex h-14 items-center justify-center gap-3 text-[12.5px] text-fg-3">
-            Large diff ({lineCount.toLocaleString()} lines)
+            Large diff ({(file.additions + file.deletions).toLocaleString()} changed lines)
             <Button size="sm" onClick={() => setForceLarge(true)}>
               Load diff
             </Button>
@@ -297,21 +314,32 @@ function DiffBody(props: Props) {
     const key = `${side}:${line}`;
     const thread = threads.get(key);
     if (!thread && composerAt !== key) return null;
+    const content = (
+      <Thread
+        comments={thread?.comments ?? []}
+        pending={thread?.pending ?? []}
+        composing={composerAt === key}
+        onCancel={() => setComposerAt(null)}
+        onSubmit={(body) => {
+          props.onAddPending({ path: file.path, line, side, body });
+          setComposerAt(null);
+        }}
+        onRemovePending={props.onRemovePending}
+      />
+    );
+    // Split view: the thread sits in the half it belongs to, aligned with that side's code.
+    if (mode === "split") {
+      return (
+        <tr key={`thread-${key}`} className="thread split-thread">
+          <td colSpan={2}>{side === "LEFT" && content}</td>
+          <td className="split-divider" />
+          <td colSpan={2}>{side === "RIGHT" && content}</td>
+        </tr>
+      );
+    }
     return (
       <tr key={`thread-${key}`} className="thread">
-        <td colSpan={colSpan}>
-          <Thread
-            comments={thread?.comments ?? []}
-            pending={thread?.pending ?? []}
-            composing={composerAt === key}
-            onCancel={() => setComposerAt(null)}
-            onSubmit={(body) => {
-              props.onAddPending({ path: file.path, line, side, body });
-              setComposerAt(null);
-            }}
-            onRemovePending={props.onRemovePending}
-          />
-        </td>
+        <td colSpan={colSpan}>{content}</td>
       </tr>
     );
   };
@@ -357,8 +385,8 @@ function DiffBody(props: Props) {
       <div className="overflow-x-auto rounded-b-xl">
         <table className={cx("diff-table", wrap && "wrap")}>
           <colgroup>
-            {!hideOld && <col style={{ width: 52 }} />}
-            {!hideNew && <col style={{ width: 52 }} />}
+            {!hideOld && <col style={{ width: 60 }} />}
+            {!hideNew && <col style={{ width: 60 }} />}
             <col style={{ width: 18 }} />
             <col />
           </colgroup>
@@ -431,10 +459,10 @@ function DiffBody(props: Props) {
     <div className="overflow-x-auto rounded-b-xl">
       <table className="diff-table split">
         <colgroup>
-          <col style={{ width: 48 }} />
+          <col style={{ width: 60 }} />
           <col />
           <col style={{ width: 1 }} />
-          <col style={{ width: 48 }} />
+          <col style={{ width: 60 }} />
           <col />
         </colgroup>
         <tbody>{body}</tbody>

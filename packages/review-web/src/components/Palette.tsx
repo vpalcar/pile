@@ -42,8 +42,9 @@ export function Palette({ inbox, detail, onClose, onRefresh, onInbox, onShortcut
                     <span className="min-w-0 flex-1 truncate font-mono text-xs">
                       {f.path}
                     </span>
-                    <span className="shrink-0 text-[11.5px] text-fg-3 tabular">
-                      <span style={{ color: "var(--green)" }}>+{f.additions}</span> <span style={{ color: "var(--red)" }}>−{f.deletions}</span>
+                    <span className="flex shrink-0 gap-1.5 font-mono text-[11px] tabular">
+                      {f.additions > 0 && <span className="text-ok">+{f.additions.toLocaleString()}</span>}
+                      {f.deletions > 0 && <span className="text-bad">−{f.deletions.toLocaleString()}</span>}
                     </span>
                   </Command.Item>
                 ))}
@@ -64,28 +65,28 @@ export function Palette({ inbox, detail, onClose, onRefresh, onInbox, onShortcut
               ))}
             </Command.Group>
             <Command.Group heading="Actions">
-              <Command.Item value="refresh reload" onSelect={run(onRefresh)}>
+              <Command.Item value="Refresh" keywords={["reload", "update"]} onSelect={run(onRefresh)}>
                 <RefreshCw size={14} /> <span className="min-w-0 flex-1 truncate">Refresh</span>
               </Command.Item>
-              <Command.Item value="go to inbox home" onSelect={run(onInbox)}>
+              <Command.Item value="Go to inbox" keywords={["home", "back"]} onSelect={run(onInbox)}>
                 <InboxIcon size={14} /> <span className="min-w-0 flex-1 truncate">Go to inbox</span>
                 <span className="inline-flex shrink-0 items-center gap-0.5 text-[11.5px] text-fg-3">
                   <Kbd>G</Kbd>
                 </span>
               </Command.Item>
-              <Command.Item value="keyboard shortcuts help" onSelect={run(onShortcuts)}>
+              <Command.Item value="Keyboard shortcuts" keywords={["help", "keys"]} onSelect={run(onShortcuts)}>
                 <Keyboard size={14} /> <span className="min-w-0 flex-1 truncate">Keyboard shortcuts</span>
                 <span className="inline-flex shrink-0 items-center gap-0.5 text-[11.5px] text-fg-3">
                   <Kbd>?</Kbd>
                 </span>
               </Command.Item>
-              <Command.Item value="theme dark" onSelect={run(() => onTheme("dark"))}>
+              <Command.Item value="Dark theme" keywords={["theme", "appearance", "night"]} onSelect={run(() => onTheme("dark"))}>
                 <Moon size={14} /> <span className="min-w-0 flex-1 truncate">Dark theme</span>
               </Command.Item>
-              <Command.Item value="theme light" onSelect={run(() => onTheme("light"))}>
+              <Command.Item value="Light theme" keywords={["theme", "appearance", "day"]} onSelect={run(() => onTheme("light"))}>
                 <Sun size={14} /> <span className="min-w-0 flex-1 truncate">Light theme</span>
               </Command.Item>
-              <Command.Item value="theme system" onSelect={run(() => onTheme("system"))}>
+              <Command.Item value="System theme" keywords={["theme", "appearance", "auto"]} onSelect={run(() => onTheme("system"))}>
                 <Monitor size={14} /> <span className="min-w-0 flex-1 truncate">System theme</span>
               </Command.Item>
             </Command.Group>

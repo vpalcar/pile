@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, ArrowRight, Check, ChevronDown, CircleAlert, ExternalLink, Layers, MessageSquare, Pencil, UploadCloud } from "lucide-react";
+import { AlertTriangle, ArrowRight, Check, ChevronDown, CircleAlert, Copy, ExternalLink, Layers, MessageSquare, Pencil, UploadCloud } from "lucide-react";
 import type { Detail as DetailData, InboxItem, ItemRef, ReviewRequest, StackEntry, TimelineEntry } from "../api";
 import { api, load, refKey } from "../lib/client";
 import { detailReadiness, entryReadiness, type Readiness } from "../lib/status";
@@ -9,7 +9,7 @@ import { Composer } from "./Composer";
 import { FilesPanel } from "./FilesPanel";
 import type { PendingComment } from "./FileDiff";
 import { Markdown } from "./Markdown";
-import { Avatar, Button, buttonClass, CheckIcon, cx, DiffStat, Kbd, Label, Pill, Spinner, StatusBadge, useDismiss, useToast } from "./ui";
+import { Avatar, Button, buttonClass, CheckIcon, cx, DiffStat, Kbd, Label, Pill, RichText, Spinner, StatusBadge, useDismiss, useToast } from "./ui";
 
 interface Props {
   detail: DetailData;
@@ -57,9 +57,10 @@ export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems }:
     const verb = request.event === "APPROVE" ? "Approved" : request.event === "REQUEST_CHANGES" ? "Requested changes on" : "Reviewed";
     toast(
       <>
-        {request.event === "APPROVE" ? <Check size={15} color="var(--green)" strokeWidth={2.5} /> : <MessageSquare size={14} />}
+        {request.event === "APPROVE" ? <Check size={15} color="var(--green)" strokeWidth={2.5} /> : <MessageSquare size={14} className="text-ok" />}
         {verb} #{detail.number}
       </>,
+      { key: "pending" },
     );
     refresh();
   };
@@ -69,7 +70,7 @@ export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems }:
       {detail.number !== null && (
         <TopbarSlot>
           <div className="relative">
-            <Button variant={reviewOpen ? "default" : "primary"} size="sm" onClick={() => setReviewOpen(!reviewOpen)} data-kbd="r" data-tip="Submit a review">
+            <Button variant={reviewOpen ? "default" : "primary"} onClick={() => setReviewOpen(!reviewOpen)} data-kbd="r" data-tip="Submit a review">
               {detail.can.review ? "Review" : "Comment"}
               {pending.length > 0 && <Pill tone="amber" className="h-4 px-1.5">{pending.length}</Pill>}
               <ChevronDown size={13} />
@@ -108,11 +109,12 @@ export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems }:
           setPending((p) => [...p, { ...c, id: `${Date.now()}-${Math.random()}` }]);
           toast(
             <>
-              <MessageSquare size={14} /> Comment added to your review
+              <MessageSquare size={14} className="text-warn" /> Comment added to your review
               <Button variant="ghost" size="sm" onClick={() => setReviewOpen(true)}>
                 Finish review
               </Button>
             </>,
+            { key: "pending" },
           );
         }}
         onRemovePending={(id) => setPending((p) => p.filter((c) => c.id !== id))}
@@ -165,7 +167,18 @@ function Header({ detail, status }: { detail: DetailData; status: Readiness }) {
         <button
           className={cx(chip, "transition-colors hover:border-line-2 hover:text-fg")}
           data-tip="Copy checkout command"
-          onClick={() => copy(`pile checkout ${detail.branch}`).then((ok) => ok && toast(<>Copied <code>pile checkout {detail.branch}</code></>))}
+          onClick={() =>
+            copy(`pile checkout ${detail.branch}`).then(
+              (ok) =>
+                ok &&
+                toast(
+                  <>
+                    <Copy size={14} className="text-fg-3" /> Copied <code>pile checkout {detail.branch}</code>
+                  </>,
+                  { key: "copy" },
+                ),
+            )
+          }
         >
           {detail.branch}
         </button>
@@ -242,12 +255,13 @@ function ReviewPopover({ detail, pendingCount, onClose, onSubmit }: { detail: De
               </span>
               <span className="grid gap-0.5">
                 <b className="font-medium leading-5">{label}</b>
-                <small className="text-xs text-fg-3">{disabled ? "You can't approve or request changes on your own pull request." : help}</small>
+                <small className="text-xs text-fg-3">{help}</small>
               </span>
             </button>
           );
         })}
       </div>
+      {own && <p className="-mt-1 mb-2.5 px-1 text-xs text-fg-2">You can't approve or request changes on your own pull request.</p>}
       {error && <div className="mb-2.5 rounded-lg border border-bad/30 bg-bad-soft px-3 py-2 text-fg">{error}</div>}
       <div className="flex items-center gap-2">
         <span className="text-xs text-fg-3">{pendingCount > 0 ? `Includes ${plural(pendingCount, "inline comment")}` : ""}</span>
@@ -310,7 +324,7 @@ function StackSection({ stack, trunk, items, current }: { stack: StackEntry[]; t
   const [expanded, setExpanded] = useState(false);
   const top = [...stack].reverse();
   const parts = windowed(top, top.findIndex((e) => e.isCurrent), expanded);
-  const row = "grid h-9 grid-cols-[20px_minmax(0,1fr)_auto] items-center gap-2.5 rounded-lg pl-1.5 pr-2";
+  const row = "grid h-9 grid-cols-[22px_minmax(0,1fr)_auto] items-center gap-3 rounded-lg pr-2";
 
   return (
     <Section
@@ -410,7 +424,7 @@ function DiscussionSection({ detail, inputRef, onCommented }: { detail: DetailDa
     >
       <div className="relative flex flex-col before:absolute before:bottom-3 before:left-[11px] before:top-3 before:w-px before:bg-line">
         {groups.map((g, i) => (Array.isArray(g) ? <CommitGroup key={i} commits={g} url={detail.url} /> : <Event key={g.id} entry={g} />))}
-        {groups.length === 0 && <div className="pl-9 text-fg-3">No activity yet.</div>}
+        {groups.length === 0 && <div className="pl-[34px] text-fg-3">No activity yet.</div>}
       </div>
       {detail.can.comment && detail.number !== null && (
         <div className="mt-3">
@@ -425,8 +439,9 @@ function DiscussionSection({ detail, inputRef, onCommented }: { detail: DetailDa
                 await api.comment(detail.number!, body);
                 toast(
                   <>
-                    <MessageSquare size={14} /> Comment posted
+                    <MessageSquare size={14} className="text-ok" /> Comment posted
                   </>,
+                  { key: "discussion" },
                 );
                 onCommented();
               } catch (e) {
@@ -434,6 +449,7 @@ function DiscussionSection({ detail, inputRef, onCommented }: { detail: DetailDa
                   <>
                     <CircleAlert size={14} color="var(--red)" /> {(e as Error).message}
                   </>,
+                  { key: "discussion" },
                 );
                 throw e;
               }
@@ -469,7 +485,13 @@ function Event({ entry }: { entry: TimelineEntry }) {
           <span>{verb}</span>
           {entry.kind === "review" && entry.reviewState === "approved" && <Check size={13} color="var(--green)" strokeWidth={2.5} />}
           {entry.kind === "review" && entry.reviewState === "changes_requested" && <AlertTriangle size={13} color="var(--red)" />}
-          {entry.inlineCount ? <span>· {plural(entry.inlineCount, "inline comment")}</span> : null}
+          {entry.inlineCount ? (
+            <>
+              <span className="text-fg-4">·</span>
+              <span>{plural(entry.inlineCount, "inline comment")}</span>
+            </>
+          ) : null}
+          <span className="text-fg-4">·</span>
           <span data-tip={absoluteTime(entry.createdAt)}>{timeAgo(entry.createdAt)}</span>
         </div>
         {entry.bodyHtml && (
@@ -526,17 +548,28 @@ function CommitGroup({ commits, url }: { commits: TimelineEntry[]; url: string |
 // -----------------------------------------------------------------------------
 
 function Rail({ detail, status, onReview }: { detail: DetailData; status: Readiness; onReview: () => void }) {
-  const summary = detail.checksSummary;
+  // Count and bar come from the same list as the rows below, so they always agree.
+  const summary =
+    detail.checks.length > 0
+      ? {
+          total: detail.checks.length,
+          passed: detail.checks.filter((c) => c.state === "success" || c.state === "neutral").length,
+          failed: detail.checks.filter((c) => c.state === "failure").length,
+          pending: detail.checks.filter((c) => c.state === "pending").length,
+        }
+      : null;
   const row = "-mx-1.5 flex min-h-7 items-center gap-2 rounded-md px-1.5 text-fg no-underline";
   const empty = <span className="text-xs text-fg-3">None</span>;
 
   return (
-    <aside className="flex min-w-0 flex-col gap-6 max-[1080px]:order-first">
+    <aside className="flex min-w-0 flex-col gap-6">
       <div className="rounded-xl border border-line bg-panel p-3">
         <div className="flex h-[22px] items-center">
           <StatusBadge status={status} />
         </div>
-        <p className="mb-3 mt-2 text-xs text-fg-2">{status.detail}</p>
+        <p className="mb-3 mt-2 text-xs text-fg-2">
+          <RichText text={status.detail} />
+        </p>
         <div className="grid gap-1.5">
           {detail.number !== null && (
             <Button block onClick={onReview}>
@@ -595,7 +628,7 @@ function Rail({ detail, status, onReview }: { detail: DetailData; status: Readin
                 {r.state === "approved" ? (
                   <Pill tone="green">Approved</Pill>
                 ) : r.state === "changes_requested" ? (
-                  <Pill tone="red">Changes</Pill>
+                  <Pill tone="red">Changes requested</Pill>
                 ) : r.state === "requested" ? (
                   <Pill tone="blue">Requested</Pill>
                 ) : (
