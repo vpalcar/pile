@@ -1,6 +1,7 @@
 import { GitHubClient } from "./client.js";
 import { PileGitHubError, parsePRNumber, withGraphQL } from "./errors.js";
 import {
+  AsyncMergeResult,
   PullRequest,
   Review,
   CheckStatus,
@@ -27,7 +28,29 @@ interface RawPullRequest {
     user: { login: string } | null;
     assignees?: { login: string }[] | null;
     labels?: { name: string }[] | null;
+    stack?: { number: number; position: number; size: number; base?: { ref: string } } | null;
   }
+
+export interface AsyncMergeOptions {
+  /** Merge only if the PR head is still at this commit. */
+  sha?: string;
+  timeoutMs?: number;
+  intervalMs?: number;
+  /** Called with each pending poll result. */
+  onPoll?: (result: AsyncMergeResult) => void;
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function errorStatus(error: unknown): number | undefined {
+  return typeof error === "object" && error !== null && "status" in error
+    ? Number((error as { status: unknown }).status)
+    : undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 export class PROperations {
   private client: GitHubClient;
@@ -242,18 +265,147 @@ export class PROperations {
   }
 
   /**
-   * Merge a PR
+   * Merge a PR. GitHub rejects the classic merge endpoint for PRs in a native stack;
+   * those fall back to the asynchronous endpoint (which merges the PRs below too).
    */
   async merge(
     prNumber: number,
     method: "merge" | "squash" | "rebase" = "squash"
   ): Promise<void> {
-    await this.client.api.pulls.merge({
+    try {
+      await this.client.api.pulls.merge({
+        owner: this.client.repoOwner,
+        repo: this.client.repoName,
+        pull_number: prNumber,
+        merge_method: method,
+      });
+    } catch (error) {
+      if (errorStatus(error) === 403 && /asynchronous merge endpoint/i.test(errorMessage(error))) {
+        await this.mergeAsyncAndWait(prNumber, method);
+        return;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Requests a merge through GitHub's asynchronous endpoint. For a PR in a native
+   * stack, every open PR below it is merged in the same atomic operation.
+   */
+  async mergeAsync(
+    prNumber: number,
+    method: "merge" | "squash" | "rebase" = "squash",
+    sha?: string,
+  ): Promise<AsyncMergeResult> {
+    try {
+      const { data } = await this.client.api.request(
+        "PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge-async",
+        {
+          owner: this.client.repoOwner,
+          repo: this.client.repoName,
+          pull_number: prNumber,
+          merge_method: method,
+          ...(sha ? { sha } : {}),
+        },
+      );
+      return this.toAsyncResult(data);
+    } catch (error) {
+      const status = errorStatus(error);
+      if (status === 409) {
+        throw new PileGitHubError(
+          "MERGE_IN_PROGRESS",
+          `A merge of PR #${prNumber} is already in progress.`,
+          "Wait for it to finish, then run `pile sync`.",
+          { cause: error },
+        );
+      }
+      if (status === 400 || status === 422) {
+        throw new PileGitHubError(
+          "MERGE_REJECTED",
+          `GitHub refused to merge PR #${prNumber}: ${errorMessage(error)}`,
+          "Run `pile status` to see what blocks it.",
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+  }
+
+  async getAsyncMergeResult(prNumber: number, uuid: string): Promise<AsyncMergeResult> {
+    const { data } = await this.client.api.request(
+      "GET /repos/{owner}/{repo}/pulls/{pull_number}/merge-async/{uuid}",
+      {
+        owner: this.client.repoOwner,
+        repo: this.client.repoName,
+        pull_number: prNumber,
+        uuid,
+      },
+    );
+    return this.toAsyncResult(data);
+  }
+
+  /**
+   * Merges asynchronously and polls until GitHub reports merged, enqueued (merge
+   * queue) or failed. Failure and timeout throw with a stable code.
+   */
+  async mergeAsyncAndWait(
+    prNumber: number,
+    method: "merge" | "squash" | "rebase" = "squash",
+    options: AsyncMergeOptions = {},
+  ): Promise<AsyncMergeResult> {
+    const { timeoutMs = 180_000, intervalMs = 1_500, onPoll } = options;
+    let result = await this.mergeAsync(prNumber, method, options.sha);
+    const deadline = Date.now() + timeoutMs;
+
+    while (result.status === "pending") {
+      onPoll?.(result);
+      if (Date.now() >= deadline) {
+        throw new PileGitHubError(
+          "MERGE_PENDING",
+          `GitHub is still merging PR #${prNumber}.`,
+          "Check the PR on GitHub, then run `pile sync` once it has merged.",
+        );
+      }
+      await sleep(intervalMs);
+      if (!result.uuid) break;
+      result = await this.getAsyncMergeResult(prNumber, result.uuid);
+    }
+
+    if (result.status === "failed") {
+      throw new PileGitHubError(
+        "MERGE_FAILED",
+        `GitHub could not merge PR #${prNumber}${result.message ? `: ${result.message}` : ""}`,
+        "Run `pile status` for details.",
+      );
+    }
+    return result;
+  }
+
+  private toAsyncResult(data: unknown): AsyncMergeResult {
+    const body = (data ?? {}) as {
+      status?: AsyncMergeResult["status"];
+      details?: { uuid?: string; message?: string; sha?: string };
+    };
+    return {
+      // A 200 without a status means the PR was already merged.
+      status: body.status ?? "merged",
+      uuid: body.details?.uuid,
+      message: body.details?.message,
+      sha: body.details?.sha,
+    };
+  }
+
+  /** Numbers of the PRs in a native stack that are merged. */
+  async getMergedInStack(stackNumber: number): Promise<Array<{ number: number; branch: string }>> {
+    const { data } = await this.client.api.request("GET /repos/{owner}/{repo}/stacks/{stack_number}", {
       owner: this.client.repoOwner,
       repo: this.client.repoName,
-      pull_number: prNumber,
-      merge_method: method,
+      stack_number: stackNumber,
     });
+    const stack = data as { pull_requests?: Array<{ number: number; merged_at: string | null; head: { ref: string } }> };
+    return (stack.pull_requests ?? [])
+      .filter((pr) => pr.merged_at)
+      .map((pr) => ({ number: pr.number, branch: pr.head.ref }));
   }
 
   /**
@@ -397,6 +549,16 @@ export class PROperations {
       labels: pr.labels?.map((l) => ({ name: l.name })) ?? undefined,
       reviews: [],
       checks: { state: null, total: 0, passed: 0, failed: 0, pending: 0 },
+      ...(pr.stack
+        ? {
+            stack: {
+              number: pr.stack.number,
+              position: pr.stack.position,
+              size: pr.stack.size,
+              base: pr.stack.base?.ref ?? "",
+            },
+          }
+        : {}),
     };
   }
 

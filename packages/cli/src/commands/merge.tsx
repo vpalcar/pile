@@ -44,7 +44,7 @@ interface BlockedPR {
   reasons: BlockingReason[];
 }
 
-type State = "checking" | "merging" | "cleaning" | "success" | "blocked" | "no_pr" | "error";
+type State = "checking" | "merging" | "cleaning" | "success" | "queued" | "blocked" | "no_pr" | "error";
 
 function getBlockingReasons(pr: PullRequest): BlockingReason[] {
   const reasons: BlockingReason[] = [];
@@ -156,6 +156,7 @@ export function MergeCommand({
   const [mergedPRs, setMergedPRs] = useState<MergedPR[]>([]);
   const [blockedPR, setBlockedPR] = useState<BlockedPR | null>(null);
   const [mergeMethod, setMergeMethod] = useState<string>("squash");
+  const [nativeStack, setNativeStack] = useState<number | null>(null);
 
   useEffect(() => {
     async function mergeStack() {
@@ -175,6 +176,25 @@ export function MergeCommand({
         // Merge the stack from the bottom up to (and including) the target branch.
         const stackBranches = pile.stack.getAncestry(targetBranch);
         const merged: MergedPR[] = [];
+        let nativeStackNumber: number | null = null;
+
+        const block = (branch: string, pr: PullRequest, reasons: BlockingReason[]) => {
+          setBlockedPR({ branch, prNumber: pr.number, title: pr.title, reasons });
+          setMergedPRs(merged);
+          if (options.json || !options.interactive) {
+            exitWithError(options, {
+              code: "MERGE_BLOCKED",
+              message: `PR #${pr.number} cannot be merged: ${reasons.map((r) => r.message).join("; ")}`,
+              hint: "Run `pile status` for details, or `pile merge --force` to merge anyway.",
+              data: {
+                merged,
+                blockedAt: { branch, prNumber: pr.number, blocking: reasons },
+              },
+            });
+          }
+          process.exitCode = 1;
+          setState("blocked");
+        };
 
         for (const branchToMerge of stackBranches) {
           setCurrentMerging(branchToMerge);
@@ -204,35 +224,84 @@ export function MergeCommand({
             return;
           }
 
+          // A PR in a native GitHub stack can only be merged through GitHub's async
+          // endpoint, which merges it and every open PR below it atomically.
+          if (pr.stack) {
+            const remaining = stackBranches.slice(stackBranches.indexOf(branchToMerge));
+            const found = await Promise.all(
+              remaining.map((b) => (b === branchToMerge ? pr : findBranchPR(pile, github, b))),
+            );
+            const entries = remaining.map((branch, i) => ({ branch, pr: found[i] }));
+
+            const outside = entries.find(
+              (e) => !e.pr || e.pr.state !== "open" || e.pr.stack?.number !== pr.stack!.number,
+            );
+            if (outside) {
+              const error: CommandError = {
+                code: "NOT_IN_STACK",
+                message: `${outside.branch} has no open PR in GitHub stack #${pr.stack.number}, so the stack can't be merged up to ${targetBranch} in one step.`,
+                hint: "Merge up to the branch below it, or add its PR to the stack on GitHub.",
+                data: { merged, stack: pr.stack.number, branch: outside.branch },
+              };
+              if (options.json || !options.interactive) exitWithError(options, error);
+              process.exitCode = 1;
+              setFailure(error);
+              setMergedPRs(merged);
+              setState("error");
+              return;
+            }
+
+            // Check every PR first: the merge is all-or-nothing.
+            for (const entry of entries) {
+              const reasons = getBlockingReasons(entry.pr!);
+              if (reasons.length > 0 && !force) return block(entry.branch, entry.pr!, reasons);
+            }
+            if (force) {
+              for (const entry of entries.filter((e) => e.pr!.draft)) {
+                await github.prs.markReadyForReview(entry.pr!.number);
+              }
+            }
+
+            const top = entries[entries.length - 1];
+            nativeStackNumber = pr.stack.number;
+            setNativeStack(pr.stack.number);
+            setCurrentMerging(`${entries.length} PR${entries.length === 1 ? "" : "s"} up to ${top.branch}`);
+            setState("merging");
+            const result = await github.prs.mergeAsyncAndWait(top.pr!.number, method, { sha: top.pr!.head.sha });
+
+            if (result.status === "enqueued") {
+              const queued = entries.map((e) => ({ branch: e.branch, prNumber: e.pr!.number, title: e.pr!.title }));
+              setMergedPRs(queued);
+              if (options.json) {
+                console.log(formatJson(createResult(true, {
+                  merged: [],
+                  queued: queued.map((q) => ({ branch: q.branch, prNumber: q.prNumber })),
+                  mergeMethod: method,
+                  target: target ?? null,
+                  stack: pr.stack.number,
+                })));
+                process.exit(0);
+              }
+              setState("queued");
+              return;
+            }
+
+            const mergedNumbers = new Set((await github.prs.getMergedInStack(pr.stack.number)).map((m) => m.number));
+            setState("cleaning");
+            for (const entry of entries) {
+              if (!mergedNumbers.has(entry.pr!.number)) continue;
+              merged.push({ branch: entry.branch, prNumber: entry.pr!.number, title: entry.pr!.title });
+              // GitHub retargets and rebases the PRs above; only local state needs updating.
+              await cleanupMergedBranch(pile, github, entry.branch, trunk, false);
+            }
+            break;
+          }
+
           // Checks and reviews come from the enriched PR, so they actually gate the merge.
           const reasons = getBlockingReasons(pr);
 
           if (reasons.length > 0 && !force) {
-            setBlockedPR({
-              branch: branchToMerge,
-              prNumber: pr.number,
-              title: pr.title,
-              reasons,
-            });
-            setMergedPRs(merged);
-            if (options.json || !options.interactive) {
-              exitWithError(options, {
-                code: "MERGE_BLOCKED",
-                message: `PR #${pr.number} cannot be merged: ${reasons.map((r) => r.message).join("; ")}`,
-                hint: "Run `pile status` for details, or `pile merge --force` to merge anyway.",
-                data: {
-                  merged,
-                  blockedAt: {
-                    branch: branchToMerge,
-                    prNumber: pr.number,
-                    blocking: reasons,
-                  },
-                },
-              });
-            }
-            process.exitCode = 1;
-            setState("blocked");
-            return;
+            return block(branchToMerge, pr, reasons);
           }
 
           // A forced merge of a draft has to mark it ready first (GraphQL only).
@@ -287,6 +356,7 @@ export function MergeCommand({
                 })),
                 mergeMethod: method,
                 target: target ?? null,
+                stack: nativeStackNumber,
               })
             )
           );
@@ -311,7 +381,20 @@ export function MergeCommand({
     case "checking":
       return <Spinner label="Checking stack..." />;
     case "merging":
-      return <Spinner label={`Merging ${currentMerging}...`} />;
+      return (
+        <Spinner
+          label={nativeStack ? `Merging ${currentMerging} (GitHub stack #${nativeStack})...` : `Merging ${currentMerging}...`}
+        />
+      );
+    case "queued":
+      return (
+        <Box flexDirection="column">
+          <SuccessMessage>
+            Added {mergedPRs.length} PR{mergedPRs.length !== 1 ? "s" : ""} to the merge queue
+          </SuccessMessage>
+          <Text color="gray">  Run `pile sync` once GitHub has merged them.</Text>
+        </Box>
+      );
     case "cleaning":
       return <Spinner label={`Cleaning up ${currentMerging}...`} />;
     case "success":
@@ -403,7 +486,8 @@ async function cleanupMergedBranch(
   pile: PileInstance,
   github: GitHubInstance,
   branch: string,
-  trunk: string
+  trunk: string,
+  retargetPRs = true,
 ): Promise<void> {
   // Get children before cleaning up
   const children = pile.state.getChildren(branch);
@@ -419,8 +503,8 @@ async function cleanupMergedBranch(
         parent: newParent,
       });
 
-      // Update the child's PR base on GitHub
-      if (childRel.prNumber) {
+      // Update the child's PR base on GitHub (native stacks do this themselves)
+      if (retargetPRs && childRel.prNumber) {
         try {
           await github.prs.update({
             number: childRel.prNumber,

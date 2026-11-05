@@ -7,6 +7,8 @@ export {
   type CreatePRParams,
   type UpdatePRParams,
   type PRStatus,
+  type PRStackInfo,
+  type AsyncMergeResult,
   getPRStatus,
 } from "./types.js";
 
@@ -28,7 +30,7 @@ export {
 } from "./client.js";
 
 // PR operations
-export { PROperations, createPROperations } from "./pr.js";
+export { PROperations, createPROperations, type AsyncMergeOptions } from "./pr.js";
 
 // Cache
 export { PRCacheManager, createPRCacheManager, type CachedPR } from "./cache.js";
