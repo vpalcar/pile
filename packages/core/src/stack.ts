@@ -2,6 +2,15 @@ import { GitOperations } from "./git.js";
 import { StateManager, RestackState } from "./state.js";
 import { Branch, Stack, StackNode } from "./schemas.js";
 
+export type NavigationDirection = "up" | "down" | "top" | "bottom";
+
+export interface NavigationPlan {
+  /** Branch to check out, or null when there is nowhere to go (or a choice is needed). */
+  target: string | null;
+  /** Set when moving up reaches a branch with several children. */
+  choices?: string[];
+}
+
 export interface RestackResult {
   success: boolean;
   completed: string[];
@@ -89,79 +98,110 @@ export class StackManager {
   }
 
   async getBranch(name: string): Promise<Branch | null> {
-    const exists = await this.git.branchExists(name);
-    if (!exists) return null;
+    return (await this.loadBranches([name])).get(name) ?? null;
+  }
 
-    const rel = this.state.getBranchRelationship(name);
+  /**
+   * Loads branch details for many branches at once: one ref snapshot, then commit
+   * ranges and sync statuses in parallel. Branches that don't exist locally are omitted.
+   */
+  async loadBranches(names: string[]): Promise<Map<string, Branch>> {
     const trunk = this.getTrunk();
-    const parent = rel?.parent ?? trunk;
+    const refs = await this.git.getRefs();
+    const existing = names.filter((name) => refs.local.has(name));
+    const parents = existing.map((name) => this.state.getParent(name));
 
-    const commits = await this.git.getCommitsBetween(parent, name);
-    const syncStatus = await this.git.getBranchSyncStatus(name);
+    const [commits, statuses] = await Promise.all([
+      this.git.getCommitsForRanges(
+        existing.map((name, i) => ({ base: parents[i] ?? trunk, head: name })),
+      ),
+      this.git.getSyncStatuses(existing, this.git.remoteName, refs),
+    ]);
 
-    return {
-      name,
-      parent,
-      commits,
-      syncStatus,
-      tracked: !!rel,
-      prNumber: rel?.prNumber,
-      prUrl: rel?.prUrl,
-    };
+    const branches = new Map<string, Branch>();
+    existing.forEach((name, i) => {
+      const rel = this.state.getBranchRelationship(name);
+      branches.set(name, {
+        name,
+        parent: parents[i] ?? trunk,
+        commits: commits[i],
+        syncStatus: statuses[i],
+        tracked: !!rel,
+        prNumber: rel?.prNumber,
+        prUrl: rel?.prUrl,
+      });
+    });
+    return branches;
+  }
+
+  /** Branch names from `branchName` down to (excluding) trunk, bottom first. */
+  getAncestry(branchName: string): string[] {
+    const trunk = this.getTrunk();
+    const chain: string[] = [];
+    const seen = new Set<string>();
+    let branch: string | null = branchName;
+    // `seen` guards against parent cycles in hand-edited or corrupted config.
+    while (branch && branch !== trunk && !seen.has(branch)) {
+      seen.add(branch);
+      chain.unshift(branch);
+      branch = this.state.getParent(branch);
+    }
+    return chain;
   }
 
   async getStack(branchName?: string): Promise<Stack> {
     const current = branchName ?? (await this.git.getCurrentBranch());
-    const trunk = this.getTrunk();
-    const branches: Branch[] = [];
-
-    // Walk up from current to trunk to get the stack
-    let branch = current;
-    while (branch && branch !== trunk) {
-      const branchData = await this.getBranch(branch);
-      if (branchData) {
-        branches.unshift(branchData);
-      }
-      const parent = this.state.getParent(branch);
-      branch = parent ?? "";
-    }
+    const names = this.getAncestry(current);
+    const loaded = await this.loadBranches(names);
 
     return {
       id: current,
-      branches,
-      trunk,
+      branches: names.map((name) => loaded.get(name)).filter((b): b is Branch => !!b),
+      trunk: this.getTrunk(),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
   }
 
-  async getStackTree(branchName?: string): Promise<StackNode | null> {
-    const current = branchName ?? (await this.git.getCurrentBranch());
-    const currentBranch = await this.git.getCurrentBranch();
-
-    const buildTree = async (name: string, depth: number): Promise<StackNode | null> => {
-      const branch = await this.getBranch(name);
-      if (!branch) return null;
-
-      const children = this.state.getChildren(name);
-      const childNodes: StackNode[] = [];
-
-      for (const childName of children) {
-        const childNode = await buildTree(childName, depth + 1);
-        if (childNode) {
-          childNodes.push(childNode);
-        }
-      }
-
+  /** Builds trees for the given roots from already-loaded branch data. */
+  private buildTrees(roots: string[], branches: Map<string, Branch>, currentBranch: string): StackNode[] {
+    const seen = new Set<string>();
+    const build = (name: string, depth: number): StackNode | null => {
+      const branch = branches.get(name);
+      if (!branch || seen.has(name)) return null;
+      seen.add(name);
       return {
         branch,
-        children: childNodes,
+        children: this.state
+          .getChildren(name)
+          .map((child) => build(child, depth + 1))
+          .filter((node): node is StackNode => !!node),
         depth,
         isCurrentBranch: name === currentBranch,
       };
     };
+    return roots.map((root) => build(root, 0)).filter((node): node is StackNode => !!node);
+  }
 
-    return buildTree(current, 0);
+  /** All descendants of `branchName` (depth-first), including the branch itself. */
+  getDescendants(branchName: string): string[] {
+    const result: string[] = [];
+    const seen = new Set<string>();
+    const visit = (branch: string) => {
+      if (seen.has(branch)) return;
+      seen.add(branch);
+      result.push(branch);
+      for (const child of this.state.getChildren(branch)) visit(child);
+    };
+    visit(branchName);
+    return result;
+  }
+
+  async getStackTree(branchName?: string): Promise<StackNode | null> {
+    const currentBranch = await this.git.getCurrentBranch();
+    const root = branchName ?? currentBranch;
+    const branches = await this.loadBranches(this.getDescendants(root));
+    return this.buildTrees([root], branches, currentBranch)[0] ?? null;
   }
 
   async restack(branchName?: string): Promise<{ success: boolean; conflicts: boolean }> {
@@ -175,6 +215,12 @@ export class StackManager {
     // Get the stored base commit (parent's commit when branch was created/last synced)
     const oldBase = this.state.getBaseCommit(current);
     const newParentCommit = await this.git.getCommitHash(parent);
+
+    // Already on top of the parent: nothing to rebase.
+    if (await this.git.isAncestor(newParentCommit, current)) {
+      this.state.setBaseCommit(current, newParentCommit);
+      return { success: true, conflicts: false };
+    }
 
     let result: { success: boolean; conflicts: boolean };
 
@@ -228,97 +274,76 @@ export class StackManager {
     return results;
   }
 
-  async navigateUp(steps = 1): Promise<string | null> {
+  /**
+   * Works out where a navigation would land without checking anything out.
+   * Moving up stops at a branch with several children and reports them as `choices`,
+   * so callers can ask (interactive) or require an explicit branch (non-interactive).
+   */
+  planNavigation(from: string, direction: NavigationDirection, steps = 1): NavigationPlan {
+    const trunk = this.getTrunk();
+
+    if (direction === "down" || direction === "bottom") {
+      const ancestry = this.getAncestry(from);
+      if (from === trunk || ancestry.length === 0) return { target: null };
+      // ancestry is bottom-first and ends with `from`
+      const index = ancestry.length - 1;
+      if (direction === "bottom") {
+        return { target: index === 0 ? trunk : ancestry[0] };
+      }
+      const targetIndex = index - steps;
+      return { target: targetIndex < 0 ? trunk : ancestry[targetIndex] };
+    }
+
+    let target = from;
+    const seen = new Set<string>([from]);
+    for (let i = 0; direction === "top" || i < steps; i++) {
+      const children = from === trunk && target === trunk
+        ? this.getRootBranches()
+        : this.state.getChildren(target);
+      if (children.length === 0) break;
+      if (children.length > 1) {
+        return { target: target === from ? null : target, choices: children };
+      }
+      if (seen.has(children[0])) break;
+      seen.add(children[0]);
+      target = children[0];
+    }
+    return { target: target === from ? null : target };
+  }
+
+  private async navigate(direction: NavigationDirection, steps = 1): Promise<string | null> {
     const current = await this.git.getCurrentBranch();
-    const children = this.state.getChildren(current);
-
-    if (children.length === 0) {
-      return null;
-    }
-
-    // Navigate to the first child
-    let target = children[0];
-    for (let i = 1; i < steps; i++) {
-      const nextChildren = this.state.getChildren(target);
-      if (nextChildren.length === 0) break;
-      target = nextChildren[0];
-    }
-
+    const plan = this.planNavigation(current, direction, steps);
+    const target = plan.target ?? plan.choices?.[0] ?? null;
+    if (!target) return null;
     await this.git.checkout(target);
     return target;
+  }
+
+  /** Checks out the child `steps` levels up; with several children, takes the first. */
+  async navigateUp(steps = 1): Promise<string | null> {
+    return this.navigate("up", steps);
   }
 
   async navigateDown(steps = 1): Promise<string | null> {
-    const current = await this.git.getCurrentBranch();
-    const trunk = this.getTrunk();
-
-    let target = current;
-    for (let i = 0; i < steps; i++) {
-      const parent = this.state.getParent(target);
-      if (!parent || parent === trunk) {
-        if (i === 0) {
-          // Already at trunk level
-          return null;
-        }
-        break;
-      }
-      target = parent;
-    }
-
-    if (target === current) {
-      return null;
-    }
-
-    await this.git.checkout(target);
-    return target;
+    return this.navigate("down", steps);
   }
 
   async navigateToTop(): Promise<string | null> {
-    const current = await this.git.getCurrentBranch();
-    let target = current;
-
-    while (true) {
-      const children = this.state.getChildren(target);
-      if (children.length === 0) break;
-      target = children[0];
-    }
-
-    if (target === current) {
-      return null;
-    }
-
-    await this.git.checkout(target);
-    return target;
+    return this.navigate("top");
   }
 
   async navigateToBottom(): Promise<string | null> {
-    const current = await this.git.getCurrentBranch();
-    const trunk = this.getTrunk();
-
-    // Find the bottom of the stack (first branch off trunk)
-    let target = current;
-    while (true) {
-      const parent = this.state.getParent(target);
-      if (!parent || parent === trunk) break;
-      target = parent;
-    }
-
-    if (target === current) {
-      // Check if we should go to trunk
-      const parent = this.state.getParent(current);
-      if (parent === trunk) {
-        await this.git.checkout(trunk);
-        return trunk;
-      }
-      return null;
-    }
-
-    await this.git.checkout(target);
-    return target;
+    return this.navigate("bottom");
   }
 
   async deleteBranch(branchName: string, force = false): Promise<void> {
-    // Remove from tracking first
+    // Children move to the deleted branch's parent instead of being orphaned.
+    const parent = this.state.getParent(branchName) ?? this.getTrunk();
+    for (const child of this.state.getChildren(branchName)) {
+      this.state.setBranchRelationship(child, { name: child, parent });
+    }
+
     this.state.removeBranchRelationship(branchName);
 
     // Then delete the git branch
@@ -367,40 +392,11 @@ export class StackManager {
    * Get all stack trees (one for each root branch)
    */
   async getAllStackTrees(): Promise<StackNode[]> {
-    const roots = this.getRootBranches();
-    const currentBranch = await this.git.getCurrentBranch();
-    const trees: StackNode[] = [];
-
-    const buildTree = async (name: string, depth: number): Promise<StackNode | null> => {
-      const branch = await this.getBranch(name);
-      if (!branch) return null;
-
-      const children = this.state.getChildren(name);
-      const childNodes: StackNode[] = [];
-
-      for (const childName of children) {
-        const childNode = await buildTree(childName, depth + 1);
-        if (childNode) {
-          childNodes.push(childNode);
-        }
-      }
-
-      return {
-        branch,
-        children: childNodes,
-        depth,
-        isCurrentBranch: name === currentBranch,
-      };
-    };
-
-    for (const root of roots) {
-      const tree = await buildTree(root, 0);
-      if (tree) {
-        trees.push(tree);
-      }
-    }
-
-    return trees;
+    const [currentBranch, branches] = await Promise.all([
+      this.git.getCurrentBranch(),
+      this.loadBranches(this.getAllTrackedBranches()),
+    ]);
+    return this.buildTrees(this.getRootBranches(), branches, currentBranch);
   }
 
   /**
@@ -423,15 +419,8 @@ export class StackManager {
       await this.git.fetch(true);
       const fetched = true;
 
-      // Update trunk
-      let trunkUpdated = false;
-      try {
-        await this.git.checkout(trunk);
-        await this.git.pull(trunk);
-        trunkUpdated = true;
-      } catch {
-        // Trunk might not have a remote
-      }
+      // Update trunk without checking it out; a diverged trunk is left alone.
+      const trunkUpdated = await this.git.fastForward(trunk);
 
       // Get all root branches and restack them
       const roots = this.getRootBranches();
@@ -469,22 +458,7 @@ export class StackManager {
    * Get all branches that need to be restacked in order (depth-first from roots)
    */
   getBranchesToRestack(): string[] {
-    const branches: string[] = [];
-    const roots = this.getRootBranches();
-
-    const collectBranches = (branch: string) => {
-      branches.push(branch);
-      const children = this.state.getChildren(branch);
-      for (const child of children) {
-        collectBranches(child);
-      }
-    };
-
-    for (const root of roots) {
-      collectBranches(root);
-    }
-
-    return branches;
+    return this.getRootBranches().flatMap((root) => this.getDescendants(root));
   }
 
   /**
@@ -508,30 +482,14 @@ export class StackManager {
     const trunk = this.getTrunk();
 
     // Walk up to find the root of this branch's stack
-    let root = branchName;
-    while (true) {
-      const parent = this.state.getParent(root);
-      if (!parent || parent === trunk) break;
-      root = parent;
-    }
+    const root = this.getAncestry(branchName)[0] ?? trunk;
 
     // If the branch is trunk or not tracked, return empty
     if (root === trunk || !this.state.getBranchRelationship(root)) {
       return [];
     }
 
-    // Collect this root and all its descendants
-    const branches: string[] = [];
-    const collectBranches = (branch: string) => {
-      branches.push(branch);
-      const children = this.state.getChildren(branch);
-      for (const child of children) {
-        collectBranches(child);
-      }
-    };
-    collectBranches(root);
-
-    return branches;
+    return this.getDescendants(root);
   }
 
   /**
