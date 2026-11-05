@@ -17,6 +17,24 @@ export interface CachedPRInfo {
   checksState: string | null;
 }
 
+const STATUS_LABELS: Record<PRStatusType, string> = {
+  draft: "draft",
+  open: "open",
+  approved: "approved",
+  changes_requested: "changes requested",
+  merged: "merged",
+  closed: "closed",
+};
+
+const STATUS_COLORS: Record<PRStatusType, string> = {
+  draft: "gray",
+  open: "cyan",
+  approved: "green",
+  changes_requested: "red",
+  merged: "magenta",
+  closed: "red",
+};
+
 interface FlatBranch {
   name: string;
   depth: number;
@@ -111,6 +129,12 @@ export function StackTree({
             >
               {branch.name}
             </Text>
+            {branch.prNumber !== undefined && (
+              <Text color="gray">{`  #${branch.prNumber}`}</Text>
+            )}
+            {branch.prStatus && (
+              <Text color={STATUS_COLORS[branch.prStatus]}>{` ${STATUS_LABELS[branch.prStatus]}`}</Text>
+            )}
           </Box>
         );
       })}

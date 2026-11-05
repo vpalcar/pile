@@ -322,14 +322,15 @@ program
 
 // delete command
 program
-  .command("delete")
+  .command("delete [branch]")
   .alias("del")
-  .description("Delete the current branch, close its PR, and switch to parent")
+  .description("Delete a branch (default: current), close its PR, and reparent its children")
   .option("-f, --force", "Force delete even if branch has children (reparents them)")
-  .action((opts) => {
+  .action((branch, opts) => {
     const globalOpts = program.opts();
     render(
       React.createElement(DeleteCommand, {
+        branch,
         force: opts.force,
         options: resolveOptions(globalOpts),
       }),

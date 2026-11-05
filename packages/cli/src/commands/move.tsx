@@ -7,7 +7,15 @@ import {
   ErrorMessage,
   WarningMessage,
 } from "../components/Message.js";
-import { OutputOptions, formatJson, createResult } from "../utils/output.js";
+import {
+  OutputOptions,
+  CommandError,
+  formatJson,
+  createResult,
+  exitWithError,
+  exitNeedsInput,
+  toCommandError,
+} from "../utils/output.js";
 
 export interface MoveCommandProps {
   onto?: string;
@@ -49,6 +57,16 @@ export function MoveCommand({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [pile, setPile] = useState<PileInstance | null>(null);
 
+  // Non-interactive runs exit with a structured error; interactive runs render it.
+  const fail = (err: CommandError, view: State = "error") => {
+    if (options.json || !options.interactive) {
+      exitWithError(options, err);
+    }
+    process.exitCode = 1;
+    setError(err.message);
+    setState(view);
+  };
+
   useEffect(() => {
     async function run() {
       try {
@@ -56,13 +74,10 @@ export function MoveCommand({
         setPile(pileInstance);
 
         if (!pileInstance.state.isInitialized()) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "Pile not initialized"))
-            );
-            process.exit(1);
-          }
-          setState("not_initialized");
+          fail(
+            { code: "NOT_INITIALIZED", message: "Pile not initialized", hint: "Run `pile init` first." },
+            "not_initialized",
+          );
           return;
         }
 
@@ -71,25 +86,20 @@ export function MoveCommand({
         setCurrentBranch(current);
 
         if (current === trunk) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "Cannot move trunk branch"))
-            );
-            process.exit(1);
-          }
-          setState("on_trunk");
+          fail({ code: "ON_TRUNK", message: "Cannot move trunk branch" }, "on_trunk");
           return;
         }
 
         const currentParent = pileInstance.state.getParent(current);
         if (!currentParent) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "Branch is not tracked by pile"))
-            );
-            process.exit(1);
-          }
-          setState("not_tracked");
+          fail(
+            {
+              code: "NOT_TRACKED",
+              message: "Branch is not tracked by pile",
+              hint: "Run `pile track` to track it.",
+            },
+            "not_tracked",
+          );
           return;
         }
         setOldParent(currentParent);
@@ -99,27 +109,16 @@ export function MoveCommand({
           // Validate target
           const targetExists = await pileInstance.git.branchExists(onto);
           if (!targetExists) {
-            if (options.json) {
-              console.log(
-                formatJson(createResult(false, null, `Branch '${onto}' does not exist`))
-              );
-              process.exit(1);
-            }
-            setError(`Branch '${onto}' does not exist`);
-            setState("invalid_target");
+            fail({ code: "INVALID_TARGET", message: `Branch '${onto}' does not exist` }, "invalid_target");
             return;
           }
 
           // Check if target would create a cycle
           if (onto === current || isDescendant(pileInstance, onto, current)) {
-            if (options.json) {
-              console.log(
-                formatJson(createResult(false, null, "Cannot move branch onto itself or its descendant"))
-              );
-              process.exit(1);
-            }
-            setError("Cannot move branch onto itself or its descendant");
-            setState("invalid_target");
+            fail(
+              { code: "INVALID_TARGET", message: "Cannot move branch onto itself or its descendant" },
+              "invalid_target",
+            );
             return;
           }
 
@@ -182,6 +181,14 @@ export function MoveCommand({
           }
         }
 
+        if (!options.interactive) {
+          exitNeedsInput(options, {
+            message: `No target given for moving ${current}`,
+            flag: "--onto",
+            choices: validTargets.filter((b) => !b.isCurrentParent).map((b) => b.name),
+          });
+        }
+
         setAvailableBranches(validTargets);
 
         // Find current parent in list and select it
@@ -192,13 +199,7 @@ export function MoveCommand({
 
         setState("selecting");
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (options.json) {
-          console.log(formatJson(createResult(false, null, message)));
-          process.exit(1);
-        }
-        setError(message);
-        setState("error");
+        fail(toCommandError(err));
       }
     }
 
@@ -215,8 +216,15 @@ export function MoveCommand({
     try {
       setState("moving");
 
-      // Get children before moving
-      const children = pileInstance.state.getChildren(current);
+      // Descendants (depth-first) are restacked after the move, parents before children.
+      const children = pileInstance.stack.getDescendants(current).slice(1);
+
+      // Only this branch's own commits move: everything after the old parent's base.
+      const storedBase = pileInstance.state.getBaseCommit(current);
+      const oldBase =
+        storedBase && (await pileInstance.git.isAncestor(storedBase, current))
+          ? storedBase
+          : await pileInstance.git.getMergeBase(current, currentParent);
 
       // Update the branch relationship
       const rel = pileInstance.state.getBranchRelationship(current);
@@ -228,19 +236,20 @@ export function MoveCommand({
       }
 
       // Rebase onto new parent
-      await pileInstance.git.checkout(current);
-      const rebaseResult = await pileInstance.git.rebase(target);
+      const rebaseResult = oldBase
+        ? await pileInstance.git.rebaseOnto(target, oldBase, current)
+        : (await pileInstance.git.checkout(current), await pileInstance.git.rebase(target));
 
       if (rebaseResult.conflicts) {
-        // Save state for potential recovery
-        if (options.json) {
-          console.log(
-            formatJson(
-              createResult(false, { conflicts: true, branch: current }, "Rebase conflict")
-            )
-          );
-          process.exit(1);
+        if (options.json || !options.interactive) {
+          exitWithError(options, {
+            code: "CONFLICT",
+            message: `Rebase conflict while moving ${current}`,
+            hint: "Resolve the conflicts, `git add` them, then `git rebase --continue`.",
+            data: { conflicts: true, branch: current },
+          });
         }
+        process.exitCode = 1;
         setState("conflict");
         return;
       }
@@ -261,18 +270,15 @@ export function MoveCommand({
           } else if (childResult.conflicts) {
             // Stop on conflict
             setRebasedChildren(restacked);
-            if (options.json) {
-              console.log(
-                formatJson(
-                  createResult(
-                    false,
-                    { conflicts: true, branch: child, restacked },
-                    `Conflict while restacking ${child}`
-                  )
-                )
-              );
-              process.exit(1);
+            if (options.json || !options.interactive) {
+              exitWithError(options, {
+                code: "CONFLICT",
+                message: `Conflict while restacking ${child}`,
+                hint: "Resolve the conflicts, `git add` them, then run `pile restack --continue`.",
+                data: { conflicts: true, branch: child, restacked },
+              });
             }
+            process.exitCode = 1;
             setError(`Conflict while restacking ${child}`);
             setState("conflict");
             return;
@@ -280,6 +286,7 @@ export function MoveCommand({
         }
 
         setRebasedChildren(restacked);
+        await pileInstance.git.checkout(current);
       }
 
       if (options.json) {
@@ -299,13 +306,7 @@ export function MoveCommand({
       setState("success");
       setTimeout(() => exit(), 100);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (options.json) {
-        console.log(formatJson(createResult(false, null, message)));
-        process.exit(1);
-      }
-      setError(message);
-      setState("error");
+      fail(toCommandError(err));
     }
   };
 
@@ -433,10 +434,5 @@ export function MoveCommand({
 
 // Check if 'branch' is a descendant of 'ancestor'
 function isDescendant(pile: PileInstance, branch: string, ancestor: string): boolean {
-  const children = pile.state.getChildren(ancestor);
-  for (const child of children) {
-    if (child === branch) return true;
-    if (isDescendant(pile, branch, child)) return true;
-  }
-  return false;
+  return pile.stack.getDescendants(ancestor).slice(1).includes(branch);
 }
