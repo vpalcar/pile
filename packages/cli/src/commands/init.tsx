@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Box, Text, useInput, useApp } from "ink";
-import { createPile, createGitOperations, PileInstance } from "@pile/core";
+import { createPile, createGitOperations, runGitSync, PileInstance, RepoConfig } from "@pile/core";
 import { getGitHubToken, getGitHubConfig, createGitHubRepo as createGitHubRepoAPI, getGitHubUserInfo, type GitHubUser } from "@pile/github";
 import { Spinner } from "../components/Spinner.js";
 import {
@@ -9,8 +9,14 @@ import {
   WarningMessage,
   InfoMessage,
 } from "../components/Message.js";
-import { OutputOptions, formatJson, createResult } from "../utils/output.js";
-import { execSync } from "node:child_process";
+import {
+  OutputOptions,
+  formatJson,
+  createResult,
+  exitWithError,
+  exitNeedsInput,
+  toCommandError,
+} from "../utils/output.js";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -30,7 +36,17 @@ function ensureGitignore(repoRoot: string) {
 export interface InitCommandProps {
   trunk?: string;
   openPr?: boolean;
+  mergeMethod?: string;
+  remote?: string;
   options: OutputOptions;
+}
+
+type MergeMethod = RepoConfig["mergeMethod"];
+const MERGE_METHOD_VALUES: readonly MergeMethod[] = ["squash", "merge", "rebase"];
+
+/** Runs git in the current directory; arguments are never passed through a shell. */
+function gitHere(...args: string[]): string {
+  return runGitSync(args, { cwd: process.cwd() });
 }
 
 type WizardStep =
@@ -124,8 +140,12 @@ const STACK_ART = `
 export function InitCommand({
   trunk,
   openPr,
+  mergeMethod,
+  remote,
   options,
 }: InitCommandProps): React.ReactElement {
+  // Any setup flag (or no terminal) means: configure from flags and defaults, never prompt.
+  const nonInteractive = !options.interactive || !!trunk || !!mergeMethod || !!remote;
   const { exit } = useApp();
   const [step, setStep] = useState<WizardStep>("welcome");
   const [pile, setPile] = useState<PileInstance | null>(null);
@@ -155,15 +175,27 @@ export function InitCommand({
     githubUser: null,
   });
 
-  // Handle non-interactive mode (--json or with flags)
+  // Handle non-interactive mode (no terminal, --json, or setup flags)
   useEffect(() => {
-    if (options.json || trunk) {
+    if (nonInteractive) {
       runNonInteractive();
     }
   }, []);
 
+  function fail(code: string, message: string, hint?: string): never {
+    return exitWithError(options, { code, message, hint });
+  }
+
   async function runNonInteractive() {
     try {
+      if (mergeMethod && !MERGE_METHOD_VALUES.includes(mergeMethod as MergeMethod)) {
+        fail(
+          "INVALID_ARGUMENT",
+          `Invalid merge method "${mergeMethod}"`,
+          `Use one of: ${MERGE_METHOD_VALUES.join(", ")}.`
+        );
+      }
+
       // First check if we're in a git repo and init if needed
       const cwd = process.cwd();
       const git = createGitOperations(cwd);
@@ -181,16 +213,53 @@ export function InitCommand({
       // Now create the full pile instance
       const pileInstance = await createPile();
 
+      if (remote) {
+        try {
+          gitHere("remote", "get-url", remote);
+        } catch {
+          const remotes = gitHere("remote").split("\n").filter(Boolean);
+          fail(
+            "INVALID_ARGUMENT",
+            `Git remote "${remote}" does not exist`,
+            remotes.length > 0
+              ? `Existing remotes: ${remotes.join(", ")}. Add it with \`git remote add ${remote} <url>\`.`
+              : `Add it with \`git remote add ${remote} <url>\`.`
+          );
+        }
+      }
+
       if (pileInstance.state.isInitialized()) {
-        const config = pileInstance.state.getConfig();
+        let config = pileInstance.state.getConfig()!;
+        // Flags on an initialized repo update just those settings.
+        const updated = !!(trunk || mergeMethod || remote || openPr !== undefined);
+        if (trunk && !(await pileInstance.git.branchExists(trunk))) {
+          fail("INVALID_ARGUMENT", `Branch "${trunk}" does not exist`, "Pass an existing branch with --trunk.");
+        }
+        if (updated) {
+          config = {
+            ...config,
+            trunk: trunk ?? config.trunk,
+            remote: remote ?? config.remote,
+            mergeMethod: (mergeMethod as MergeMethod | undefined) ?? config.mergeMethod,
+            autoOpenPR: openPr ?? config.autoOpenPR,
+          };
+          pileInstance.state.saveConfig(config);
+        }
         if (options.json) {
           console.log(
             formatJson(
               createResult(
                 true,
-                { trunk: config?.trunk, autoOpenPR: config?.autoOpenPR },
+                {
+                  trunk: config.trunk,
+                  autoOpenPR: config.autoOpenPR,
+                  mergeMethod: config.mergeMethod,
+                  remote: config.remote,
+                  alreadyInitialized: true,
+                  updated,
+                },
                 undefined,
-                "Already initialized"
+                updated ? "Updated configuration" : "Already initialized"
               )
             )
           );
@@ -207,22 +276,32 @@ export function InitCommand({
       if (branches.length === 0) {
         defaultTrunk = trunk ?? "main";
         await pileInstance.git.createInitialCommit(defaultTrunk);
+      } else if (trunk) {
+        if (!branches.includes(trunk)) {
+          exitWithError(options, {
+            code: "INVALID_ARGUMENT",
+            message: `Branch "${trunk}" does not exist`,
+            hint: "Pass an existing branch with --trunk.",
+            data: { choices: branches },
+          });
+        }
+        defaultTrunk = trunk;
+      } else if (branches.includes("main") || branches.includes("master") || branches.length === 1) {
+        defaultTrunk = branches.includes("main") ? "main" : branches.includes("master") ? "master" : branches[0];
       } else {
-        defaultTrunk =
-          trunk ??
-          (branches.includes("main")
-            ? "main"
-            : branches.includes("master")
-              ? "master"
-              : branches[0]);
+        exitNeedsInput(options, {
+          message: "Could not detect the trunk branch (no main or master).",
+          flag: "--trunk",
+          choices: branches,
+        });
       }
 
       pileInstance.state.saveConfig({
         trunk: defaultTrunk,
-        remote: "origin",
+        remote: remote ?? "origin",
         initialized: true,
         autoOpenPR: openPr ?? false,
-        mergeMethod: "squash",
+        mergeMethod: (mergeMethod as MergeMethod | undefined) ?? "squash",
       });
 
       const repoRoot = await git.getRepoRoot();
@@ -233,7 +312,12 @@ export function InitCommand({
           formatJson(
             createResult(
               true,
-              { trunk: defaultTrunk, autoOpenPR: openPr ?? false },
+              {
+                trunk: defaultTrunk,
+                autoOpenPR: openPr ?? false,
+                mergeMethod: mergeMethod ?? "squash",
+                remote: remote ?? "origin",
+              },
               undefined,
               "Initialized"
             )
@@ -246,9 +330,8 @@ export function InitCommand({
       setStep("summary");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (options.json) {
-        console.log(formatJson(createResult(false, null, message)));
-        process.exit(1);
+      if (!options.interactive) {
+        exitWithError(options, toCommandError(err));
       }
       setError(message);
       setStep("error");
@@ -373,9 +456,7 @@ export function InitCommand({
       } else {
         // Try to get remote URL directly
         try {
-          const remoteUrl = execSync("git remote get-url origin 2>/dev/null", {
-            encoding: "utf-8",
-          }).trim();
+          const remoteUrl = gitHere("remote", "get-url", "origin");
           const isGitHub = remoteUrl.includes("github.com");
           setWizardState((s) => ({
             ...s,
@@ -457,18 +538,12 @@ export function InitCommand({
       });
 
       // Add remote origin
-      execSync(`git remote add origin ${result.httpsUrl}`, {
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-      });
+      gitHere("remote", "add", "origin", result.httpsUrl);
 
       // Push to remote
       const currentBranch = wizardState.selectedTrunk || "main";
       try {
-        execSync(`git push -u origin ${currentBranch}`, {
-          encoding: "utf-8",
-          stdio: ["pipe", "pipe", "pipe"],
-        });
+        gitHere("push", "-u", "origin", currentBranch);
       } catch {
         // Push might fail if no commits yet, that's ok
       }
@@ -500,10 +575,7 @@ export function InitCommand({
       const remoteUrl = wizardState.remoteInput.trim();
 
       // Add remote origin
-      execSync(`git remote add origin ${remoteUrl}`, {
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-      });
+      gitHere("remote", "add", "origin", remoteUrl);
 
       const isGitHub = remoteUrl.includes("github.com");
 
@@ -518,10 +590,7 @@ export function InitCommand({
       if (wizardState.hasCommits) {
         try {
           const currentBranch = wizardState.selectedTrunk || "main";
-          execSync(`git push -u origin ${currentBranch}`, {
-            encoding: "utf-8",
-            stdio: ["pipe", "pipe", "pipe"],
-          });
+          gitHere("push", "-u", "origin", currentBranch);
         } catch {
           // Push might fail, that's ok
         }
@@ -581,10 +650,7 @@ export function InitCommand({
       // Push trunk to remote if we have one (needed for new repos)
       if (wizardState.hasRemote) {
         try {
-          execSync(`git push -u origin ${wizardState.selectedTrunk}`, {
-            encoding: "utf-8",
-            stdio: ["pipe", "pipe", "pipe"],
-          });
+          gitHere("push", "-u", "origin", wizardState.selectedTrunk);
         } catch {
           // Push might fail, that's ok - user can push manually
         }
@@ -794,7 +860,7 @@ export function InitCommand({
       }
     },
     {
-      isActive: !options.json && !trunk && [
+      isActive: !nonInteractive && [
         "welcome",
         "init_git_prompt",
         "select_trunk",

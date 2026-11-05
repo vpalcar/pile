@@ -8,7 +8,25 @@ import {
   WarningMessage,
   InfoMessage,
 } from "../components/Message.js";
-import { OutputOptions, formatJson, createResult } from "../utils/output.js";
+import {
+  OutputOptions,
+  formatJson,
+  createResult,
+  exitWithError,
+  toCommandError,
+} from "../utils/output.js";
+
+const CONFLICT_HINT =
+  "Resolve the conflicts, `git add` the files, then run `pile restack --continue` (or `pile restack --abort`).";
+
+function exitOnConflict(options: OutputOptions, result: RestackResult): never {
+  return exitWithError(options, {
+    code: "RESTACK_CONFLICT",
+    message: `Conflict while restacking ${result.conflictBranch}`,
+    hint: CONFLICT_HINT,
+    data: result,
+  });
+}
 
 export interface RestackCommandProps {
   continue?: boolean;
@@ -44,11 +62,12 @@ export function RestackCommand({
         const pile = await createPile();
 
         if (!pile.state.isInitialized()) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "Pile not initialized"))
-            );
-            process.exit(1);
+          if (!options.interactive) {
+            exitWithError(options, {
+              code: "NOT_INITIALIZED",
+              message: "Pile not initialized",
+              hint: "Run `pile init` first.",
+            });
           }
           setState("not_initialized");
           return;
@@ -59,11 +78,12 @@ export function RestackCommand({
         // Handle --abort
         if (abort) {
           if (!hasRestackInProgress) {
-            if (options.json) {
-              console.log(
-                formatJson(createResult(false, null, "No restack in progress"))
-              );
-              process.exit(1);
+            if (!options.interactive) {
+              exitWithError(options, {
+                code: "NO_RESTACK_IN_PROGRESS",
+                message: "No restack in progress",
+                hint: "Run `pile restack` to start one.",
+              });
             }
             setState("no_restack");
             return;
@@ -84,11 +104,12 @@ export function RestackCommand({
         // Handle --continue
         if (continueRestack) {
           if (!hasRestackInProgress) {
-            if (options.json) {
-              console.log(
-                formatJson(createResult(false, null, "No restack in progress"))
-              );
-              process.exit(1);
+            if (!options.interactive) {
+              exitWithError(options, {
+                code: "NO_RESTACK_IN_PROGRESS",
+                message: "No restack in progress",
+                hint: "Run `pile restack` to start one.",
+              });
             }
             setState("no_restack");
             return;
@@ -100,17 +121,8 @@ export function RestackCommand({
 
           if (!restackResult.success && restackResult.conflictBranch) {
             setCurrentBranch(restackResult.conflictBranch);
-            if (options.json) {
-              console.log(
-                formatJson(
-                  createResult(
-                    false,
-                    restackResult,
-                    `Conflict in ${restackResult.conflictBranch}`
-                  )
-                )
-              );
-              process.exit(1);
+            if (!options.interactive) {
+              exitOnConflict(options, restackResult);
             }
             setState("conflict");
             return;
@@ -128,17 +140,13 @@ export function RestackCommand({
         // Start new restack
         if (hasRestackInProgress) {
           const existingState = pile.stack.getRestackState();
-          if (options.json) {
-            console.log(
-              formatJson(
-                createResult(
-                  false,
-                  existingState,
-                  `Restack already in progress on ${existingState?.conflictBranch}. Use --continue or --abort.`
-                )
-              )
-            );
-            process.exit(1);
+          if (!options.interactive) {
+            exitWithError(options, {
+              code: "RESTACK_IN_PROGRESS",
+              message: `Restack already in progress on ${existingState?.conflictBranch}`,
+              hint: CONFLICT_HINT,
+              data: existingState,
+            });
           }
           setCurrentBranch(existingState?.conflictBranch ?? "");
           setState("conflict");
@@ -151,17 +159,8 @@ export function RestackCommand({
 
         if (!restackResult.success && restackResult.conflictBranch) {
           setCurrentBranch(restackResult.conflictBranch);
-          if (options.json) {
-            console.log(
-              formatJson(
-                createResult(
-                  false,
-                  restackResult,
-                  `Conflict in ${restackResult.conflictBranch}`
-                )
-              )
-            );
-            process.exit(1);
+          if (!options.interactive) {
+            exitOnConflict(options, restackResult);
           }
           setState("conflict");
           return;
@@ -175,9 +174,8 @@ export function RestackCommand({
         setState("success");
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        if (options.json) {
-          console.log(formatJson(createResult(false, null, message)));
-          process.exit(1);
+        if (!options.interactive) {
+          exitWithError(options, toCommandError(err));
         }
         setError(message);
         setState("error");
@@ -185,7 +183,7 @@ export function RestackCommand({
     }
 
     run();
-  }, [continueRestack, abort, options.json]);
+  }, [continueRestack, abort, options.json, options.interactive]);
 
   if (options.json) {
     return <></>;
