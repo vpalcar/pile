@@ -277,7 +277,7 @@ export function SubmitCommand({
                 body: stackInfo,
                 head: branch,
                 base: baseBranch,
-                draft: draft ?? true,
+                draft: draft ?? false,
               });
               if (reviewers && reviewers.length > 0) {
                 await github.prs.requestReviewers(pr.number, reviewers);
@@ -298,7 +298,7 @@ export function SubmitCommand({
                       title: prTitle,
                       body: stackInfo,
                       base: baseBranch,
-                      draft: draft ?? true,
+                      draft: draft ?? false,
                       reviewers,
                     },
               });
