@@ -1,25 +1,19 @@
 import React, { useState, useEffect } from "react";
 import { Box, Text } from "ink";
-import { createPile } from "@pile/core";
-import { createGitHub, PullRequest, Review, getPRStatus, PRStatus } from "@pile/github";
+import { PullRequest, Review, getPRStatus, PRStatus } from "@pile/github";
 import { Spinner } from "../components/Spinner.js";
-import { ErrorMessage } from "../components/Message.js";
 import { Link } from "../components/Link.js";
-import { OutputOptions, formatJson, createResult } from "../utils/output.js";
+import { CommandError, OutputOptions, formatJson, createResult } from "../utils/output.js";
+import { FailureMessage, openPRContext, reportFailure, resolveTargetPR } from "../utils/pr-target.js";
 import { formatStatusWithFlair, getStatusEmoji } from "../utils/fun.js";
 
 export interface StatusCommandProps {
+  /** Branch, PR number, #number or PR URL. Default: current branch. */
+  target?: string;
   options: OutputOptions;
 }
 
-type State =
-  | "loading"
-  | "success"
-  | "no_pr"
-  | "no_github"
-  | "not_initialized"
-  | "on_trunk"
-  | "error";
+type State = "loading" | "success" | "error";
 
 interface StatusData {
   branch: string;
@@ -112,95 +106,27 @@ function formatTimeAgo(dateStr: string): string {
 }
 
 export function StatusCommand({
+  target,
   options,
 }: StatusCommandProps): React.ReactElement {
   const [state, setState] = useState<State>("loading");
   const [statusData, setStatusData] = useState<StatusData | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<CommandError | null>(null);
 
   useEffect(() => {
     async function loadStatus() {
       try {
-        const pile = await createPile();
-
-        if (!pile.state.isInitialized()) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "Pile not initialized"))
-            );
-            process.exit(1);
-          }
-          setState("not_initialized");
-          return;
-        }
-
-        const config = pile.state.getConfig();
-        const trunk = config?.trunk ?? "main";
-        const currentBranch = await pile.git.getCurrentBranch();
-
-        if (currentBranch === trunk) {
-          if (options.json) {
-            console.log(
-              formatJson(
-                createResult(false, null, "On trunk branch - no PR to show")
-              )
-            );
-            process.exit(1);
-          }
-          setState("on_trunk");
-          return;
-        }
-
-        const repoRoot = await pile.git.getRepoRoot();
-        const github = await createGitHub(`${repoRoot}/.pile`);
-
-        if (!github) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "GitHub not configured"))
-            );
-            process.exit(1);
-          }
-          setState("no_github");
-          return;
-        }
-
-        // Check stored PR number first (survives renames), then API lookup
-        const rel = pile.state.getBranchRelationship(currentBranch);
-        let prFromList = null;
-        if (rel?.prNumber) {
-          try {
-            prFromList = await github.prs.get(rel.prNumber);
-          } catch {
-            // Stored PR might be invalid
-          }
-        }
-        if (!prFromList) {
-          prFromList = await github.prs.findByBranchAnyState(currentBranch);
-        }
-
-        if (!prFromList) {
-          if (options.json) {
-            console.log(
-              formatJson(
-                createResult(false, null, "No PR found for this branch")
-              )
-            );
-            process.exit(1);
-          }
-          setState("no_pr");
-          return;
-        }
-
-        // Fetch full PR data with reviews/checks for status display
-        const pr = await github.prs.getEnriched(prFromList.number);
+        const context = await openPRContext(target);
+        // One PR fetch, then reviews and checks in parallel.
+        const { pr, branch } = await resolveTargetPR(context, target, { enriched: true });
         const status = getPRStatus(pr);
 
         if (options.json) {
           console.log(
             formatJson(
               createResult(true, {
-                branch: currentBranch,
+                branch,
+                target: target ?? null,
                 pr: {
                   number: pr.number,
                   title: pr.title,
@@ -209,6 +135,7 @@ export function StatusCommand({
                   draft: pr.draft,
                   mergeable: pr.mergeable,
                   author: pr.user.login,
+                  base: pr.base.ref,
                   createdAt: pr.created_at,
                   updatedAt: pr.updated_at,
                 },
@@ -224,21 +151,16 @@ export function StatusCommand({
           process.exit(0);
         }
 
-        setStatusData({ branch: currentBranch, pr, status });
+        setStatusData({ branch, pr, status });
         setState("success");
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (options.json) {
-          console.log(formatJson(createResult(false, null, message)));
-          process.exit(1);
-        }
-        setError(message);
+        setFailure(reportFailure(options, err));
         setState("error");
       }
     }
 
     loadStatus();
-  }, [options.json]);
+  }, [options.json, target]);
 
   if (options.json) {
     return <></>;
@@ -421,40 +343,8 @@ export function StatusCommand({
         </Box>
       );
 
-    case "no_pr":
-      return (
-        <Box flexDirection="column">
-          <Text color="yellow">○ No PR</Text>
-          <Text color="gray">  No pull request found for this branch.</Text>
-          <Text color="gray">  Run `pile submit` to create one.</Text>
-        </Box>
-      );
-
-    case "on_trunk":
-      return (
-        <Box flexDirection="column">
-          <Text color="gray">On trunk branch - no PR to show.</Text>
-          <Text color="gray">Checkout a feature branch to see its status.</Text>
-        </Box>
-      );
-
-    case "no_github":
-      return (
-        <Box flexDirection="column">
-          <ErrorMessage>GitHub not configured</ErrorMessage>
-          <Text color="gray">
-            Set GITHUB_TOKEN environment variable or run `gh auth login`
-          </Text>
-        </Box>
-      );
-
-    case "not_initialized":
-      return (
-        <ErrorMessage>Pile not initialized. Run `pile init` first.</ErrorMessage>
-      );
-
     case "error":
-      return <ErrorMessage>{error}</ErrorMessage>;
+      return failure ? <FailureMessage failure={failure} /> : <></>;
 
     default:
       return <></>;

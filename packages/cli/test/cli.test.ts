@@ -29,6 +29,9 @@ describe("pile commands", () => {
       expect.arrayContaining(["--json", "--no-interactive", "-y, --yes"]),
     );
     expect(exitCodes).toHaveProperty("2");
+
+    const status = commands.find((c: { name: string }) => c.name === "status");
+    expect(status.arguments).toEqual([expect.objectContaining({ name: "target", required: false })]);
   });
 
   it("accepts global flags after the command name", () => {
@@ -47,5 +50,13 @@ describe("non-interactive output", () => {
     expect(result.code).toBe(0);
     expect(result.stdout + result.stderr).not.toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
     expect(result.stdout + result.stderr).not.toMatch(/\x1b\[\d*[AGK]/);
+  });
+
+  it("does not create a .pile directory in the work tree", () => {
+    const repo = createCliRepo();
+    repo.chain(["a"]);
+    repo.pile(["log"]);
+    repo.pile(["status", "--json"]);
+    expect(repo.git("status", "--porcelain")).toBe("");
   });
 });

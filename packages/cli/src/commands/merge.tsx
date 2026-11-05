@@ -1,17 +1,27 @@
 import React, { useState, useEffect } from "react";
 import { Box, Text } from "ink";
-import { createPile, PileInstance } from "@pile/core";
-import { createGitHub, GitHubInstance, PullRequest, getPRStatus } from "@pile/github";
+import { PileInstance } from "@pile/core";
+import { GitHubInstance, PullRequest, getPRStatus, parsePRNumber } from "@pile/github";
 import { Spinner } from "../components/Spinner.js";
+import { SuccessMessage, WarningMessage } from "../components/Message.js";
 import {
-  SuccessMessage,
-  ErrorMessage,
-  WarningMessage,
-} from "../components/Message.js";
-import { OutputOptions, formatJson, createResult } from "../utils/output.js";
+  CommandError,
+  OutputOptions,
+  exitWithError,
+  formatJson,
+  createResult,
+} from "../utils/output.js";
+import {
+  FailureMessage,
+  openPRContext,
+  reportFailure,
+  resolveTargetPR,
+} from "../utils/pr-target.js";
 import { getMergeSuccessMessage, getRiskyTimeWarning } from "../utils/fun.js";
 
 export interface MergeCommandProps {
+  /** Branch, PR number, #number or PR URL. Default: current branch. */
+  target?: string;
   force?: boolean;
   options: OutputOptions;
 }
@@ -34,17 +44,7 @@ interface BlockedPR {
   reasons: BlockingReason[];
 }
 
-type State =
-  | "checking"
-  | "merging"
-  | "cleaning"
-  | "success"
-  | "blocked"
-  | "no_pr"
-  | "no_github"
-  | "not_initialized"
-  | "on_trunk"
-  | "error";
+type State = "checking" | "merging" | "cleaning" | "success" | "blocked" | "no_pr" | "error";
 
 function getBlockingReasons(pr: PullRequest): BlockingReason[] {
   const reasons: BlockingReason[] = [];
@@ -124,12 +124,34 @@ function getReasonIcon(type: BlockingReason["type"]): { icon: string; color: str
   }
 }
 
+/**
+ * The PR for a branch with reviews and checks, or null. The PR number pile stored at
+ * submit time wins (it survives renames); otherwise the newest PR for the branch.
+ */
+async function findBranchPR(
+  pile: PileInstance,
+  github: GitHubInstance,
+  branch: string,
+): Promise<PullRequest | null> {
+  const stored = pile.state.getBranchRelationship(branch)?.prNumber;
+  if (stored) {
+    try {
+      return await github.prs.getEnriched(stored);
+    } catch {
+      // The stored PR may have been deleted; fall back to a lookup by branch.
+    }
+  }
+  const found = await github.prs.findByBranchAnyState(branch);
+  return found ? github.prs.getEnriched(found.number) : null;
+}
+
 export function MergeCommand({
+  target,
   force,
   options,
 }: MergeCommandProps): React.ReactElement {
   const [state, setState] = useState<State>("checking");
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<CommandError | null>(null);
   const [currentMerging, setCurrentMerging] = useState<string>("");
   const [mergedPRs, setMergedPRs] = useState<MergedPR[]>([]);
   const [blockedPR, setBlockedPR] = useState<BlockedPR | null>(null);
@@ -138,138 +160,83 @@ export function MergeCommand({
   useEffect(() => {
     async function mergeStack() {
       try {
-        const pile = await createPile();
-
-        if (!pile.state.isInitialized()) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "Pile not initialized"))
-            );
-            process.exit(1);
-          }
-          setState("not_initialized");
-          return;
-        }
-
-        const config = pile.state.getConfig();
-        const trunk = config?.trunk ?? "main";
-        const method = config?.mergeMethod ?? "squash";
+        const context = await openPRContext(target);
+        const { pile, github, trunk, currentBranch } = context;
+        const method = pile.state.getConfig()?.mergeMethod ?? "squash";
         setMergeMethod(method);
 
-        const currentBranch = await pile.git.getCurrentBranch();
+        // The branch whose stack is merged: the current branch, a named branch, or the
+        // head branch of a PR given by number or URL.
+        const targetBranch =
+          target && parsePRNumber(target) !== null
+            ? (await resolveTargetPR(context, target)).pr.head.ref
+            : target ?? currentBranch;
 
-        if (currentBranch === trunk) {
-          if (options.json) {
-            console.log(
-              formatJson(
-                createResult(false, null, "Cannot merge from trunk branch")
-              )
-            );
-            process.exit(1);
-          }
-          setState("on_trunk");
-          return;
-        }
-
-        const repoRoot = await pile.git.getRepoRoot();
-        const github = await createGitHub(`${repoRoot}/.pile`);
-
-        if (!github) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "GitHub not configured"))
-            );
-            process.exit(1);
-          }
-          setState("no_github");
-          return;
-        }
-
-        // Build the stack from trunk to current branch (bottom-up order)
-        const stackBranches: string[] = [];
-        let branch = currentBranch;
-        while (branch && branch !== trunk) {
-          stackBranches.unshift(branch); // Add to front so bottom is first
-          const parent = pile.state.getParent(branch);
-          branch = parent ?? "";
-        }
-
+        // Merge the stack from the bottom up to (and including) the target branch.
+        const stackBranches = pile.stack.getAncestry(targetBranch);
         const merged: MergedPR[] = [];
 
-        // Merge each branch in the stack from bottom to top
         for (const branchToMerge of stackBranches) {
           setCurrentMerging(branchToMerge);
 
-          // Check if this branch's PR is already merged
-          const existingPr = await github.prs.findByBranchAnyState(branchToMerge);
-          if (existingPr?.merged) {
+          const pr = await findBranchPR(pile, github, branchToMerge);
+
+          if (pr?.merged) {
             // Already merged, clean up and continue
             await cleanupMergedBranch(pile, github, branchToMerge, trunk);
-            merged.push({
-              branch: branchToMerge,
-              prNumber: existingPr.number,
-              title: existingPr.title,
-            });
+            merged.push({ branch: branchToMerge, prNumber: pr.number, title: pr.title });
             continue;
           }
 
-          // Find the open PR for this branch
-          const pr = await github.prs.findByBranch(branchToMerge);
-
-          if (!pr) {
-            if (options.json) {
-              console.log(
-                formatJson(
-                  createResult(false, null, `No open PR found for branch: ${branchToMerge}`)
-                )
-              );
-              process.exit(1);
-            }
-            setError(`No open PR found for branch: ${branchToMerge}`);
+          if (!pr || pr.state !== "open") {
+            const message = `No open PR found for branch: ${branchToMerge}`;
+            const error: CommandError = {
+              code: "NO_OPEN_PR",
+              message,
+              hint: "Run `pile submit -s` to create PRs for the stack.",
+              data: { merged },
+            };
+            if (options.json || !options.interactive) exitWithError(options, error);
+            process.exitCode = 1;
+            setFailure(error);
             setMergedPRs(merged);
             setState("no_pr");
             return;
           }
 
-          // Get full PR data with mergeable status
-          const fullPr = await github.prs.get(pr.number);
-
-          // Check for blocking reasons
-          const reasons = getBlockingReasons(fullPr);
+          // Checks and reviews come from the enriched PR, so they actually gate the merge.
+          const reasons = getBlockingReasons(pr);
 
           if (reasons.length > 0 && !force) {
             setBlockedPR({
               branch: branchToMerge,
               prNumber: pr.number,
-              title: fullPr.title,
+              title: pr.title,
               reasons,
             });
             setMergedPRs(merged);
-            if (options.json) {
-              console.log(
-                formatJson(
-                  createResult(
-                    false,
-                    {
-                      merged,
-                      blockedAt: {
-                        branch: branchToMerge,
-                        prNumber: pr.number,
-                        blocking: reasons,
-                      },
-                    },
-                    `PR #${pr.number} cannot be merged`
-                  )
-                )
-              );
-              process.exit(1);
+            if (options.json || !options.interactive) {
+              exitWithError(options, {
+                code: "MERGE_BLOCKED",
+                message: `PR #${pr.number} cannot be merged: ${reasons.map((r) => r.message).join("; ")}`,
+                hint: "Run `pile status` for details, or `pile merge --force` to merge anyway.",
+                data: {
+                  merged,
+                  blockedAt: {
+                    branch: branchToMerge,
+                    prNumber: pr.number,
+                    blocking: reasons,
+                  },
+                },
+              });
             }
+            process.exitCode = 1;
             setState("blocked");
             return;
           }
 
-          // Auto-mark draft as ready when forcing merge
-          if (force && fullPr.draft) {
+          // A forced merge of a draft has to mark it ready first (GraphQL only).
+          if (force && pr.draft) {
             await github.prs.markReadyForReview(pr.number);
           }
 
@@ -277,28 +244,29 @@ export function MergeCommand({
           setState("merging");
           await github.prs.merge(pr.number, method);
 
-          merged.push({
-            branch: branchToMerge,
-            prNumber: pr.number,
-            title: fullPr.title,
-          });
+          merged.push({ branch: branchToMerge, prNumber: pr.number, title: pr.title });
 
           // Clean up the merged branch
           setState("cleaning");
           await cleanupMergedBranch(pile, github, branchToMerge, trunk);
         }
 
-        // Fetch and update trunk
+        // Update trunk. Only leave the current branch if it was just merged.
         await pile.git.fetch(true);
-        await pile.git.checkout(trunk);
-        try {
-          await pile.git.pull(trunk);
-        } catch {
-          // Might fail if not tracking
+        const currentMerged = merged.some((m) => m.branch === currentBranch);
+        if (currentMerged) {
+          await pile.git.checkout(trunk);
+          try {
+            await pile.git.pull(trunk);
+          } catch {
+            // Might fail if not tracking
+          }
+        } else {
+          await pile.git.fastForward(trunk);
         }
 
-        // Now that we're on trunk, delete any branches that couldn't be deleted earlier
-        // (because we were on them during cleanup)
+        // Delete branches that could not be deleted during cleanup because they
+        // were checked out.
         for (const pr of merged) {
           try {
             await pile.git.deleteBranch(pr.branch, true);
@@ -318,6 +286,7 @@ export function MergeCommand({
                   prNumber: m.prNumber,
                 })),
                 mergeMethod: method,
+                target: target ?? null,
               })
             )
           );
@@ -326,18 +295,13 @@ export function MergeCommand({
 
         setState("success");
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (options.json) {
-          console.log(formatJson(createResult(false, null, message)));
-          process.exit(1);
-        }
-        setError(message);
+        setFailure(reportFailure(options, err));
         setState("error");
       }
     }
 
     mergeStack();
-  }, [options.json, force]);
+  }, [options.json, force, target]);
 
   if (options.json) {
     return <></>;
@@ -424,31 +388,12 @@ export function MergeCommand({
               ))}
             </Box>
           )}
-          <WarningMessage>{error || "No open PR for branch in stack"}</WarningMessage>
+          <WarningMessage>{failure?.message ?? "No open PR for branch in stack"}</WarningMessage>
           <Text color="gray">Run `pile submit -s` to create PRs for the stack.</Text>
         </Box>
       );
-    case "no_github":
-      return (
-        <Box flexDirection="column">
-          <ErrorMessage>GitHub not configured</ErrorMessage>
-          <Text color="gray">
-            Set GITHUB_TOKEN environment variable or run `gh auth login`
-          </Text>
-        </Box>
-      );
-    case "not_initialized":
-      return (
-        <ErrorMessage>Pile not initialized. Run `pile init` first.</ErrorMessage>
-      );
-    case "on_trunk":
-      return (
-        <WarningMessage>
-          Cannot merge from trunk branch. Checkout a feature branch first.
-        </WarningMessage>
-      );
     case "error":
-      return <ErrorMessage>{error}</ErrorMessage>;
+      return failure ? <FailureMessage failure={failure} /> : <></>;
     default:
       return <></>;
   }

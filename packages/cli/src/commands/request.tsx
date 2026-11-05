@@ -1,28 +1,32 @@
 import React, { useState, useEffect } from "react";
 import { Box, Text } from "ink";
-import { createPile } from "@pile/core";
-import { createGitHub } from "@pile/github";
 import { Spinner } from "../components/Spinner.js";
-import { SuccessMessage, ErrorMessage } from "../components/Message.js";
+import { SuccessMessage } from "../components/Message.js";
 import { Link } from "../components/Link.js";
-import { OutputOptions, formatJson, createResult } from "../utils/output.js";
+import {
+  CommandError,
+  OutputOptions,
+  exitNeedsInput,
+  formatJson,
+  createResult,
+} from "../utils/output.js";
+import {
+  CommandFailure,
+  FailureMessage,
+  openPRContext,
+  reportFailure,
+  resolveTargetPR,
+} from "../utils/pr-target.js";
 
 export interface RequestCommandProps {
+  /** Branch, PR number, #number or PR URL. Default: current branch. */
+  target?: string;
   reviewers: string[];
   teams?: string[];
   options: OutputOptions;
 }
 
-type State =
-  | "loading"
-  | "requesting"
-  | "success"
-  | "no_pr"
-  | "no_github"
-  | "not_initialized"
-  | "on_trunk"
-  | "no_reviewers"
-  | "error";
+type State = "loading" | "requesting" | "success" | "error";
 
 interface RequestResult {
   branch: string;
@@ -33,104 +37,52 @@ interface RequestResult {
 }
 
 export function RequestCommand({
+  target,
   reviewers,
   teams,
   options,
 }: RequestCommandProps): React.ReactElement {
   const [state, setState] = useState<State>("loading");
   const [result, setResult] = useState<RequestResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<CommandError | null>(null);
 
   useEffect(() => {
     async function requestReviewers() {
       try {
-        const pile = await createPile();
-
-        if (!pile.state.isInitialized()) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "Pile not initialized"))
-            );
-            process.exit(1);
-          }
-          setState("not_initialized");
-          return;
-        }
-
-        const config = pile.state.getConfig();
-        const trunk = config?.trunk ?? "main";
-        const currentBranch = await pile.git.getCurrentBranch();
-
-        if (currentBranch === trunk) {
-          if (options.json) {
-            console.log(
-              formatJson(
-                createResult(false, null, "Cannot request reviewers from trunk branch")
-              )
-            );
-            process.exit(1);
-          }
-          setState("on_trunk");
-          return;
-        }
-
-        const repoRoot = await pile.git.getRepoRoot();
-        const github = await createGitHub(`${repoRoot}/.pile`);
-
-        if (!github) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "GitHub not configured"))
-            );
-            process.exit(1);
-          }
-          setState("no_github");
-          return;
-        }
-
-        // Check if any reviewers specified
-        const hasReviewers = (reviewers && reviewers.length > 0) || (teams && teams.length > 0);
+        const hasReviewers = reviewers.length > 0 || (teams?.length ?? 0) > 0;
         if (!hasReviewers) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "No reviewers specified"))
-            );
-            process.exit(1);
+          if (!options.interactive) {
+            exitNeedsInput(options, {
+              message: "No reviewers specified",
+              arg: "reviewers...",
+              flag: "--team <teams...>",
+            });
           }
-          setState("no_reviewers");
-          return;
+          throw new CommandFailure(
+            "NEEDS_INPUT",
+            "No reviewers specified",
+            "Usage: pile request user1 user2, or pile request -t team-name",
+          );
         }
 
-        // Find PR for current branch
-        const pr = await github.prs.findByBranch(currentBranch);
-
-        if (!pr) {
-          if (options.json) {
-            console.log(
-              formatJson(
-                createResult(false, null, "No open PR found for this branch")
-              )
-            );
-            process.exit(1);
-          }
-          setState("no_pr");
-          return;
+        const context = await openPRContext(target);
+        const { pr, branch } = await resolveTargetPR(context, target);
+        if (pr.state !== "open" || pr.merged) {
+          throw new CommandFailure(
+            "PR_NOT_OPEN",
+            `PR #${pr.number} is ${pr.merged ? "merged" : "closed"}`,
+            "Reviews can only be requested on open PRs.",
+          );
         }
 
         setState("requesting");
-
-        // Request reviewers
-        await github.prs.requestReviewers(
-          pr.number,
-          reviewers || [],
-          teams
-        );
+        await context.github.prs.requestReviewers(pr.number, reviewers, teams);
 
         const requestResult: RequestResult = {
-          branch: currentBranch,
+          branch,
           prNumber: pr.number,
           prUrl: pr.html_url,
-          reviewers: reviewers || [],
+          reviewers,
           teams: teams || [],
         };
 
@@ -142,18 +94,13 @@ export function RequestCommand({
         setResult(requestResult);
         setState("success");
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (options.json) {
-          console.log(formatJson(createResult(false, null, message)));
-          process.exit(1);
-        }
-        setError(message);
+        setFailure(reportFailure(options, err));
         setState("error");
       }
     }
 
     requestReviewers();
-  }, [options.json, reviewers, teams]);
+  }, [options.json, reviewers, teams, target]);
 
   if (options.json) {
     return <></>;
@@ -185,41 +132,8 @@ export function RequestCommand({
           </Box>
         </Box>
       );
-    case "no_pr":
-      return (
-        <Box flexDirection="column">
-          <Text color="yellow">No open PR found for this branch.</Text>
-          <Text color="gray">Run `pile submit` to create one.</Text>
-        </Box>
-      );
-    case "no_reviewers":
-      return (
-        <Box flexDirection="column">
-          <Text color="yellow">No reviewers specified.</Text>
-          <Text color="gray">Usage: pile request user1 user2 or pile request -t team-name</Text>
-        </Box>
-      );
-    case "on_trunk":
-      return (
-        <Text color="yellow">
-          Cannot request reviewers from trunk branch. Checkout a feature branch first.
-        </Text>
-      );
-    case "no_github":
-      return (
-        <Box flexDirection="column">
-          <ErrorMessage>GitHub not configured</ErrorMessage>
-          <Text color="gray">
-            Set GITHUB_TOKEN environment variable or run `gh auth login`
-          </Text>
-        </Box>
-      );
-    case "not_initialized":
-      return (
-        <ErrorMessage>Pile not initialized. Run `pile init` first.</ErrorMessage>
-      );
     case "error":
-      return <ErrorMessage>{error}</ErrorMessage>;
+      return failure ? <FailureMessage failure={failure} /> : <></>;
     default:
       return <></>;
   }
