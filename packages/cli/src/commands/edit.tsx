@@ -124,6 +124,10 @@ export function EditCommand({
         } else if (ready && pr.draft) {
           await github.prs.markReadyForReview(pr.number);
           changes.push("Marked ready for review");
+        } else if (draft) {
+          changes.push("Already a draft");
+        } else if (ready) {
+          changes.push("Already ready for review");
         }
 
         // Handle body editing
