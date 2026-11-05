@@ -174,3 +174,15 @@ describe("rename", () => {
     expect(repo.pile(["rename", "a", "--json"]).json.code).toBe("BRANCH_EXISTS");
   });
 });
+
+describe("log (text)", () => {
+  it("shows the PR number next to each submitted branch", () => {
+    const repo = createCliRepo();
+    repo.chain(["a", "b"]);
+    repo.git("config", "branch.a.pile-pr-number", "12");
+    const result = repo.pile(["log"]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toMatch(/a\s+#12/);
+    expect(result.stdout).not.toMatch(/b\s+#/);
+  });
+});
