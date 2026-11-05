@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, forwardRef, useCallback, useContext, useEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
 import {
   Check,
   CircleDashed,
@@ -8,43 +8,197 @@ import {
   GitPullRequest,
   GitPullRequestClosed,
   GitPullRequestDraft,
-  MessageSquare,
   X,
 } from "lucide-react";
-import type { CheckState, ChecksSummary, InboxItem, Person, PRState } from "../api";
+import type { CheckState, ChecksSummary, Person, PRState } from "../api";
+import type { Readiness, Tone } from "../lib/status";
 
-export function Avatar({ person, size = "md" }: { person: Person | null; size?: "sm" | "md" | "lg" }) {
+/** Joins class names, skipping falsy ones. */
+export const cx = (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(" ");
+
+// -----------------------------------------------------------------------------
+// Buttons. Two heights (sm 24px, md 28px); content is always vertically centred.
+
+type Variant = "default" | "primary" | "ghost" | "success" | "danger";
+const VARIANTS: Record<Variant, string> = {
+  default: "border-line-2 bg-panel-2 text-fg hover:bg-panel-3 hover:border-line-3",
+  primary: "border-transparent bg-primary text-on-primary hover:opacity-90",
+  ghost: "border-transparent bg-transparent text-fg-2 hover:bg-hover hover:text-fg",
+  success: "border-transparent bg-ok text-[#04140c] hover:opacity-90",
+  danger: "border-bad/35 bg-bad-soft text-bad hover:bg-bad/20",
+};
+
+export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+  variant?: Variant;
+  size?: "sm" | "md";
+  icon?: boolean;
+  block?: boolean;
+}
+
+export const buttonClass = ({ variant = "default", size = "md", icon = false, block = false }: Omit<ButtonProps, "children">) =>
+  cx(
+    "inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap border font-medium leading-none",
+    "transition-[background,border-color,color,opacity,transform] duration-100 active:translate-y-px",
+    "disabled:pointer-events-none disabled:opacity-45 [&_svg]:shrink-0",
+    size === "sm" ? "h-6 rounded-md text-xs" : "h-7 rounded-lg text-[12.5px]",
+    icon ? (size === "sm" ? "w-6" : "w-7") : size === "sm" ? "px-2" : "px-2.5",
+    block && "w-full",
+    VARIANTS[variant],
+  );
+
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
+  { variant, size, icon, block, className, type = "button", ...rest },
+  ref,
+) {
+  return <button ref={ref} type={type} className={cx(buttonClass({ variant, size, icon, block }), className)} {...rest} />;
+});
+
+export function Kbd({ children }: { children: ReactNode }) {
+  return (
+    <kbd className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-[5px] border border-b-[1.5px] border-line-2 bg-panel px-1 font-sans text-[10.5px] font-medium leading-none text-fg-3">
+      {children}
+    </kbd>
+  );
+}
+
+const AVATAR_SIZES = { sm: "size-4 text-[8px]", md: "size-5 text-[9px]", lg: "size-6 text-[10px]" } as const;
+
+export function Avatar({ person, size = "md" }: { person: Person | null; size?: keyof typeof AVATAR_SIZES }) {
   const [failed, setFailed] = useState(false);
-  const cls = `avatar ${size === "md" ? "" : size}`;
+  const cls = cx("inline-grid shrink-0 place-items-center rounded-full bg-panel-3 object-cover font-semibold uppercase text-fg-2", AVATAR_SIZES[size]);
   if (person?.avatarUrl && !failed) {
     return <img className={cls} src={`${person.avatarUrl}${person.avatarUrl.includes("?") ? "&" : "?"}s=64`} alt="" onError={() => setFailed(true)} />;
   }
-  const initials = (person?.login ?? "?").replace(/[^a-zA-Z0-9]/g, "").slice(0, 2);
-  return <span className={cls} aria-hidden>{initials}</span>;
+  return (
+    <span className={cls} aria-hidden>
+      {(person?.login ?? "?").replace(/[^a-zA-Z0-9]/g, "").slice(0, 2)}
+    </span>
+  );
 }
 
-export function Kbd({ children }: { children: ReactNode }) {
-  return <kbd className="kbd">{children}</kbd>;
+// -----------------------------------------------------------------------------
+// Pills and badges
+
+const TONES: Record<Tone, string> = {
+  green: "bg-ok-soft text-ok",
+  red: "bg-bad-soft text-bad",
+  amber: "bg-warn-soft text-warn",
+  blue: "bg-accent-soft text-accent",
+  purple: "bg-merged-soft text-merged",
+  gray: "bg-panel-2 text-fg-2 border-line",
+};
+
+export function Pill({ tone = "gray", children, className }: { tone?: Tone; children: ReactNode; className?: string }) {
+  return (
+    <span className={cx("inline-flex h-5 shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-transparent px-2 text-[11px] font-medium leading-none", TONES[tone], className)}>
+      {children}
+    </span>
+  );
 }
 
-/** Hover tooltips: any element with `data-tip` (and optionally `data-kbd`). */
+/** The single "where is this?" badge: Local, Draft, In review, Ready to merge, … */
+export function StatusBadge({ status, size = "md" }: { status: Readiness; size?: "sm" | "md" }) {
+  return (
+    <span
+      className={cx(
+        "inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-transparent font-medium leading-none",
+        size === "sm" ? "h-5 px-2 text-[11px]" : "h-[22px] px-2.5 text-[11.5px]",
+        TONES[status.tone],
+      )}
+      data-tip={status.detail}
+    >
+      <i className={cx("size-1.5 shrink-0 rounded-full", status.tone === "gray" ? "bg-fg-3" : "bg-current", status.tone === "blue" && "shadow-[0_0_0_3px_var(--accent-soft)]")} />
+      {status.label}
+    </span>
+  );
+}
+
+export function PRStateIcon({ state, size = 15 }: { state: PRState | "local"; size?: number }) {
+  const props = { size, className: "shrink-0" };
+  switch (state) {
+    case "merged":
+      return <GitMerge {...props} color="var(--purple)" />;
+    case "closed":
+      return <GitPullRequestClosed {...props} color="var(--red)" />;
+    case "draft":
+      return <GitPullRequestDraft {...props} color="var(--text-3)" />;
+    case "local":
+      return <GitBranch {...props} color="var(--text-3)" />;
+    default:
+      return <GitPullRequest {...props} color="var(--green)" />;
+  }
+}
+
+export function CheckIcon({ state, size = 14 }: { state: CheckState; size?: number }) {
+  switch (state) {
+    case "success":
+      return <Check size={size} color="var(--green)" strokeWidth={2.5} className="shrink-0" />;
+    case "failure":
+      return <X size={size} color="var(--red)" strokeWidth={2.5} className="shrink-0" />;
+    case "pending":
+      return <CircleDashed size={size} color="var(--amber)" className="shrink-0 animate-spin [animation-duration:2.4s]" />;
+    default:
+      return <CircleDot size={size} color="var(--text-3)" className="shrink-0" />;
+  }
+}
+
+export function ChecksDot({ checks }: { checks: ChecksSummary | null }) {
+  if (!checks || checks.state === "none") return null;
+  const tip =
+    checks.state === "success"
+      ? `${checks.passed} checks passed`
+      : checks.state === "failure"
+        ? `${checks.failed} of ${checks.total} checks failed`
+        : `${checks.pending} of ${checks.total} checks running`;
+  const color = checks.state === "success" ? "bg-ok" : checks.state === "failure" ? "bg-bad" : "bg-warn animate-pulse-soft";
+  return <span className={cx("inline-block size-[7px] shrink-0 rounded-full", color)} data-tip={tip} />;
+}
+
+export function DiffStat({ additions, deletions, bar = false }: { additions: number | null; deletions: number | null; bar?: boolean }) {
+  if (additions === null || deletions === null) return null;
+  const total = additions + deletions;
+  const blocks = 5;
+  const adds = total === 0 ? 0 : Math.round((additions / total) * blocks);
+  const dels = total === 0 ? 0 : Math.min(blocks - adds, Math.round((deletions / total) * blocks));
+  return (
+    <span className="inline-flex items-center gap-1.5 font-mono text-xs leading-none tabular">
+      <span className="text-ok">+{additions.toLocaleString()}</span>
+      <span className="text-bad">−{deletions.toLocaleString()}</span>
+      {bar && (
+        <span className="ml-0.5 inline-flex items-center gap-[2px]" aria-hidden>
+          {Array.from({ length: blocks }, (_, i) => (
+            <i key={i} className={cx("size-1.5 rounded-[1.5px]", i < adds ? "bg-ok" : i < adds + dels ? "bg-bad" : "bg-panel-3")} />
+          ))}
+        </span>
+      )}
+    </span>
+  );
+}
+
+export function Spinner({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" className="shrink-0 animate-spin" aria-hidden>
+      <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" strokeOpacity="0.2" strokeWidth="2" />
+      <path d="M14.5 8A6.5 6.5 0 0 0 8 1.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Tooltips: any element with `data-tip` (and optionally `data-kbd`).
+
 export function TooltipLayer() {
-  const [tip, setTip] = useState<{ text: string; kbd?: string; x: number; y: number } | null>(null);
+  const [tip, setTip] = useState<{ text: string; kbd?: string; x: number; y: number; below: boolean } | null>(null);
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
     const over = (event: MouseEvent) => {
       const target = (event.target as HTMLElement).closest<HTMLElement>("[data-tip]");
       clearTimeout(timer);
-      if (!target) return setTip(null);
+      if (!target || !target.dataset.tip) return setTip(null);
       timer = setTimeout(() => {
         const rect = target.getBoundingClientRect();
-        const below = rect.top < 60;
-        setTip({
-          text: target.dataset.tip!,
-          kbd: target.dataset.kbd,
-          x: rect.left + rect.width / 2,
-          y: below ? rect.bottom + 8 : rect.top - 8,
-        });
+        const below = rect.top < 70;
+        setTip({ text: target.dataset.tip!, kbd: target.dataset.kbd, x: rect.left + rect.width / 2, y: below ? rect.bottom + 8 : rect.top - 8, below });
       }, 350);
     };
     const hide = () => {
@@ -61,125 +215,14 @@ export function TooltipLayer() {
     };
   }, []);
   if (!tip) return null;
-  const below = tip.y > 60 && tip.y < 70;
   return (
     <div
-      className="tooltip"
-      style={{ left: tip.x, top: tip.y, transform: `translate(-50%, ${below || tip.y < 70 ? "0" : "-100%"})` }}
+      className="pointer-events-none fixed z-[100] flex animate-fade-in items-center gap-1.5 whitespace-nowrap rounded-md bg-panel-3 px-2 py-1 text-[11.5px] leading-none text-fg shadow-pop"
+      style={{ left: tip.x, top: tip.y, transform: `translate(-50%, ${tip.below ? "0" : "-100%"})` }}
     >
       {tip.text}
       {tip.kbd && tip.kbd.split(" ").map((k) => <Kbd key={k}>{k}</Kbd>)}
     </div>
-  );
-}
-
-// -----------------------------------------------------------------------------
-// Status
-
-export function PRStateIcon({ state, size = 15 }: { state: PRState | "local"; size?: number }) {
-  switch (state) {
-    case "merged":
-      return <GitMerge size={size} color="var(--purple)" />;
-    case "closed":
-      return <GitPullRequestClosed size={size} color="var(--red)" />;
-    case "draft":
-      return <GitPullRequestDraft size={size} color="var(--text-3)" />;
-    case "local":
-      return <GitBranch size={size} color="var(--text-3)" />;
-    default:
-      return <GitPullRequest size={size} color="var(--green)" />;
-  }
-}
-
-export function PRStatePill({ state }: { state: PRState | "local" }) {
-  const map = {
-    open: ["green", "Open"],
-    draft: ["", "Draft"],
-    merged: ["purple", "Merged"],
-    closed: ["red", "Closed"],
-    local: ["", "Local branch"],
-  } as const;
-  const [tone, label] = map[state];
-  return (
-    <span className={`pill ${tone}`}>
-      <PRStateIcon state={state} size={12} />
-      {label}
-    </span>
-  );
-}
-
-export function CheckIcon({ state, size = 14 }: { state: CheckState; size?: number }) {
-  switch (state) {
-    case "success":
-      return <Check size={size} color="var(--green)" strokeWidth={2.5} />;
-    case "failure":
-      return <X size={size} color="var(--red)" strokeWidth={2.5} />;
-    case "pending":
-      return <CircleDashed size={size} color="var(--amber)" className="spin-slow" />;
-    default:
-      return <CircleDot size={size} color="var(--text-3)" />;
-  }
-}
-
-export function ChecksDot({ checks }: { checks: ChecksSummary | null }) {
-  if (!checks || checks.state === "none") return null;
-  const tip =
-    checks.state === "success"
-      ? `${checks.passed} checks passed`
-      : checks.state === "failure"
-        ? `${checks.failed} of ${checks.total} checks failed`
-        : `${checks.pending} of ${checks.total} checks running`;
-  const tone = checks.state === "success" ? "green" : checks.state === "failure" ? "red" : "amber";
-  return <span className={`dot ${tone} ${checks.state === "pending" ? "pulse" : ""}`} data-tip={tip} />;
-}
-
-export function ReviewBadge({ decision, compact }: { decision: InboxItem["reviewDecision"]; compact?: boolean }) {
-  if (!decision) return null;
-  const map: Record<string, [string, string]> = {
-    approved: ["green", "Approved"],
-    changes_requested: ["red", "Changes requested"],
-    review_required: ["", "Needs review"],
-    commented: ["blue", "Commented"],
-    pending: ["amber", "Pending"],
-    dismissed: ["", "Dismissed"],
-  };
-  const [tone, label] = map[decision] ?? ["", decision];
-  if (compact) {
-    if (decision === "approved") return <Check size={13} color="var(--green)" strokeWidth={2.5} data-tip={label} />;
-    if (decision === "changes_requested") return <span className="dot red" data-tip={label} />;
-    return null;
-  }
-  return <span className={`pill ${tone}`}>{label}</span>;
-}
-
-export function DiffStat({ additions, deletions, bar = false }: { additions: number | null; deletions: number | null; bar?: boolean }) {
-  if (additions === null || deletions === null) return null;
-  const total = additions + deletions;
-  const blocks = 5;
-  const adds = total === 0 ? 0 : Math.round((additions / total) * blocks);
-  const dels = total === 0 ? 0 : Math.min(blocks - adds, Math.round((deletions / total) * blocks));
-  return (
-    <span className="diffstat num">
-      <span className="plus">+{additions.toLocaleString()}</span>
-      <span className="minus">−{deletions.toLocaleString()}</span>
-      {bar && (
-        <span className="bar" aria-hidden>
-          {Array.from({ length: blocks }, (_, i) => (
-            <i key={i} className={i < adds ? "a" : i < adds + dels ? "d" : ""} />
-          ))}
-        </span>
-      )}
-    </span>
-  );
-}
-
-export function CommentCount({ count }: { count: number }) {
-  if (!count) return null;
-  return (
-    <span className="faint" style={{ display: "inline-flex", alignItems: "center", gap: 3 }} data-tip={`${count} comments`}>
-      <MessageSquare size={11.5} />
-      <span className="num" style={{ fontSize: 11 }}>{count}</span>
-    </span>
   );
 }
 
@@ -207,9 +250,15 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={show}>
       {children}
-      <div className="toasts" role="status" aria-live="polite">
+      <div className="fixed bottom-5 left-1/2 z-[90] flex -translate-x-1/2 flex-col items-center gap-2" role="status" aria-live="polite">
         {toasts.map((t) => (
-          <div key={t.id} className={`toast ${t.leaving ? "leaving" : ""}`}>
+          <div
+            key={t.id}
+            className={cx(
+              "flex h-10 animate-toast-in items-center gap-2.5 rounded-xl bg-panel-3 pl-3 pr-2 font-medium text-fg shadow-pop [&_svg]:shrink-0",
+              t.leaving && "opacity-0 transition-opacity duration-200",
+            )}
+          >
             {t.content}
           </div>
         ))}
@@ -243,11 +292,31 @@ export function useDismiss(open: boolean, onClose: () => void) {
   return ref;
 }
 
-export function Spinner({ size = 14 }: { size?: number }) {
+/** Section label, used in the rail and above lists. */
+export function Label({ children, className }: { children: ReactNode; className?: string }) {
+  return <h4 className={cx("mb-2 flex items-center gap-1.5 text-[11.5px] font-medium leading-none text-fg-3", className)}>{children}</h4>;
+}
+
+export function Centered({ icon, title, children }: { icon: ReactNode; title: string; children: ReactNode }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 16 16" style={{ animation: "spin 0.8s linear infinite" }} aria-hidden>
-      <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" strokeOpacity="0.2" strokeWidth="2" />
-      <path d="M14.5 8A6.5 6.5 0 0 0 8 1.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
+    <div className="grid h-full place-items-center p-10 text-center text-fg-2">
+      <div>
+        <div className="mx-auto mb-3.5 grid size-14 place-items-center rounded-2xl border border-line bg-panel-2 text-fg-3">{icon}</div>
+        <h2 className="mb-1 text-[15px] font-semibold text-fg">{title}</h2>
+        <p className="mx-auto max-w-sm">{children}</p>
+      </div>
+    </div>
   );
 }
+
+/** A / M / D / R marker for a changed file. */
+export function StatusLetter({ status }: { status: import("../api").FileStatus }) {
+  const letter = { added: "A", removed: "D", modified: "M", renamed: "R", copied: "C", changed: "M", unchanged: "·" }[status];
+  const color = status === "added" ? "text-ok" : status === "removed" ? "text-bad" : status === "renamed" || status === "copied" ? "text-merged" : "text-warn";
+  return (
+    <span className={cx("grid w-3.5 shrink-0 place-items-center font-mono text-[10px] font-bold leading-none", color)} data-tip={status}>
+      {letter}
+    </span>
+  );
+}
+

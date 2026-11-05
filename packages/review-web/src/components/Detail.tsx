@@ -1,41 +1,33 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import {
-  AlertTriangle,
-  ArrowRight,
-  Check,
-  ChevronDown,
-  CircleAlert,
-  ExternalLink,
-  GitCommitHorizontal,
-  Layers,
-  MessageSquare,
-  Pencil,
-  UploadCloud,
-} from "lucide-react";
-import type { Detail as DetailData, ItemRef, ReviewRequest, StackEntry, TimelineEntry } from "../api";
+import { AlertTriangle, ArrowRight, Check, ChevronDown, CircleAlert, ExternalLink, Layers, MessageSquare, Pencil, UploadCloud } from "lucide-react";
+import type { Detail as DetailData, InboxItem, ItemRef, ReviewRequest, StackEntry, TimelineEntry } from "../api";
 import { api, load, refKey } from "../lib/client";
+import { detailReadiness, entryReadiness, type Readiness } from "../lib/status";
 import { absoluteTime, copy, navigate, plural, timeAgo, useNow, useShortcuts } from "../lib/util";
 import { Composer } from "./Composer";
 import { FilesPanel } from "./FilesPanel";
 import type { PendingComment } from "./FileDiff";
 import { Markdown } from "./Markdown";
-import { Avatar, CheckIcon, DiffStat, Kbd, PRStateIcon, PRStatePill, ReviewBadge, Spinner, useDismiss, useToast } from "./ui";
+import { Avatar, Button, buttonClass, CheckIcon, cx, DiffStat, Kbd, Label, Pill, Spinner, StatusBadge, useDismiss, useToast } from "./ui";
 
 interface Props {
   detail: DetailData;
+  /** Inbox items, for the status of other PRs in the stack. */
+  inboxItems: InboxItem[];
   scrollEl: HTMLElement | null;
   initialFile: string | null;
   trunk: string;
 }
 
-export function DetailView({ detail, scrollEl, initialFile, trunk }: Props) {
+export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems }: Props) {
   useNow();
   const key = refKey(detail.ref);
   const toast = useToast();
   const [pending, setPending] = useState<PendingComment[]>([]);
   const [reviewOpen, setReviewOpen] = useState(false);
   const discussionInput = useRef<HTMLTextAreaElement>(null);
+  const status = detailReadiness(detail);
 
   const refresh = useCallback(async () => {
     await Promise.all([load(key, () => api.detail(detail.ref, true), true), load("inbox", () => api.inbox(true), true)]).catch(() => {});
@@ -59,10 +51,7 @@ export function DetailView({ detail, scrollEl, initialFile, trunk }: Props) {
   );
 
   const submitReview = async (request: ReviewRequest) => {
-    await api.review(detail.number!, {
-      ...request,
-      comments: pending.map(({ path, line, side, body }) => ({ path, line, side, body })),
-    });
+    await api.review(detail.number!, { ...request, comments: pending.map(({ path, line, side, body }) => ({ path, line, side, body })) });
     setPending([]);
     setReviewOpen(false);
     const verb = request.event === "APPROVE" ? "Approved" : request.event === "REQUEST_CHANGES" ? "Requested changes on" : "Reviewed";
@@ -77,40 +66,39 @@ export function DetailView({ detail, scrollEl, initialFile, trunk }: Props) {
 
   return (
     <>
-      <div className="page">
-        <div style={{ minWidth: 0 }}>
-          <Header detail={detail} />
-          {detail.number !== null && (
-            <ReviewPortal>
-              <div style={{ position: "relative" }}>
-                <button className={`btn sm ${reviewOpen ? "" : "primary"}`} onClick={() => setReviewOpen(!reviewOpen)} data-kbd="r" data-tip="Submit a review">
-                  {detail.can.review ? "Review" : "Comment"}
-                  {pending.length > 0 && (
-                    <span className="pill amber" style={{ height: 16, padding: "0 6px" }}>
-                      {pending.length}
-                    </span>
-                  )}
-                  <ChevronDown size={13} />
-                </button>
-                {reviewOpen && <ReviewPopover detail={detail} pendingCount={pending.length} onClose={() => setReviewOpen(false)} onSubmit={submitReview} />}
-              </div>
-            </ReviewPortal>
+      {detail.number !== null && (
+        <TopbarSlot>
+          <div className="relative">
+            <Button variant={reviewOpen ? "default" : "primary"} size="sm" onClick={() => setReviewOpen(!reviewOpen)} data-kbd="r" data-tip="Submit a review">
+              {detail.can.review ? "Review" : "Comment"}
+              {pending.length > 0 && <Pill tone="amber" className="h-4 px-1.5">{pending.length}</Pill>}
+              <ChevronDown size={13} />
+            </Button>
+            {reviewOpen && <ReviewPopover detail={detail} pendingCount={pending.length} onClose={() => setReviewOpen(false)} onSubmit={submitReview} />}
+          </div>
+        </TopbarSlot>
+      )}
+
+      <div data-page="detail" className="mx-auto grid max-w-[1240px] grid-cols-[minmax(0,1fr)_272px] gap-10 px-9 pb-2 pt-9 max-[1080px]:grid-cols-1">
+        <div className="min-w-0">
+          <Header detail={detail} status={status} />
+          {detail.state === "local" && (
+            <Banner>
+              Local branch{detail.local?.unpushed ? ", not on GitHub yet" : ""}. Run <code>pile submit</code> to open a pull request.
+            </Banner>
           )}
-          {detail.state === "local" && <LocalBanner detail={detail} />}
           {detail.local && detail.local.ahead > 0 && detail.number && (
-            <div className="local-banner">
-              <UploadCloud size={15} color="var(--amber)" />
-              <span>
-                {plural(detail.local.ahead, "local commit")} not pushed. Run <code>pile submit</code> to update this PR.
-              </span>
-            </div>
+            <Banner>
+              {plural(detail.local.ahead, "local commit")} not pushed. Run <code>pile submit</code> to update this PR.
+            </Banner>
           )}
-          {detail.stack.length > 1 && <StackSection stack={detail.stack} trunk={trunk} />}
+          {detail.stack.length > 1 && <StackSection stack={detail.stack} trunk={trunk} items={inboxItems} current={status} />}
           {detail.number !== null && <DescriptionSection detail={detail} />}
           <DiscussionSection detail={detail} inputRef={discussionInput} onCommented={refresh} />
         </div>
-        <Rail detail={detail} onReview={() => setReviewOpen(true)} />
+        <Rail detail={detail} status={status} onReview={() => setReviewOpen(true)} />
       </div>
+
       <FilesPanel
         detail={detail}
         itemKey={key}
@@ -121,9 +109,9 @@ export function DetailView({ detail, scrollEl, initialFile, trunk }: Props) {
           toast(
             <>
               <MessageSquare size={14} /> Comment added to your review
-              <button className="btn ghost sm" onClick={() => setReviewOpen(true)}>
+              <Button variant="ghost" size="sm" onClick={() => setReviewOpen(true)}>
                 Finish review
-              </button>
+              </Button>
             </>,
           );
         }}
@@ -137,71 +125,61 @@ export function DetailView({ detail, scrollEl, initialFile, trunk }: Props) {
 
 const routePath = (ref: ItemRef) => (ref.kind === "pr" ? `/pr/${ref.number}` : `/branch/${encodeURIComponent(ref.name)}`);
 
-// -----------------------------------------------------------------------------
-
-/** Renders into the top bar's action slot, so the review button is always in reach. */
-function ReviewPortal({ children }: { children: React.ReactNode }) {
+/** Renders into the nav bar's action slot, so the review button is always in reach. */
+function TopbarSlot({ children }: { children: ReactNode }) {
   const [slot, setSlot] = useState<HTMLElement | null>(null);
   useEffect(() => setSlot(document.getElementById("topbar-actions")), []);
   return slot ? createPortal(children, slot) : null;
 }
 
-function Header({ detail }: { detail: DetailData }) {
+function Banner({ children }: { children: ReactNode }) {
+  return (
+    <div className="mt-4 flex min-h-10 items-center gap-2.5 rounded-[10px] border border-warn/25 bg-warn-soft px-3 py-2 text-fg [&_code]:text-[11.5px]">
+      <UploadCloud size={15} className="shrink-0 text-warn" />
+      <span>{children}</span>
+    </div>
+  );
+}
+
+// -----------------------------------------------------------------------------
+
+function Header({ detail, status }: { detail: DetailData; status: Readiness }) {
   const toast = useToast();
+  const chip = "inline-flex h-[22px] max-w-[300px] items-center truncate rounded-md border border-line bg-panel-2 px-2 font-mono text-[11.5px] leading-none text-fg-2";
   return (
     <header>
-      <div className="eyebrow">
-        <PRStatePill state={detail.state} />
-        {detail.number !== null && <span className="num">#{detail.number}</span>}
-        <span>·</span>
-        <span>{detail.updatedAt ? `Updated ${timeAgo(detail.updatedAt)}` : ""}</span>
-        <span style={{ flex: 1 }} />
+      <div className="flex h-[22px] items-center gap-2 text-xs leading-none text-fg-3">
+        <StatusBadge status={status} />
+        {detail.number !== null && <span className="tabular">#{detail.number}</span>}
+        {detail.updatedAt && (
+          <>
+            <span className="text-fg-4">·</span>
+            <span data-tip={absoluteTime(detail.updatedAt)}>Updated {timeAgo(detail.updatedAt)}</span>
+          </>
+        )}
       </div>
-      <h1 className="title">{detail.title}</h1>
-      <div className="byline">
+      <h1 className="mb-3.5 mt-3 text-[27px] font-semibold leading-tight tracking-[-0.028em] text-balance">{detail.title}</h1>
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-2 text-fg-2">
         <Avatar person={detail.author} />
-        <b style={{ fontWeight: 520, color: "var(--text)" }}>{detail.author?.login ?? "unknown"}</b>
+        <b className="font-medium leading-none text-fg">{detail.author?.login ?? "unknown"}</b>
         <button
-          className="branch-chip"
+          className={cx(chip, "transition-colors hover:border-line-2 hover:text-fg")}
           data-tip="Copy checkout command"
           onClick={() => copy(`pile checkout ${detail.branch}`).then((ok) => ok && toast(<>Copied <code>pile checkout {detail.branch}</code></>))}
         >
           {detail.branch}
         </button>
-        <ArrowRight size={13} className="faint" />
-        <span className="branch-chip" style={{ cursor: "default" }}>
-          {detail.base}
-        </span>
-        <span className="spacer" />
-        <span className="faint num">{plural(detail.files.length, "file")}</span>
+        <ArrowRight size={13} className="shrink-0 text-fg-4" />
+        <span className={chip}>{detail.base}</span>
+        <span className="flex-1" />
+        <span className="text-xs leading-none text-fg-3 tabular">{plural(detail.files.length, "file")}</span>
         <DiffStat additions={detail.additions} deletions={detail.deletions} bar />
       </div>
     </header>
   );
 }
 
-function LocalBanner({ detail }: { detail: DetailData }) {
-  return (
-    <div className="local-banner">
-      <UploadCloud size={15} color="var(--amber)" />
-      <span>
-        Local branch{detail.local?.unpushed ? ", not on GitHub yet" : ""}. Run <code>pile submit</code> to open a pull request.
-      </span>
-    </div>
-  );
-}
-
-function ReviewPopover({
-  detail,
-  pendingCount,
-  onClose,
-  onSubmit,
-}: {
-  detail: DetailData;
-  pendingCount: number;
-  onClose: () => void;
-  onSubmit: (request: ReviewRequest) => Promise<void>;
-}) {
+function ReviewPopover({ detail, pendingCount, onClose, onSubmit }: { detail: DetailData; pendingCount: number; onClose: () => void; onSubmit: (request: ReviewRequest) => Promise<void> }) {
   const ref = useDismiss(true, onClose);
   const own = !detail.can.review;
   const [event, setEvent] = useState<ReviewRequest["event"]>(own ? "COMMENT" : "APPROVE");
@@ -229,7 +207,7 @@ function ReviewPopover({
   ];
 
   return (
-    <div className="popover review-pop" ref={ref} role="dialog" aria-label="Submit review">
+    <div ref={ref} role="dialog" aria-label="Submit review" className="popover absolute right-0 top-[calc(100%+8px)] z-50 w-[420px] origin-top-right animate-pop-in rounded-[14px] bg-panel p-3 shadow-pop">
       <textarea
         autoFocus
         placeholder="Leave a summary (optional for approvals)"
@@ -241,48 +219,50 @@ function ReviewPopover({
             submit();
           }
         }}
+        className="block min-h-24 w-full resize-y rounded-lg border border-line-2 bg-bg px-3 py-2.5 text-fg outline-none placeholder:text-fg-3 focus:border-line-3 focus:shadow-[0_0_0_3px_var(--accent-soft)]"
       />
-      <div className="review-choices" role="radiogroup">
+      <div className="my-2.5 grid gap-1" role="radiogroup">
         {choices.map(([value, label, help]) => {
           const disabled = own && value !== "COMMENT";
+          const on = event === value;
           return (
             <button
               key={value}
-              className={`review-choice ${event === value ? "on" : ""}`}
-              onClick={() => !disabled && setEvent(value)}
-              disabled={disabled}
-              style={disabled ? { opacity: 0.4, cursor: "not-allowed" } : undefined}
               role="radio"
-              aria-checked={event === value}
+              aria-checked={on}
+              disabled={disabled}
+              onClick={() => setEvent(value)}
+              className={cx(
+                "grid grid-cols-[16px_1fr] items-start gap-2.5 rounded-lg border px-2.5 py-2 text-left disabled:cursor-not-allowed disabled:opacity-40",
+                on ? "border-line-2 bg-panel-2" : "border-transparent hover:bg-hover",
+              )}
             >
-              <span className="radio" />
-              <span>
-                <b>{label}</b>
-                <small>{disabled ? "You can't approve or request changes on your own pull request." : help}</small>
+              <span className={cx("mt-0.5 grid size-4 place-items-center rounded-full border-[1.5px]", on ? "border-accent" : "border-fg-3")}>
+                {on && <i className="size-1.5 rounded-full bg-accent" />}
+              </span>
+              <span className="grid gap-0.5">
+                <b className="font-medium leading-5">{label}</b>
+                <small className="text-xs text-fg-3">{disabled ? "You can't approve or request changes on your own pull request." : help}</small>
               </span>
             </button>
           );
         })}
       </div>
-      {error && (
-        <div className="error-box" style={{ marginBottom: 10 }}>
-          {error}
-        </div>
-      )}
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span className="faint" style={{ fontSize: 12 }}>
-          {pendingCount > 0 ? `Includes ${plural(pendingCount, "inline comment")}` : ""}
-        </span>
-        <span style={{ flex: 1 }} />
-        <button className="btn ghost" onClick={onClose}>
+      {error && <div className="mb-2.5 rounded-lg border border-bad/30 bg-bad-soft px-3 py-2 text-fg">{error}</div>}
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-fg-3">{pendingCount > 0 ? `Includes ${plural(pendingCount, "inline comment")}` : ""}</span>
+        <span className="flex-1" />
+        <Button variant="ghost" onClick={onClose}>
           Cancel
-        </button>
-        <button className={`btn ${event === "APPROVE" ? "success" : event === "REQUEST_CHANGES" ? "danger" : "primary"}`} onClick={submit} disabled={needsBody || busy}>
+        </Button>
+        <Button variant={event === "APPROVE" ? "success" : event === "REQUEST_CHANGES" ? "danger" : "primary"} onClick={submit} disabled={needsBody || busy}>
           {busy && <Spinner size={12} />}
           Submit review
-          <Kbd>⌘</Kbd>
-          <Kbd>↵</Kbd>
-        </button>
+          <span className="ml-0.5 inline-flex gap-0.5 opacity-60 [&_kbd]:border-current/30 [&_kbd]:bg-transparent [&_kbd]:text-current">
+            <Kbd>⌘</Kbd>
+            <Kbd>↵</Kbd>
+          </span>
+        </Button>
       </div>
     </div>
   );
@@ -290,77 +270,24 @@ function ReviewPopover({
 
 // -----------------------------------------------------------------------------
 
-function Section({ title, right, children, defaultOpen = true }: { title: React.ReactNode; right?: React.ReactNode; children: React.ReactNode; defaultOpen?: boolean }) {
+function Section({ title, right, children, defaultOpen = true }: { title: ReactNode; right?: ReactNode; children: ReactNode; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <section className={`section ${open ? "" : "collapsed"}`}>
-      <div className="section-head">
-        <button className="toggle" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-          <ChevronDown size={13} />
+    <section className="mt-7">
+      <div className="mb-2.5 flex h-6 items-center gap-2 text-xs font-medium leading-none text-fg-2">
+        <button className="flex items-center gap-1.5 [&_svg]:shrink-0" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+          <ChevronDown size={13} className={cx("transition-transform duration-150", !open && "-rotate-90")} />
           {title}
         </button>
-        <span className="spacer" />
+        <span className="flex-1" />
         {right}
       </div>
-      {open && <div className="section-body">{children}</div>}
+      {open && <div className="animate-fade-in">{children}</div>}
     </section>
   );
 }
 
-function StackSection({ stack, trunk }: { stack: StackEntry[]; trunk: string }) {
-  const current = stack.findIndex((s) => s.isCurrent);
-  const [expanded, setExpanded] = useState(false);
-  const top = [...stack].reverse();
-  return (
-    <Section
-      title={
-        <>
-          <Layers size={13} /> Stack <span className="faint num">{current + 1} of {stack.length}</span>
-        </>
-      }
-    >
-      <div className="stack-list">
-        <div className="stack-line" />
-        {windowed(top, top.findIndex((e) => e.isCurrent), expanded).map((part, i) =>
-          "hidden" in part ? (
-            <button key={`more-${i}`} className="stack-more" onClick={() => setExpanded(true)}>
-              <span className="dots">⋮</span>
-              {part.hidden} more
-            </button>
-          ) : (
-          <div
-            key={refKey(part.entry.ref)}
-            className={`stack-row ${part.entry.isCurrent ? "current" : ""} ${part.entry.state === "merged" ? "merged" : ""}`}
-            onClick={() => !part.entry.isCurrent && navigate(part.entry.ref)}
-            role="link"
-            tabIndex={0}
-            onKeyDown={(e) => e.key === "Enter" && navigate(part.entry.ref)}
-          >
-            <span className="node" />
-            <span className="stack-title">
-              {part.entry.ref.kind === "pr" && <span className="n">#{part.entry.ref.number}</span>}
-              {part.entry.title}
-            </span>
-            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              {part.entry.state !== "open" && part.entry.state !== "local" && <PRStateIcon state={part.entry.state} size={13} />}
-            </span>
-          </div>
-          ),
-        )}
-        <div className="stack-row trunk">
-          <span className="node" />
-          <span>{trunk}</span>
-          <span />
-        </div>
-      </div>
-    </Section>
-  );
-}
-
-/**
- * Long stacks show the ends and the neighborhood of the current entry; the rest
- * collapse into "N more" rows.
- */
+/** Long stacks show the ends and the neighborhood of the current entry; the rest collapse into "N more". */
 export function windowed<T>(items: T[], current: number, expanded: boolean, radius = 2): Array<{ entry: T } | { hidden: number }> {
   if (expanded || items.length <= 7) return items.map((entry) => ({ entry }));
   const keep = new Set([0, items.length - 1]);
@@ -378,40 +305,88 @@ export function windowed<T>(items: T[], current: number, expanded: boolean, radi
   return out;
 }
 
+function StackSection({ stack, trunk, items, current }: { stack: StackEntry[]; trunk: string; items: InboxItem[]; current: Readiness }) {
+  const currentIndex = stack.findIndex((s) => s.isCurrent);
+  const [expanded, setExpanded] = useState(false);
+  const top = [...stack].reverse();
+  const parts = windowed(top, top.findIndex((e) => e.isCurrent), expanded);
+  const row = "grid h-9 grid-cols-[20px_minmax(0,1fr)_auto] items-center gap-2.5 rounded-lg pl-1.5 pr-2";
+
+  return (
+    <Section
+      title={
+        <>
+          <Layers size={13} /> Stack <span className="font-normal text-fg-3 tabular">{currentIndex + 1} of {stack.length}</span>
+        </>
+      }
+    >
+      <div className="flex flex-col">
+        {parts.map((part, i) =>
+          "hidden" in part ? (
+            <button key={`more-${i}`} className={cx(row, "text-left text-xs text-fg-3 hover:bg-hover hover:text-fg-2")} onClick={() => setExpanded(true)}>
+              <span className="rail-node rail-dashed" />
+              <span>{part.hidden} more</span>
+              <span />
+            </button>
+          ) : (
+            <div
+              key={refKey(part.entry.ref)}
+              role="link"
+              tabIndex={0}
+              onClick={() => !part.entry.isCurrent && navigate(part.entry.ref)}
+              onKeyDown={(e) => e.key === "Enter" && navigate(part.entry.ref)}
+              className={cx(row, i === 0 && "rail-first", part.entry.isCurrent ? "bg-active text-fg" : "cursor-pointer text-fg-2 hover:bg-hover hover:text-fg")}
+            >
+              <span className="rail-node">
+                <i
+                  className={cx(
+                    "block size-[9px] rounded-full border-[1.5px]",
+                    part.entry.isCurrent ? "border-accent bg-accent shadow-[0_0_0_3px_var(--accent-soft)]" : part.entry.state === "merged" ? "border-merged bg-merged" : "border-fg-3 bg-bg",
+                  )}
+                />
+              </span>
+              <span className="truncate leading-5">
+                {part.entry.ref.kind === "pr" && <span className="mr-1.5 text-fg-3 tabular">#{part.entry.ref.number}</span>}
+                {part.entry.title}
+              </span>
+              <StatusBadge status={part.entry.isCurrent ? current : entryReadiness(part.entry, items)} size="sm" />
+            </div>
+          ),
+        )}
+        <div className={cx(row, "rail-last font-mono text-[11.5px] text-fg-3")}>
+          <span className="rail-node">
+            <i className="block size-[9px] rounded-sm border-[1.5px] border-fg-3 bg-bg" />
+          </span>
+          <span>{trunk}</span>
+          <span />
+        </div>
+      </div>
+    </Section>
+  );
+}
+
 function DescriptionSection({ detail }: { detail: DetailData }) {
   return (
     <Section
       title="Description"
       right={
         detail.url && (
-          <a className="btn ghost sm" href={`${detail.url}`} target="_blank" rel="noreferrer">
+          <a className={cx(buttonClass({ variant: "ghost", size: "sm" }), "no-underline")} href={detail.url} target="_blank" rel="noreferrer">
             <Pencil size={12} /> Edit on GitHub
           </a>
         )
       }
     >
-      {detail.bodyHtml ? (
-        <div className="description">
-          <Markdown html={detail.bodyHtml} />
-        </div>
-      ) : (
-        <div className="description empty">No description provided.</div>
-      )}
+      <div className="rounded-xl border border-line bg-panel px-4 py-3.5">
+        {detail.bodyHtml ? <Markdown html={detail.bodyHtml} /> : <span className="text-fg-3">No description provided.</span>}
+      </div>
     </Section>
   );
 }
 
-function DiscussionSection({
-  detail,
-  inputRef,
-  onCommented,
-}: {
-  detail: DetailData;
-  inputRef: React.RefObject<HTMLTextAreaElement | null>;
-  onCommented: () => void;
-}) {
+function DiscussionSection({ detail, inputRef, onCommented }: { detail: DetailData; inputRef: React.RefObject<HTMLTextAreaElement | null>; onCommented: () => void }) {
   const toast = useToast();
-  // Runs of 3+ commits collapse into one expandable row.
+  // Runs of commits group together; long runs collapse.
   const groups = useMemo(() => {
     const out: Array<TimelineEntry | TimelineEntry[]> = [];
     for (const entry of detail.timeline) {
@@ -429,40 +404,42 @@ function DiscussionSection({
       title={
         <>
           {detail.number ? "Discussion" : "Commits"}
-          {comments > 0 && <span className="faint num">{comments}</span>}
+          {comments > 0 && <span className="font-normal text-fg-3 tabular">{comments}</span>}
         </>
       }
     >
-      <div className="timeline">
+      <div className="relative flex flex-col before:absolute before:bottom-3 before:left-[11px] before:top-3 before:w-px before:bg-line">
         {groups.map((g, i) => (Array.isArray(g) ? <CommitGroup key={i} commits={g} url={detail.url} /> : <Event key={g.id} entry={g} />))}
-        {groups.length === 0 && <div className="faint" style={{ paddingLeft: 34 }}>No activity yet.</div>}
+        {groups.length === 0 && <div className="pl-9 text-fg-3">No activity yet.</div>}
       </div>
       {detail.can.comment && detail.number !== null && (
-        <Composer
-          compact
-          inputRef={inputRef}
-          draftKey={`discussion:${detail.number}`}
-          placeholder="Add to the discussion…"
-          submitLabel="Comment"
-          onSubmit={async (body) => {
-            try {
-              await api.comment(detail.number!, body);
-              toast(
-                <>
-                  <MessageSquare size={14} /> Comment posted
-                </>,
-              );
-              onCommented();
-            } catch (e) {
-              toast(
-                <>
-                  <CircleAlert size={14} color="var(--red)" /> {(e as Error).message}
-                </>,
-              );
-              throw e;
-            }
-          }}
-        />
+        <div className="mt-3">
+          <Composer
+            compact
+            inputRef={inputRef}
+            draftKey={`discussion:${detail.number}`}
+            placeholder="Add to the discussion…"
+            submitLabel="Comment"
+            onSubmit={async (body) => {
+              try {
+                await api.comment(detail.number!, body);
+                toast(
+                  <>
+                    <MessageSquare size={14} /> Comment posted
+                  </>,
+                );
+                onCommented();
+              } catch (e) {
+                toast(
+                  <>
+                    <CircleAlert size={14} color="var(--red)" /> {(e as Error).message}
+                  </>,
+                );
+                throw e;
+              }
+            }}
+          />
+        </div>
       )}
     </Section>
   );
@@ -473,20 +450,30 @@ function Event({ entry }: { entry: TimelineEntry }) {
     entry.kind === "review"
       ? { approved: "approved", changes_requested: "requested changes", commented: "reviewed", pending: "started a review", dismissed: "had a review dismissed" }[entry.reviewState ?? "commented"]
       : "commented";
+  const border =
+    entry.kind === "review" && entry.reviewState === "approved"
+      ? "border-ok/30"
+      : entry.kind === "review" && entry.reviewState === "changes_requested"
+        ? "border-bad/30"
+        : "border-line";
   return (
-    <div className={`event ${entry.kind === "review" ? `review-${entry.reviewState}` : ""}`}>
-      <Avatar person={entry.author} size="lg" />
-      <div style={{ minWidth: 0 }}>
-        <div className="event-head">
-          <b>{entry.author?.login}</b>
+    <div className="relative grid grid-cols-[22px_minmax(0,1fr)] gap-3 py-1.5">
+      <span className="relative z-[1] flex h-[22px] items-center justify-center">
+        <span className="flex rounded-full shadow-[0_0_0_3px_var(--bg)]">
+          <Avatar person={entry.author} size="lg" />
+        </span>
+      </span>
+      <div className="min-w-0">
+        <div className="flex h-[22px] flex-wrap items-center gap-1.5 leading-none text-fg-3">
+          <b className="font-medium text-fg">{entry.author?.login}</b>
           <span>{verb}</span>
           {entry.kind === "review" && entry.reviewState === "approved" && <Check size={13} color="var(--green)" strokeWidth={2.5} />}
           {entry.kind === "review" && entry.reviewState === "changes_requested" && <AlertTriangle size={13} color="var(--red)" />}
-          {entry.inlineCount ? <span className="faint">· {plural(entry.inlineCount, "inline comment")}</span> : null}
+          {entry.inlineCount ? <span>· {plural(entry.inlineCount, "inline comment")}</span> : null}
           <span data-tip={absoluteTime(entry.createdAt)}>{timeAgo(entry.createdAt)}</span>
         </div>
         {entry.bodyHtml && (
-          <div className="event-body">
+          <div className={cx("mt-1.5 rounded-xl border bg-panel px-3.5 py-3", border)}>
             <Markdown html={entry.bodyHtml} />
           </div>
         )}
@@ -498,36 +485,37 @@ function Event({ entry }: { entry: TimelineEntry }) {
 function CommitGroup({ commits, url }: { commits: TimelineEntry[]; url: string | null }) {
   const [open, setOpen] = useState(commits.length <= 3);
   const shown = open ? commits : commits.slice(-1);
+  const line = "relative grid min-h-7 grid-cols-[22px_minmax(0,1fr)] items-center gap-3";
+  const dot = (
+    <span className="relative z-[1] grid place-items-center">
+      <i className="block size-[7px] rounded-full border-[1.5px] border-fg-3 bg-bg" />
+    </span>
+  );
   return (
     <>
       {!open && (
-        <div className="event commit">
-          <span className="commit-icon">
-            <GitCommitHorizontal size={14} />
-          </span>
-          <button className="btn ghost sm" style={{ justifySelf: "start", marginLeft: -8 }} onClick={() => setOpen(true)}>
+        <div className={line}>
+          {dot}
+          <Button variant="ghost" size="sm" className="-ml-2 justify-self-start" onClick={() => setOpen(true)}>
             Show {commits.length - 1} earlier commits
-          </button>
+          </Button>
         </div>
       )}
       {shown.map((c) => (
-        <div className="event commit" key={c.id}>
-          <span className="commit-icon">
-            <i />
-          </span>
-          <div className="commit-line">
+        <div className={line} key={c.id}>
+          {dot}
+          <div className="flex min-w-0 items-center gap-2 text-fg-2">
             <Avatar person={c.author} size="sm" />
-            <span className="msg">{c.message?.split("\n")[0]}</span>
+            <span className="truncate">{c.message?.split("\n")[0]}</span>
+            <span className="flex-1" />
             {c.url || url ? (
-              <a className="sha" href={c.url ?? undefined} target="_blank" rel="noreferrer">
+              <a className="shrink-0 font-mono text-[11.5px] leading-none text-fg-3 hover:text-fg-2" href={c.url ?? undefined} target="_blank" rel="noreferrer">
                 {c.sha?.slice(0, 7)}
               </a>
             ) : (
-              <span className="sha">{c.sha?.slice(0, 7)}</span>
+              <span className="shrink-0 font-mono text-[11.5px] leading-none text-fg-3">{c.sha?.slice(0, 7)}</span>
             )}
-            <span className="faint" style={{ fontSize: 11.5, flex: "none" }}>
-              {timeAgo(c.createdAt)}
-            </span>
+            <span className="w-14 shrink-0 text-right text-[11.5px] leading-none text-fg-3">{timeAgo(c.createdAt)}</span>
           </div>
         </div>
       ))}
@@ -537,37 +525,27 @@ function CommitGroup({ commits, url }: { commits: TimelineEntry[]; url: string |
 
 // -----------------------------------------------------------------------------
 
-function Rail({ detail, onReview }: { detail: DetailData; onReview: () => void }) {
+function Rail({ detail, status, onReview }: { detail: DetailData; status: Readiness; onReview: () => void }) {
   const summary = detail.checksSummary;
-  const statusText = (() => {
-    if (detail.state === "local") return ["Local branch", "Not submitted yet."];
-    if (detail.state === "merged") return ["Merged", "This pull request has been merged."];
-    if (detail.state === "closed") return ["Closed", "This pull request was closed without merging."];
-    if (summary?.state === "failure") return ["Checks failing", `${summary.failed} of ${summary.total} checks failed.`];
-    if (detail.reviewers.some((r) => r.state === "changes_requested")) return ["Changes requested", "A reviewer asked for changes."];
-    if (detail.reviewers.some((r) => r.state === "approved")) return ["Approved", detail.mergeable === false ? "Has conflicts with the base branch." : "Ready to merge."];
-    if (detail.state === "draft") return ["Draft", "Not ready for review yet."];
-    if (detail.reviewers.some((r) => r.state === "requested")) return ["Waiting on reviewers", `${plural(detail.reviewers.filter((r) => r.state === "requested").length, "review")} requested.`];
-    return ["Open", "No reviews yet."];
-  })();
+  const row = "-mx-1.5 flex min-h-7 items-center gap-2 rounded-md px-1.5 text-fg no-underline";
+  const empty = <span className="text-xs text-fg-3">None</span>;
 
   return (
-    <aside className="rail">
-      <div className="rail-card">
-        <div className="status-line">
-          <PRStateIcon state={detail.state} />
-          {statusText[0]}
+    <aside className="flex min-w-0 flex-col gap-6 max-[1080px]:order-first">
+      <div className="rounded-xl border border-line bg-panel p-3">
+        <div className="flex h-[22px] items-center">
+          <StatusBadge status={status} />
         </div>
-        <div className="status-sub">{statusText[1]}</div>
-        <div className="rail-actions">
+        <p className="mb-3 mt-2 text-xs text-fg-2">{status.detail}</p>
+        <div className="grid gap-1.5">
           {detail.number !== null && (
-            <button className="btn block" onClick={onReview}>
+            <Button block onClick={onReview}>
               {detail.can.review ? "Leave a review" : "Comment"}
               <Kbd>R</Kbd>
-            </button>
+            </Button>
           )}
           {detail.url && (
-            <a className="btn block ghost" href={detail.url} target="_blank" rel="noreferrer">
+            <a className={cx(buttonClass({ variant: "ghost", block: true }), "no-underline")} href={detail.url} target="_blank" rel="noreferrer">
               Open on GitHub <ExternalLink size={12} />
             </a>
           )}
@@ -575,30 +553,30 @@ function Rail({ detail, onReview }: { detail: DetailData; onReview: () => void }
       </div>
 
       {detail.number !== null && (
-        <div className="rail-section">
-          <h4>
+        <div>
+          <Label>
             Checks
-            <span className="spacer" />
+            <span className="flex-1" />
             {summary && summary.total > 0 && (
-              <span className="num">
+              <span className="tabular">
                 {summary.passed}/{summary.total}
               </span>
             )}
-          </h4>
+          </Label>
           {summary && summary.total > 0 && (
-            <div className="check-progress" aria-hidden>
-              <i style={{ width: `${(summary.passed / summary.total) * 100}%`, background: "var(--green)" }} />
-              <i style={{ width: `${(summary.pending / summary.total) * 100}%`, background: "var(--amber)" }} />
-              <i style={{ width: `${(summary.failed / summary.total) * 100}%`, background: "var(--red)" }} />
+            <div className="mb-2.5 flex h-[3px] overflow-hidden rounded-full bg-panel-3" aria-hidden>
+              <i className="h-full bg-ok transition-[width] duration-500" style={{ width: `${(summary.passed / summary.total) * 100}%` }} />
+              <i className="h-full bg-warn transition-[width] duration-500" style={{ width: `${(summary.pending / summary.total) * 100}%` }} />
+              <i className="h-full bg-bad transition-[width] duration-500" style={{ width: `${(summary.failed / summary.total) * 100}%` }} />
             </div>
           )}
-          <div className="rail-list">
-            {detail.checks.length === 0 && <span className="rail-empty">No checks reported.</span>}
+          <div className="flex flex-col gap-0.5">
+            {detail.checks.length === 0 && <span className="text-xs text-fg-3">No checks reported.</span>}
             {detail.checks.map((check) => (
-              <a key={check.name} className="rail-row" href={check.url ?? undefined} target="_blank" rel="noreferrer" data-tip={check.summary ?? undefined}>
+              <a key={check.name} className={cx(row, "hover:bg-hover")} href={check.url ?? undefined} target="_blank" rel="noreferrer" data-tip={check.summary ?? undefined}>
                 <CheckIcon state={check.state} />
-                <span className="grow">{check.name}</span>
-                {check.durationSeconds !== null && <span className="side num">{formatDuration(check.durationSeconds)}</span>}
+                <span className="min-w-0 flex-1 truncate">{check.name}</span>
+                {check.durationSeconds !== null && <span className="shrink-0 text-[11.5px] text-fg-3 tabular">{formatDuration(check.durationSeconds)}</span>}
               </a>
             ))}
           </div>
@@ -606,48 +584,58 @@ function Rail({ detail, onReview }: { detail: DetailData; onReview: () => void }
       )}
 
       {detail.number !== null && (
-        <div className="rail-section">
-          <h4>Reviewers</h4>
-          <div className="rail-list">
-            {detail.reviewers.length === 0 && <span className="rail-empty">No reviewers yet.</span>}
+        <div>
+          <Label>Reviewers</Label>
+          <div className="flex flex-col gap-0.5">
+            {detail.reviewers.length === 0 && <span className="text-xs text-fg-3">No reviewers yet.</span>}
             {detail.reviewers.map((r) => (
-              <div className="rail-row" key={r.person.login}>
+              <div className={row} key={r.person.login}>
                 <Avatar person={r.person} size="sm" />
-                <span className="grow">{r.person.login}</span>
-                {r.state === "requested" ? <span className="side">Requested</span> : <ReviewBadge decision={r.state} compact />}
-                {r.state !== "requested" && r.state !== "approved" && r.state !== "changes_requested" && <span className="side">Commented</span>}
+                <span className="min-w-0 flex-1 truncate">{r.person.login}</span>
+                {r.state === "approved" ? (
+                  <Pill tone="green">Approved</Pill>
+                ) : r.state === "changes_requested" ? (
+                  <Pill tone="red">Changes</Pill>
+                ) : r.state === "requested" ? (
+                  <Pill tone="blue">Requested</Pill>
+                ) : (
+                  <Pill>Commented</Pill>
+                )}
               </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {detail.labels.length > 0 && (
-        <div className="rail-section">
-          <h4>Labels</h4>
-          <div className="labels">
-            {detail.labels.map((l) => (
-              <span className="label" key={l.name}>
-                <i style={{ background: `#${l.color}` }} />
-                {l.name}
-              </span>
             ))}
           </div>
         </div>
       )}
 
       {detail.number !== null && (
-        <div className="rail-section">
-          <h4>Assignees</h4>
-          <div className="rail-list">
-            {detail.assignees.length === 0 && <span className="rail-empty">No one assigned.</span>}
-            {detail.assignees.map((a) => (
-              <div className="rail-row" key={a.login}>
-                <Avatar person={a} size="sm" />
-                <span className="grow">{a.login}</span>
-              </div>
-            ))}
-          </div>
+        <div>
+          <Label>Labels</Label>
+          {detail.labels.length === 0 ? (
+            empty
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {detail.labels.map((l) => (
+                <span key={l.name} className="inline-flex h-[22px] items-center gap-1.5 rounded-full border border-line-2 px-2 text-[11.5px] font-medium leading-none text-fg-2">
+                  <i className="size-2 shrink-0 rounded-full shadow-[inset_0_0_0_1px_var(--border-3)]" style={{ background: `#${l.color}` }} />
+                  {l.name}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {detail.number !== null && (
+        <div>
+          <Label>Assignees</Label>
+          {detail.assignees.length === 0
+            ? empty
+            : detail.assignees.map((a) => (
+                <div className={row} key={a.login}>
+                  <Avatar person={a} size="sm" />
+                  <span className="min-w-0 flex-1 truncate">{a.login}</span>
+                </div>
+              ))}
         </div>
       )}
     </aside>

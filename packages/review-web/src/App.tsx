@@ -7,7 +7,7 @@ import { DetailView } from "./components/Detail";
 import { flatItems } from "./components/Inbox";
 import { InboxPage } from "./components/InboxPage";
 import { Palette, ShortcutsSheet } from "./components/Palette";
-import { Avatar, Kbd, PRStateIcon, TooltipLayer, ToastProvider } from "./components/ui";
+import { Avatar, Button, buttonClass, Centered, cx, Kbd, PRStateIcon, TooltipLayer, ToastProvider } from "./components/ui";
 
 type Theme = "system" | "dark" | "light";
 
@@ -124,93 +124,100 @@ function Shell() {
   const waiting = inbox.data?.groups.find((g) => g.id === "needs_review")?.items.length ?? 0;
   const refreshing = (inbox.loading && !!inbox.data) || (detail.loading && !!detail.data);
 
+  const navLink = "inline-flex h-8 items-center gap-2 rounded-lg px-2.5 font-medium leading-none text-fg-2 transition-colors hover:bg-hover hover:text-fg [&_svg]:shrink-0";
+
   return (
-    <div className="shell">
-      <nav className="navbar">
-        <button className="brand" onClick={goInbox} data-tip="Inbox" data-kbd="g">
-          <span className="brand-mark">
-            <span />
-          </span>
-          <span className="brand-name">pile</span>
+    <div className="flex h-full flex-col">
+      <nav className="relative z-30 flex h-[var(--topbar-h)] shrink-0 items-center gap-1.5 border-b border-line bg-bg/80 pl-3 pr-3.5 backdrop-blur-xl backdrop-saturate-150">
+        <button className="flex h-8 items-center gap-2 rounded-lg px-1.5 text-fg hover:bg-hover" onClick={goInbox} data-tip="Inbox" data-kbd="g">
+          <BrandMark />
+          <span className="text-sm font-semibold leading-none tracking-tight">pile</span>
         </button>
         {repo && (
-          <a className="nav-repo" href={repo.url} target="_blank" rel="noreferrer">
+          <a className={cx(navLink, "gap-1 no-underline")} href={repo.url} target="_blank" rel="noreferrer">
             {repo.owner}
-            <span className="faint">/</span>
+            <span className="text-fg-4">/</span>
             {repo.name}
           </a>
         )}
-        <span className="nav-sep" />
-        <button className={`nav-tab ${route.ref ? "" : "on"}`} onClick={goInbox}>
+        <span className="mx-1 h-[18px] w-px bg-line-2" />
+        <button className={cx(navLink, !route.ref && "bg-active text-fg")} onClick={goInbox}>
           <InboxIcon size={14} />
           Inbox
-          {waiting > 0 && <span className="nav-badge num">{waiting}</span>}
+          {waiting > 0 && <span className="grid h-[18px] min-w-[18px] place-items-center rounded-full bg-accent px-1.5 text-[11px] font-semibold leading-none text-white tabular">{waiting}</span>}
         </button>
         {route.ref && (
-          <div className="nav-crumb">
-            <ChevronRight size={14} className="faint" />
+          <div className="flex min-w-0 animate-fade-in items-center gap-2 text-fg-2">
+            <ChevronRight size={14} className="shrink-0 text-fg-4" />
             <PRStateIcon state={detail.data?.state ?? current?.state ?? "open"} size={14} />
-            <span className="num faint">{route.ref.kind === "pr" ? `#${route.ref.number}` : route.ref.name}</span>
-            <b>{detail.data?.title ?? current?.title ?? ""}</b>
+            <span className="shrink-0 text-fg-3 tabular">{route.ref.kind === "pr" ? `#${route.ref.number}` : route.ref.name}</span>
+            <b className="max-w-[42vw] truncate font-medium text-fg">{detail.data?.title ?? current?.title ?? ""}</b>
           </div>
         )}
-        <span className="spacer" />
+        <span className="flex-1" />
         {route.ref && index >= 0 && (
-          <div className="nav-stepper">
-            <button className="btn ghost sm icon" onClick={() => step(-1)} disabled={index <= 0} data-tip="Previous" data-kbd="[">
+          <div className="mr-1 flex items-center gap-0.5 text-xs text-fg-3 tabular">
+            <Button variant="ghost" size="sm" icon onClick={() => step(-1)} disabled={index <= 0} data-tip="Previous" data-kbd="[">
               <ChevronLeft size={14} />
-            </button>
-            <span className="num faint">
+            </Button>
+            <span className="px-0.5">
               {index + 1} of {items.length}
             </span>
-            <button className="btn ghost sm icon" onClick={() => step(1)} disabled={index >= items.length - 1} data-tip="Next" data-kbd="]">
+            <Button variant="ghost" size="sm" icon onClick={() => step(1)} disabled={index >= items.length - 1} data-tip="Next" data-kbd="]">
               <ChevronRight size={14} />
-            </button>
+            </Button>
           </div>
         )}
         {detail.data?.url && route.ref && (
-          <a className="btn ghost sm" href={detail.data.url} target="_blank" rel="noreferrer" data-kbd="o" data-tip="Open on GitHub">
+          <a className={cx(buttonClass({ variant: "ghost", size: "sm" }), "no-underline")} href={detail.data.url} target="_blank" rel="noreferrer" data-kbd="o" data-tip="Open on GitHub">
             GitHub <ExternalLink size={12} />
           </a>
         )}
-        <span id="topbar-actions" style={{ display: "contents" }} />
-        <button className="search-pill" onClick={() => setPalette(true)}>
-          <Search size={13} />
-          <span>Search</span>
+        <span id="topbar-actions" className="contents" />
+        <button
+          className="mx-1 inline-flex h-8 items-center gap-2 rounded-lg border border-line bg-panel pl-2.5 pr-1.5 text-[12.5px] leading-none text-fg-3 transition-colors hover:border-line-2 hover:text-fg-2"
+          onClick={() => setPalette(true)}
+        >
+          <Search size={13} className="shrink-0" />
+          <span className="mr-5">Search</span>
           <Kbd>{modKey}</Kbd>
           <Kbd>K</Kbd>
         </button>
-        <button
-          className="btn ghost sm icon"
-          data-tip={`Theme: ${theme}`}
-          onClick={() => setTheme(theme === "system" ? "dark" : theme === "dark" ? "light" : "system")}
-        >
+        <Button variant="ghost" size="sm" icon data-tip={`Theme: ${theme}`} onClick={() => setTheme(theme === "system" ? "dark" : theme === "dark" ? "light" : "system")}>
           {theme === "light" ? <Sun size={14} /> : <Moon size={14} />}
-        </button>
-        <button className={`btn ghost sm icon ${refreshing ? "spinning" : ""}`} data-tip="Refresh" data-kbd="⇧ R" onClick={refresh}>
+        </Button>
+        <Button variant="ghost" size="sm" icon data-tip="Refresh" data-kbd="⇧ R" onClick={refresh} className={refreshing ? "[&_svg]:animate-spin" : ""}>
           <RefreshCw size={14} />
-        </button>
-        {session.data?.viewer && <Avatar person={session.data.viewer} />}
-      </nav>
-      {refreshing && <div className="refreshing" />}
-
-      <main className="scroll" ref={setScrollEl}>
-        <div className="glow" aria-hidden />
-        {!route.ref ? (
-          <InboxPage inbox={inbox.data} session={session.data} loading={inbox.loading} />
-        ) : detail.data ? (
-          <DetailView key={detailKey} detail={detail.data} scrollEl={scrollEl} initialFile={route.file} trunk={session.data?.trunk ?? "main"} />
-        ) : detail.error ? (
-          <Centered icon={<CircleAlert size={22} />} title="Couldn't load this">
-            {detail.error.message}
-            <br />
-            <button className="btn" style={{ marginTop: 12 }} onClick={goInbox}>
-              Back to inbox
-            </button>
-          </Centered>
-        ) : (
-          <DetailSkeleton item={current} />
+        </Button>
+        {session.data?.viewer && (
+          <span className="ml-1 flex">
+            <Avatar person={session.data.viewer} size="lg" />
+          </span>
         )}
+        {refreshing && <div className="refreshing top-full" />}
+      </nav>
+
+      <main className="relative flex-1 overflow-y-auto overflow-x-hidden scroll-smooth" ref={setScrollEl}>
+        <div className="glow pointer-events-none absolute inset-x-0 top-0 h-[440px]" aria-hidden />
+        <div className="relative">
+          {!route.ref ? (
+            <InboxPage inbox={inbox.data} session={session.data} loading={inbox.loading} />
+          ) : detail.data ? (
+            <DetailView key={detailKey} detail={detail.data} scrollEl={scrollEl} initialFile={route.file} trunk={session.data?.trunk ?? "main"} inboxItems={items} />
+          ) : detail.error ? (
+            <div className="h-[70vh]">
+              <Centered icon={<CircleAlert size={22} />} title="Couldn't load this">
+                {detail.error.message}
+                <br />
+                <Button className="mt-3" onClick={goInbox}>
+                  Back to inbox
+                </Button>
+              </Centered>
+            </div>
+          ) : (
+            <DetailSkeleton item={current} />
+          )}
+        </div>
       </main>
 
       {palette && (
@@ -229,50 +236,50 @@ function Shell() {
   );
 }
 
-function Centered({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
+function BrandMark() {
   return (
-    <div className="empty-state">
-      <div>
-        <div className="art">{icon}</div>
-        <h2>{title}</h2>
-        <p>{children}</p>
-      </div>
-    </div>
+    <span className="grid size-[22px] shrink-0 place-items-center rounded-[7px] bg-gradient-to-br from-accent to-merged shadow-[inset_0_0_0_1px_rgba(255,255,255,.12),0_4px_14px_-4px_var(--accent)]">
+      <span className="flex flex-col gap-[2px]">
+        <i className="block h-[2px] w-2.5 rounded-full bg-white/40" />
+        <i className="block h-[2px] w-2.5 rounded-full bg-white/70" />
+        <i className="block h-[2px] w-2.5 rounded-full bg-white" />
+      </span>
+    </span>
   );
 }
 
 /** While details load, show what the inbox already knows. */
 function DetailSkeleton({ item }: { item: InboxItem | undefined }) {
   return (
-    <div className="page" aria-busy>
+    <div className="mx-auto grid max-w-[1240px] grid-cols-[minmax(0,1fr)_272px] gap-10 px-9 pt-9" aria-busy>
       <div>
         {item ? (
           <>
-            <div className="eyebrow">
-              <span className="skeleton" style={{ height: 20, width: 64, borderRadius: 10 }} />
-              {item.ref.kind === "pr" && <span className="num">#{item.ref.number}</span>}
+            <div className="flex h-[22px] items-center gap-2 text-xs text-fg-3">
+              <span className="skeleton h-[22px] w-20 rounded-full" />
+              {item.ref.kind === "pr" && <span className="tabular">#{item.ref.number}</span>}
             </div>
-            <h1 className="title">{item.title}</h1>
-            <div className="byline">
+            <h1 className="mb-3.5 mt-3 text-[27px] font-semibold leading-tight tracking-[-0.028em] text-balance">{item.title}</h1>
+            <div className="flex items-center gap-2.5 text-fg-2">
               <Avatar person={item.author} />
-              <b style={{ fontWeight: 520, color: "var(--text)" }}>{item.author?.login}</b>
-              <span className="branch-chip">{item.branch}</span>
+              <b className="font-medium text-fg">{item.author?.login}</b>
+              <span className="inline-flex h-[22px] items-center rounded-md border border-line bg-panel-2 px-2 font-mono text-[11.5px] leading-none text-fg-2">{item.branch}</span>
             </div>
           </>
         ) : (
           <>
-            <div className="skeleton" style={{ height: 20, width: 120, borderRadius: 10 }} />
-            <div className="skeleton" style={{ height: 26, width: "70%", margin: "14px 0 16px" }} />
-            <div className="skeleton" style={{ height: 14, width: "45%" }} />
+            <div className="skeleton h-5 w-28 rounded-full" />
+            <div className="skeleton mb-4 mt-3.5 h-7 w-2/3" />
+            <div className="skeleton h-3.5 w-2/5" />
           </>
         )}
-        <div className="skeleton" style={{ height: 96, width: "100%", marginTop: 36, borderRadius: 12 }} />
-        <div className="skeleton" style={{ height: 64, width: "100%", marginTop: 24, borderRadius: 12 }} />
+        <div className="skeleton mt-9 h-24 rounded-xl" />
+        <div className="skeleton mt-6 h-16 rounded-xl" />
       </div>
       <div>
-        <div className="skeleton" style={{ height: 120, borderRadius: 12 }} />
-        <div className="skeleton" style={{ height: 14, width: "50%", marginTop: 24 }} />
-        <div className="skeleton" style={{ height: 14, width: "80%", marginTop: 10 }} />
+        <div className="skeleton h-32 rounded-xl" />
+        <div className="skeleton mt-6 h-3.5 w-1/2" />
+        <div className="skeleton mt-2.5 h-3.5 w-4/5" />
       </div>
     </div>
   );
