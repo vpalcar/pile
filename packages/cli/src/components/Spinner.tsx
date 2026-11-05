@@ -6,7 +6,9 @@ export interface SpinnerProps {
   label?: string;
 }
 
-export function Spinner({ label }: SpinnerProps): React.ReactElement {
+export function Spinner({ label }: SpinnerProps): React.ReactElement | null {
+  // Animation frames are noise when output is piped or captured.
+  if (!process.stdout.isTTY) return null;
   return (
     <Box>
       <Text color="cyan">

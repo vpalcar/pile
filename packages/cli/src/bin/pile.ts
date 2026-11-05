@@ -25,12 +25,17 @@ import { RequestCommand } from "../commands/request.js";
 import { ReviewCommand } from "../commands/review.js";
 import { DiffCommand } from "../commands/diff.js";
 import { getSecretPileMessage, getPileWisdom } from "../utils/fun.js";
+import { resolveOptions } from "../utils/output.js";
+import { describeCommands } from "../utils/schema.js";
 
 const program = new Command();
 
 program.name("pile").description("AI-native stacked PR CLI").version("0.3.0");
 
-program.option("--json", "Output in JSON format for AI agents", false);
+program
+  .option("--json", "Output in JSON format for AI agents", false)
+  .option("--no-interactive", "Never prompt; exit with NEEDS_INPUT (code 2) instead")
+  .option("-y, --yes", "Confirm destructive actions without prompting");
 
 // init command
 program
@@ -47,7 +52,7 @@ program
       React.createElement(InitCommand, {
         trunk: opts.trunk,
         openPr: opts.openPr,
-        options: { json: globalOpts.json },
+        options: resolveOptions(globalOpts),
       }),
     );
   });
@@ -68,7 +73,7 @@ program
         all: opts.all,
         update: opts.update,
         patch: opts.patch,
-        options: { json: globalOpts.json },
+        options: resolveOptions(globalOpts),
       }),
     );
   });
@@ -94,7 +99,7 @@ program
         all: opts.all,
         update: opts.update,
         insert: opts.insert,
-        options: { json: globalOpts.json },
+        options: resolveOptions(globalOpts),
       }),
     );
   });
@@ -116,7 +121,7 @@ program
         update: opts.update,
         message: opts.message,
         squash: !opts.amend, // Squash by default, --amend disables it
-        options: { json: globalOpts.json },
+        options: resolveOptions(globalOpts),
       }),
     );
   });
@@ -130,7 +135,7 @@ program
     const globalOpts = program.opts();
     render(
       React.createElement(LogCommand, {
-        options: { json: globalOpts.json },
+        options: resolveOptions(globalOpts),
       }),
     );
   });
@@ -157,7 +162,7 @@ program
         title: opts.title,
         reviewers: opts.reviewers,
         open: opts.open,
-        options: { json: globalOpts.json },
+        options: resolveOptions(globalOpts),
       }),
     );
   });
@@ -170,7 +175,7 @@ program
     const globalOpts = program.opts();
     render(
       React.createElement(SyncCommand, {
-        options: { json: globalOpts.json },
+        options: resolveOptions(globalOpts),
       }),
     );
   });
@@ -185,7 +190,7 @@ program
     render(
       React.createElement(CheckoutCommand, {
         branch,
-        options: { json: globalOpts.json },
+        options: resolveOptions(globalOpts),
       }),
     );
   });
@@ -201,7 +206,7 @@ program
     const globalOpts = program.opts();
     render(
       React.createElement(BranchesCommand, {
-        options: { json: globalOpts.json },
+        options: resolveOptions(globalOpts),
       }),
     );
   });
@@ -215,7 +220,7 @@ program
     const globalOpts = program.opts();
     render(
       React.createElement(StatusCommand, {
-        options: { json: globalOpts.json },
+        options: resolveOptions(globalOpts),
       }),
     );
   });
@@ -229,7 +234,7 @@ program
     const globalOpts = program.opts();
     render(
       React.createElement(DiffCommand, {
-        options: { json: globalOpts.json },
+        options: resolveOptions(globalOpts),
       }),
     );
   });
@@ -244,7 +249,7 @@ program
     render(
       React.createElement(MergeCommand, {
         force: opts.force,
-        options: { json: globalOpts.json },
+        options: resolveOptions(globalOpts),
       }),
     );
   });
@@ -262,7 +267,7 @@ program
       React.createElement(RestackCommand, {
         continue: opts.continue,
         abort: opts.abort,
-        options: { json: globalOpts.json },
+        options: resolveOptions(globalOpts),
       }),
     );
   });
@@ -278,7 +283,7 @@ program
     render(
       React.createElement(MoveCommand, {
         onto: opts.onto,
-        options: { json: globalOpts.json },
+        options: resolveOptions(globalOpts),
       }),
     );
   });
@@ -293,7 +298,7 @@ program
     render(
       React.createElement(RenameCommand, {
         newName,
-        options: { json: globalOpts.json },
+        options: resolveOptions(globalOpts),
       }),
     );
   });
@@ -308,7 +313,7 @@ program
     render(
       React.createElement(CloseCommand, {
         reopen: opts.reopen,
-        options: { json: globalOpts.json },
+        options: resolveOptions(globalOpts),
       }),
     );
   });
@@ -324,7 +329,7 @@ program
     render(
       React.createElement(DeleteCommand, {
         force: opts.force,
-        options: { json: globalOpts.json },
+        options: resolveOptions(globalOpts),
       }),
     );
   });
@@ -366,7 +371,7 @@ program
         addLabels: opts.addLabels,
         assignees: opts.assignees,
         milestone: opts.milestone,
-        options: { json: globalOpts.json },
+        options: resolveOptions(globalOpts),
       }),
     );
   });
@@ -382,7 +387,7 @@ program
       React.createElement(RequestCommand, {
         reviewers: reviewers || [],
         teams: opts.team,
-        options: { json: globalOpts.json },
+        options: resolveOptions(globalOpts),
       }),
     );
   });
@@ -401,9 +406,27 @@ program
         approve: opts.approve,
         requestChanges: opts.requestChanges,
         message: opts.message,
-        options: { json: globalOpts.json },
+        options: resolveOptions(globalOpts),
       }),
     );
+  });
+
+// commands: machine-readable description of the CLI
+program
+  .command("commands")
+  .description("List every command with its arguments and options (use --json for a schema)")
+  .action(() => {
+    const commands = describeCommands(program);
+    if (program.opts().json) {
+      const globalOptions = program.options.map((o) => ({ flags: o.flags, description: o.description }));
+      const exitCodes = { 0: "success", 1: "error", 2: "needs input (rerun with the named argument or flag)" };
+      console.log(JSON.stringify({ success: true, data: { globalOptions, exitCodes, commands } }, null, 2));
+      return;
+    }
+    for (const command of commands) {
+      const args = command.arguments.map((a) => (a.required ? `<${a.name}>` : `[${a.name}]`)).join(" ");
+      console.log(`  ${`${command.name} ${args}`.trim().padEnd(28)} ${command.description}`);
+    }
   });
 
 // Easter egg: pile wisdom
