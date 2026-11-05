@@ -48,12 +48,16 @@ program
     "Trunk branch name (default: auto-detect main/master)",
   )
   .option("--open-pr", "Automatically open PR links in browser after submit")
+  .option("--merge-method <method>", "Default merge method: squash, merge or rebase")
+  .option("--remote <name>", "Git remote to push to (default: origin)")
   .action((opts) => {
     const globalOpts = program.opts();
     render(
       React.createElement(InitCommand, {
         trunk: opts.trunk,
         openPr: opts.openPr,
+        mergeMethod: opts.mergeMethod,
+        remote: opts.remote,
         options: resolveOptions(globalOpts),
       }),
     );

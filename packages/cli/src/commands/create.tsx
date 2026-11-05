@@ -4,7 +4,15 @@ import { createPile, PileInstance } from "@pile/core";
 import { createGitHub } from "@pile/github";
 import { Spinner } from "../components/Spinner.js";
 import { SuccessMessage, ErrorMessage, WarningMessage } from "../components/Message.js";
-import { OutputOptions, formatJson, createResult } from "../utils/output.js";
+import {
+  OutputOptions,
+  formatJson,
+  createResult,
+  exitWithError,
+  exitNeedsInput,
+  toCommandError,
+} from "../utils/output.js";
+import { useFailureExitCode } from "../utils/exit-code.js";
 
 export interface CreateCommandProps {
   name?: string;
@@ -63,6 +71,7 @@ export function CreateCommand({
 }: CreateCommandProps): React.ReactElement {
   const { exit } = useApp();
   const [state, setState] = useState<State>("checking");
+  useFailureExitCode(state, ["no_staged", "not_initialized", "no_changes", "aborted", "error"]);
   const [error, setError] = useState<string | null>(null);
   const [parentBranch, setParentBranch] = useState("");
   const [branchName, setBranchName] = useState<string>("");
@@ -77,16 +86,10 @@ export function CreateCommand({
 
         if (!pile.state.isInitialized()) {
           if (options.json) {
-            console.log(
-              formatJson(
-                createResult(
-                  false,
-                  null,
-                  "Pile not initialized. Run `pile init` first."
-                )
-              )
-            );
-            process.exit(1);
+            exitWithError(options, {
+              code: "NOT_INITIALIZED",
+              message: "Pile not initialized. Run `pile init` first.",
+            });
           }
           setState("not_initialized");
           return;
@@ -98,58 +101,47 @@ export function CreateCommand({
         let effectiveParent = currentBranch;
 
         // Check if current branch (potential parent) has been merged
-        if (currentBranch !== trunk) {
+        if (currentBranch !== trunk && pile.state.getBranchRelationship(currentBranch)) {
           setState("checking_parent");
-          const repoRoot = await pile.git.getRepoRoot();
-          const github = await createGitHub(`${repoRoot}/.pile`);
+          const github = await createGitHub(pile);
+          let merged = false;
+          try {
+            const pr = github ? await github.prs.findByBranchAnyState(currentBranch) : null;
+            merged = !!pr?.merged;
+          } catch {
+            // GitHub unreachable: proceed with the normal flow
+          }
 
-          if (github) {
-            const parentRel = pile.state.getBranchRelationship(currentBranch);
-            if (parentRel) {
+          if (merged) {
+            // The parent is already in trunk: start the new branch from an up-to-date trunk,
+            // carrying any uncommitted work across.
+            setState("rebasing_to_trunk");
+            const hasChanges = await pile.git.hasUncommittedChanges();
+            if (hasChanges) {
+              await pile.git.stash();
+            }
+            try {
+              await pile.git.fetch(true);
+            } catch {
+              // Offline: use the local trunk
+            }
+            await pile.git.fastForward(trunk);
+            await pile.git.checkout(trunk);
+            if (hasChanges) {
               try {
-                const pr = await github.prs.findByBranchAnyState(currentBranch);
-                if (pr && pr.merged) {
-                  // Parent was merged! Need to rebase onto trunk
-                  setState("rebasing_to_trunk");
-
-                  // Stash any changes first
-                  const hasChanges = await pile.git.hasUncommittedChanges();
-                  if (hasChanges) {
-                    await pile.git.stash();
-                  }
-
-                  // Update trunk
-                  await pile.git.fetch(true);
-                  await pile.git.checkout(trunk);
-                  try {
-                    await pile.git.pull(trunk);
-                  } catch {
-                    // Might fail
-                  }
-
-                  // Switch back and rebase onto trunk
-                  await pile.git.checkout(currentBranch);
-                  await pile.git.rebase(trunk);
-
-                  // Pop stash if we stashed
-                  if (hasChanges) {
-                    try {
-                      await pile.git.stashPop();
-                    } catch {
-                      // Stash might have conflicts
-                    }
-                  }
-
-                  // Clean up the merged branch tracking
-                  pile.state.removeBranchRelationship(currentBranch);
-
-                  // Now treat trunk as the parent
-                  effectiveParent = trunk;
-                }
+                await pile.git.stashPop();
               } catch {
-                // Ignore GitHub errors, proceed with normal flow
+                throw Object.assign(
+                  new Error(
+                    `Your changes conflict with ${trunk}. They are kept in the stash; resolve with \`git stash pop\`.`,
+                  ),
+                  { code: "STASH_CONFLICT" },
+                );
               }
             }
+            pile.state.removeBranchRelationship(currentBranch);
+            currentBranch = trunk;
+            effectiveParent = trunk;
           }
         }
 
@@ -163,13 +155,12 @@ export function CreateCommand({
         // Check for changes
         if (stagedFiles.length === 0) {
           if (!hasChanges) {
-            if (options.json) {
-              console.log(
-                formatJson(
-                  createResult(false, null, "No changes to commit")
-                )
-              );
-              process.exit(1);
+            if (!options.interactive) {
+              exitWithError(options, {
+                code: "NO_CHANGES",
+                message: "No changes to commit",
+                hint: "Make changes first; new branches are created with a commit.",
+              });
             }
             setState("no_changes");
             return;
@@ -177,15 +168,12 @@ export function CreateCommand({
 
           // If --all or --update is specified, proceed with staging
           if (!all && !update) {
-            if (!process.stdin.isTTY) {
-              const msg = "Unstaged changes detected. Use -a/--all or -u/--update flag to stage them.";
-              if (options.json) {
-                console.log(formatJson(createResult(false, null, msg)));
-                process.exit(1);
-              }
-              setError(msg);
-              setState("error");
-              return;
+            if (!options.interactive) {
+              exitNeedsInput(options, {
+                message: "You have unstaged changes and nothing staged.",
+                flag: "--all",
+                choices: ["--all", "--update"],
+              });
             }
             setState("prompt_unstaged");
             return;
@@ -200,13 +188,16 @@ export function CreateCommand({
     }
 
     checkAndCreate();
-  }, [name, message, all, update, insert, options.json]);
+  }, [name, message, all, update, insert, options.json, options.interactive]);
 
   const handleError = (err: unknown) => {
     const errMessage = err instanceof Error ? err.message : String(err);
-    if (options.json) {
-      console.log(formatJson(createResult(false, null, errMessage)));
-      process.exit(1);
+    if (!options.interactive) {
+      const code = (err as { code?: unknown })?.code;
+      exitWithError(
+        options,
+        typeof code === "string" ? { code, message: errMessage } : toCommandError(err),
+      );
     }
     setError(errMessage);
     setState("error");
@@ -229,11 +220,8 @@ export function CreateCommand({
       // Recheck staged files after staging - always require staged files
       const stagedFiles = await pile.git.getStagedFiles();
       if (stagedFiles.length === 0) {
-        if (options.json) {
-          console.log(
-            formatJson(createResult(false, null, "No changes to commit"))
-          );
-          process.exit(1);
+        if (!options.interactive) {
+          exitWithError(options, { code: "NO_CHANGES", message: "No changes to commit" });
         }
         setState("no_changes");
         return;
@@ -248,17 +236,17 @@ export function CreateCommand({
         insert,
       });
 
-      // If insert mode and there were children, restack them
-      if (insert) {
-        const children = pile.state.getChildren(finalName);
-        if (children.length > 0) {
-          setState("restacking");
-          for (const child of children) {
-            await pile.git.checkout(child);
-            await pile.git.rebase(finalName);
-          }
-          // Go back to the new branch
-          await pile.git.checkout(finalName);
+      // If insert mode and there were children, restack them onto the new branch
+      if (insert && pile.state.getChildren(finalName).length > 0) {
+        setState("restacking");
+        const result = await pile.stack.startRestack(finalName);
+        if (!result.success) {
+          exitWithError(options, {
+            code: "RESTACK_CONFLICT",
+            message: `Created ${finalName}, but restacking ${result.conflictBranch} onto it hit conflicts.`,
+            hint: "Resolve the conflicts, `git add` the files, then run `pile restack --continue` (or `--abort`).",
+            data: { branch: finalName, conflictBranch: result.conflictBranch, remaining: result.remaining },
+          });
         }
       }
 

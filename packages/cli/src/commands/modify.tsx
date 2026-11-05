@@ -3,7 +3,15 @@ import { Box, Text, useInput, useApp } from "ink";
 import { createPile, PileInstance } from "@pile/core";
 import { Spinner } from "../components/Spinner.js";
 import { SuccessMessage, ErrorMessage, WarningMessage } from "../components/Message.js";
-import { OutputOptions, formatJson, createResult } from "../utils/output.js";
+import {
+  OutputOptions,
+  formatJson,
+  createResult,
+  exitWithError,
+  exitNeedsInput,
+  toCommandError,
+} from "../utils/output.js";
+import { useFailureExitCode } from "../utils/exit-code.js";
 
 export interface ModifyCommandProps {
   all?: boolean;
@@ -35,6 +43,7 @@ export function ModifyCommand({
 }: ModifyCommandProps): React.ReactElement {
   const { exit } = useApp();
   const [state, setState] = useState<State>("checking");
+  useFailureExitCode(state, ["not_initialized", "no_changes", "on_trunk", "aborted", "error"]);
   const [error, setError] = useState<string | null>(null);
   const [branchName, setBranchName] = useState<string>("");
   const [commitHash, setCommitHash] = useState<string | null>(null);
@@ -48,17 +57,11 @@ export function ModifyCommand({
         setPileInstance(pile);
 
         if (!pile.state.isInitialized()) {
-          if (options.json) {
-            console.log(
-              formatJson(
-                createResult(
-                  false,
-                  null,
-                  "Pile not initialized. Run `pile init` first."
-                )
-              )
-            );
-            process.exit(1);
+          if (!options.interactive) {
+            exitWithError(options, {
+              code: "NOT_INITIALIZED",
+              message: "Pile not initialized. Run `pile init` first.",
+            });
           }
           setState("not_initialized");
           return;
@@ -71,13 +74,12 @@ export function ModifyCommand({
         const trunk = config?.trunk ?? "main";
 
         if (currentBranch === trunk) {
-          if (options.json) {
-            console.log(
-              formatJson(
-                createResult(false, null, "Cannot modify trunk branch")
-              )
-            );
-            process.exit(1);
+          if (!options.interactive) {
+            exitWithError(options, {
+              code: "ON_TRUNK",
+              message: "Cannot modify trunk branch",
+              hint: "Create a stacked branch first with `pile create`.",
+            });
           }
           setState("on_trunk");
           return;
@@ -97,13 +99,11 @@ export function ModifyCommand({
 
           if (commitCount <= 1 && stagedFiles.length === 0 && !hasChanges) {
             // Only 1 commit and no new changes - nothing to squash
-            if (options.json) {
-              console.log(
-                formatJson(
-                  createResult(false, null, "Nothing to squash (single commit, no new changes)")
-                )
-              );
-              process.exit(1);
+            if (!options.interactive) {
+              exitWithError(options, {
+                code: "NO_CHANGES",
+                message: "Nothing to squash (single commit, no new changes)",
+              });
             }
             setState("no_changes");
             return;
@@ -113,13 +113,8 @@ export function ModifyCommand({
           // For amend mode, check for changes
           if (stagedFiles.length === 0 && !message) {
             if (!hasChanges) {
-              if (options.json) {
-                console.log(
-                  formatJson(
-                    createResult(false, null, "No changes to commit")
-                  )
-                );
-                process.exit(1);
+              if (!options.interactive) {
+                exitWithError(options, { code: "NO_CHANGES", message: "No changes to commit" });
               }
               setState("no_changes");
               return;
@@ -127,6 +122,13 @@ export function ModifyCommand({
 
             // If --all or --update is specified, proceed with staging
             if (!all && !update) {
+              if (!options.interactive) {
+                exitNeedsInput(options, {
+                  message: "You have unstaged changes and nothing staged.",
+                  flag: "--all",
+                  choices: ["--all", "--update"],
+                });
+              }
               setState("prompt_unstaged");
               return;
             }
@@ -141,13 +143,12 @@ export function ModifyCommand({
     }
 
     checkAndModify();
-  }, [all, update, message, squash, options.json]);
+  }, [all, update, message, squash, options.json, options.interactive]);
 
   const handleError = (err: unknown) => {
     const errMessage = err instanceof Error ? err.message : String(err);
-    if (options.json) {
-      console.log(formatJson(createResult(false, null, errMessage)));
-      process.exit(1);
+    if (!options.interactive) {
+      exitWithError(options, toCommandError(err));
     }
     setError(errMessage);
     setState("error");
@@ -169,17 +170,15 @@ export function ModifyCommand({
 
       // For squash, we don't need staged files
       if (stagedFiles.length === 0 && !message && !squash) {
-        if (options.json) {
-          console.log(
-            formatJson(createResult(false, null, "No changes to commit"))
-          );
-          process.exit(1);
+        if (!options.interactive) {
+          exitWithError(options, { code: "NO_CHANGES", message: "No changes to commit" });
         }
         setState("no_changes");
         return;
       }
 
       let hash: string;
+      let squashedCount: number | undefined;
 
       if (squash) {
         // Squash all commits into one
@@ -190,6 +189,7 @@ export function ModifyCommand({
 
         // Get commit count for display
         const count = await pile.git.getCommitCount(parent, "HEAD");
+        squashedCount = count;
         setCommitCount(count);
 
         // Get the stored title or use provided message
@@ -214,13 +214,15 @@ export function ModifyCommand({
             createResult(
               true,
               {
-                branch: branchName,
+                branch: currentBranch,
                 commit: hash,
                 filesModified: stagedFiles.length,
-                squashed: squash ? commitCount : undefined,
+                squashed: squashedCount,
               },
               undefined,
-              squash ? `Squashed ${commitCount} commits on ${branchName}` : `Amended commit on ${branchName}`
+              squash
+                ? `Squashed ${squashedCount} commits on ${currentBranch}`
+                : `Amended commit on ${currentBranch}`
             )
           )
         );

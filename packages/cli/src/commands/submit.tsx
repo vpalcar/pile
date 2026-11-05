@@ -10,9 +10,16 @@ import {
   WarningMessage,
   InfoMessage,
 } from "../components/Message.js";
-import { OutputOptions, formatJson, createResult } from "../utils/output.js";
+import {
+  OutputOptions,
+  formatJson,
+  createResult,
+  exitWithError,
+  toCommandError,
+} from "../utils/output.js";
 import { openUrl } from "../utils/browser.js";
 import { getPileWisdom } from "../utils/fun.js";
+import { useFailureExitCode } from "../utils/exit-code.js";
 
 export interface SubmitCommandProps {
   stack?: boolean;
@@ -78,6 +85,7 @@ export function SubmitCommand({
   options,
 }: SubmitCommandProps): React.ReactElement {
   const [state, setState] = useState<State>("checking");
+  useFailureExitCode(state, ["no_github", "not_initialized", "on_trunk", "error"]);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<PRResult[]>([]);
   const [queuedResults, setQueuedResults] = useState<QueuedResult[]>([]);
@@ -90,11 +98,12 @@ export function SubmitCommand({
         const pile = await createPile();
 
         if (!pile.state.isInitialized()) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "Pile not initialized"))
-            );
-            process.exit(1);
+          if (!options.interactive) {
+            exitWithError(options, {
+              code: "NOT_INITIALIZED",
+              message: "Pile not initialized",
+              hint: "Run `pile init` first.",
+            });
           }
           setState("not_initialized");
           return;
@@ -106,55 +115,42 @@ export function SubmitCommand({
         const current = await pile.git.getCurrentBranch();
 
         if (current === trunk) {
-          if (options.json) {
-            console.log(
-              formatJson(
-                createResult(false, null, "Cannot submit from trunk branch")
-              )
-            );
-            process.exit(1);
+          if (!options.interactive) {
+            exitWithError(options, {
+              code: "ON_TRUNK",
+              message: "Cannot submit from trunk branch",
+              hint: "Check out a stacked branch first (`pile checkout <branch>`).",
+            });
           }
           setState("on_trunk");
           return;
         }
 
-        const repoRoot = await pile.git.getRepoRoot();
-
         // Check if there's a remote configured
         const remote = await pile.git.getRemote();
 
         if (!remote) {
-          if (options.json) {
-            console.log(
-              formatJson(
-                createResult(
-                  false,
-                  null,
-                  "No git remote configured. Run `pile init` to set up GitHub."
-                )
-              )
-            );
-            process.exit(1);
+          if (!options.interactive) {
+            exitWithError(options, {
+              code: "NO_REMOTE",
+              message: `No git remote "${pile.git.remoteName}" configured.`,
+              hint: "Run `pile init` to set up GitHub.",
+            });
           }
           setError("No git remote configured. Run `pile init` to set up GitHub.");
           setState("error");
           return;
         }
 
-        const github = await createGitHub(`${repoRoot}/.pile`);
+        const github = await createGitHub(pile);
 
         if (!github) {
-          if (options.json) {
-            console.log(
-              formatJson(
-                createResult(
-                  false,
-                  null,
-                  "GitHub not configured. Set GITHUB_TOKEN or run `gh auth login`"
-                )
-              )
-            );
-            process.exit(1);
+          if (!options.interactive) {
+            exitWithError(options, {
+              code: "NO_GITHUB",
+              message: "GitHub not configured",
+              hint: "Set GITHUB_TOKEN or run `gh auth login`, and make sure the remote points at github.com.",
+            });
           }
           setState("no_github");
           return;
@@ -164,14 +160,7 @@ export function SubmitCommand({
         const branchesToSubmit: string[] = [];
         if (stack) {
           setState("submitting_stack");
-          let branch = current;
-          const stackBranches = [branch];
-          let parent = pile.state.getParent(branch);
-          while (parent && parent !== trunk) {
-            stackBranches.unshift(parent);
-            parent = pile.state.getParent(parent);
-          }
-          branchesToSubmit.push(...stackBranches);
+          branchesToSubmit.push(...pile.stack.getAncestry(current));
         } else {
           branchesToSubmit.push(current);
         }
@@ -179,10 +168,15 @@ export function SubmitCommand({
         const prResults: PRResult[] = [];
         const queued: QueuedResult[] = [];
 
-        // Push all branches (including trunk) in a single git command
+        // Push all branches in a single git command. Trunk is only pushed when the
+        // remote doesn't have it yet (PR bases must exist), and never with force.
         setState("pushing");
         try {
-          await pile.git.pushMultiple([trunk, ...branchesToSubmit], true);
+          const refs = await pile.git.getRefs();
+          if (!refs.remote.has(`${pile.git.remoteName}/${trunk}`)) {
+            await pile.git.push(trunk);
+          }
+          await pile.git.pushMultiple(branchesToSubmit, true);
         } catch (pushErr) {
           if (isNetworkError(pushErr)) {
             for (const branch of branchesToSubmit) {
@@ -208,7 +202,15 @@ export function SubmitCommand({
             }
             return;
           }
-          // Non-network push error — fall back to individual pushes below
+          throw Object.assign(
+            new Error(
+              `Push failed: ${pushErr instanceof Error ? pushErr.message : String(pushErr)}`
+            ),
+            {
+              code: "PUSH_FAILED",
+              hint: "The remote may have commits you don't have. Run `pile sync`, then submit again.",
+            }
+          );
         }
 
         // Look up existing PRs for all branches in parallel
@@ -231,14 +233,14 @@ export function SubmitCommand({
           })
         );
 
-        // Process each branch: create or update PR
-        for (const { branch, pr: existingPR } of existingPRs) {
-          // Determine base branch
+        // Resolve each branch's base first (cheap, local), then create or update all PRs
+        // in parallel: every head and base branch is already on the remote.
+        const plans = existingPRs.map(({ branch, pr: existingPR }) => {
           let parent = pile.state.getParent(branch);
 
-          // Check if parent was merged (only if parent has an existing PR in our results)
+          // If the parent's PR was merged, retarget onto trunk
           if (parent && parent !== trunk) {
-            const parentResult = existingPRs.find(r => r.branch === parent);
+            const parentResult = existingPRs.find((r) => r.branch === parent);
             if (parentResult?.pr?.merged) {
               parent = trunk;
               const rel = pile.state.getBranchRelationship(branch);
@@ -247,86 +249,78 @@ export function SubmitCommand({
               }
             }
           }
+          return { branch, existingPR, baseBranch: parent ?? trunk };
+        });
 
-          const baseBranch = parent ?? trunk;
-
-          try {
-            if (existingPR && !existingPR.merged) {
-              if (existingPR.base.ref !== baseBranch) {
-                await github.prs.update({
-                  number: existingPR.number,
-                  base: baseBranch,
-                });
+        const stackInfo = stack ? `Part of a stack based on \`${trunk}\`` : "";
+        const outcomes = await Promise.all(
+          plans.map(async ({ branch, existingPR, baseBranch }): Promise<PRResult | QueuedResult | null> => {
+            const prTitle = title ?? pile.state.getTitle(branch) ?? branch;
+            try {
+              if (existingPR && !existingPR.merged) {
+                if (existingPR.base.ref !== baseBranch) {
+                  await github.prs.update({ number: existingPR.number, base: baseBranch });
+                }
+                github.cache.cachePR(existingPR);
+                return {
+                  branch,
+                  prNumber: existingPR.number,
+                  prUrl: existingPR.html_url,
+                  created: false,
+                };
               }
-              github.cache.cachePR(existingPR);
-              pile.stack.setPRInfo(branch, existingPR.number, existingPR.html_url);
-              prResults.push({
-                branch,
-                prNumber: existingPR.number,
-                prUrl: existingPR.html_url,
-                created: false,
-              });
-            } else if (existingPR?.merged) {
-              // Branch already merged, clean it up and skip
-              pile.state.removeBranchRelationship(branch);
-            } else {
-              // Create new PR
-              const storedTitle = pile.state.getTitle(branch);
-              const prTitle = title ?? storedTitle ?? branch;
-              const stackInfo = stack
-                ? `Part of a stack based on \`${trunk}\``
-                : "";
+              if (existingPR?.merged) {
+                // Branch already merged, clean it up and skip
+                return null;
+              }
 
               const pr = await github.prs.create({
                 title: prTitle,
                 body: stackInfo,
                 head: branch,
                 base: baseBranch,
-                draft: draft ?? true,
+                draft: draft ?? false,
               });
-
               if (reviewers && reviewers.length > 0) {
                 await github.prs.requestReviewers(pr.number, reviewers);
               }
-
               github.cache.cachePR(pr);
-              pile.stack.setPRInfo(branch, pr.number, pr.html_url);
-              prResults.push({
-                branch,
-                prNumber: pr.number,
-                prUrl: pr.html_url,
-                created: true,
-              });
-
-              // Open newly created PR in browser if requested
               if (shouldOpenPR) {
                 openUrl(pr.html_url);
               }
-            }
-          } catch (prErr) {
-            if (isNetworkError(prErr)) {
-              const storedTitle = pile.state.getTitle(branch);
-              const prTitle = title ?? storedTitle ?? branch;
-              const stackInfo = stack
-                ? `Part of a stack based on \`${trunk}\``
-                : "";
+              return { branch, prNumber: pr.number, prUrl: pr.html_url, created: true };
+            } catch (prErr) {
+              if (!isNetworkError(prErr)) throw prErr;
               pile.state.queueOperation({
-                type: "create_pr",
-                payload: {
-                  branch,
-                  title: prTitle,
-                  body: stackInfo,
-                  base: baseBranch,
-                  draft: draft ?? true,
-                  reviewers,
-                },
+                type: existingPR ? "update_pr" : "create_pr",
+                payload: existingPR
+                  ? { prNumber: existingPR.number, base: baseBranch }
+                  : {
+                      branch,
+                      title: prTitle,
+                      body: stackInfo,
+                      base: baseBranch,
+                      draft: draft ?? false,
+                      reviewers,
+                    },
               });
-              queued.push({ branch, operation: "create_pr" });
-            } else {
-              throw prErr;
+              return { branch, operation: existingPR ? "update_pr" : "create_pr" };
             }
+          })
+        );
+
+        // Record results in stack order (state writes are synchronous git config calls)
+        plans.forEach(({ branch, existingPR }, i) => {
+          const outcome = outcomes[i];
+          if (outcome === null) {
+            if (existingPR?.merged) pile.state.removeBranchRelationship(branch);
+          } else if ("operation" in outcome) {
+            queued.push(outcome);
+          } else {
+            pile.stack.setPRInfo(branch, outcome.prNumber, outcome.prUrl);
+            prResults.push(outcome);
           }
-        }
+        });
 
         setResults(prResults);
         setQueuedResults(queued);
@@ -365,6 +359,7 @@ export function SubmitCommand({
         }
       } catch (err) {
         let message = err instanceof Error ? err.message : String(err);
+        const coded = err as { code?: unknown; hint?: string };
 
         // Provide helpful error messages for common issues
         if (message.includes("base") && message.includes("invalid")) {
@@ -373,9 +368,13 @@ export function SubmitCommand({
           message = "Repository not found on GitHub. Make sure the remote is configured correctly.";
         }
 
-        if (options.json) {
-          console.log(formatJson(createResult(false, null, message)));
-          process.exit(1);
+        if (!options.interactive) {
+          exitWithError(
+            options,
+            typeof coded?.code === "string"
+              ? { code: coded.code, message, hint: coded.hint }
+              : { ...toCommandError(err), message }
+          );
         }
         setError(message);
         setState("error");
@@ -383,7 +382,7 @@ export function SubmitCommand({
     }
 
     submit();
-  }, [stack, draft, title, reviewers, open, options.json]);
+  }, [stack, draft, title, reviewers, open, options.json, options.interactive]);
 
   if (options.json) {
     return <></>;

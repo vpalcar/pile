@@ -3,9 +3,16 @@ import { Box, Text } from "ink";
 import { createPile } from "@pile/core";
 import { Spinner } from "../components/Spinner.js";
 import { SuccessMessage, ErrorMessage } from "../components/Message.js";
-import { OutputOptions, formatJson, createResult } from "../utils/output.js";
-import { execSync } from "node:child_process";
-import { resolve, relative } from "node:path";
+import {
+  OutputOptions,
+  formatJson,
+  createResult,
+  exitWithError,
+  exitNeedsInput,
+  toCommandError,
+} from "../utils/output.js";
+import { spawnSync } from "node:child_process";
+import { useFailureExitCode } from "../utils/exit-code.js";
 
 export interface AddCommandProps {
   files: string[];
@@ -25,6 +32,7 @@ export function AddCommand({
   options,
 }: AddCommandProps): React.ReactElement {
   const [state, setState] = useState<State>("checking");
+  useFailureExitCode(state, ["no_changes", "error"]);
   const [error, setError] = useState<string | null>(null);
   const [stagedFiles, setStagedFiles] = useState<string[]>([]);
 
@@ -32,37 +40,27 @@ export function AddCommand({
     async function run() {
       try {
         const pile = await createPile();
-        const repoRoot = await pile.git.getRepoRoot();
+
+        if (patch && !options.interactive) {
+          exitNeedsInput(options, {
+            message: "--patch selects hunks interactively and needs a terminal.",
+            arg: "files",
+            flag: "<files...>",
+          });
+        }
 
         setState("staging");
 
-        // Build git add command
         if (patch) {
-          // Interactive patch mode - run directly
-          try {
-            execSync("git add -p", {
-              cwd: repoRoot,
-              stdio: "inherit",
-            });
-          } catch {
-            // User might have quit
-          }
+          // Hand the terminal to git's own hunk selector; quitting early is fine.
+          spawnSync("git", ["add", "-p", ...files], { stdio: "inherit" });
         } else if (all) {
           await pile.git.stageAll();
         } else if (update) {
           await pile.git.stageUpdated();
         } else if (files.length > 0) {
-          // Stage specific files - resolve paths relative to cwd then make relative to repo root
-          const cwd = process.cwd();
-          for (const file of files) {
-            const absPath = resolve(cwd, file);
-            const relPath = relative(repoRoot, absPath);
-            execSync(`git add "${relPath}"`, {
-              cwd: repoRoot,
-              encoding: "utf-8",
-              stdio: ["pipe", "pipe", "pipe"],
-            });
-          }
+          // Paths are relative to the current directory, as with `git add`.
+          await pile.git.stageFiles(files);
         } else {
           // No files specified and no flags - stage all by default
           await pile.git.stageAll();
@@ -91,9 +89,8 @@ export function AddCommand({
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        if (options.json) {
-          console.log(formatJson(createResult(false, null, message)));
-          process.exit(1);
+        if (!options.interactive) {
+          exitWithError(options, toCommandError(err));
         }
         setError(message);
         setState("error");
@@ -101,7 +98,7 @@ export function AddCommand({
     }
 
     run();
-  }, [files, all, update, patch, options.json]);
+  }, [files, all, update, patch, options.json, options.interactive]);
 
   if (options.json) {
     return <></>;
@@ -117,9 +114,9 @@ export function AddCommand({
           <SuccessMessage>
             Staged {stagedFiles.length} file{stagedFiles.length !== 1 ? "s" : ""}
           </SuccessMessage>
-          {stagedFiles.length <= 10 && (
+          {(
             <Box flexDirection="column">
-              {stagedFiles.map((file) => (
+              {stagedFiles.slice(0, 10).map((file) => (
                 <Text key={file} color="green">
                   {"  "}+ {file}
                 </Text>
