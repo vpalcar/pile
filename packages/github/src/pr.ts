@@ -1,4 +1,5 @@
 import { GitHubClient } from "./client.js";
+import { PileGitHubError, parsePRNumber, withGraphQL } from "./errors.js";
 import {
   PullRequest,
   Review,
@@ -6,6 +7,27 @@ import {
   CreatePRParams,
   UpdatePRParams,
 } from "./types.js";
+
+/** The subset of GitHub's pull request payload pile reads (shared by get and list). */
+interface RawPullRequest {
+    number: number;
+    title: string;
+    body: string | null;
+    state: string;
+    draft?: boolean;
+    head: { ref: string; sha: string };
+    base: { ref: string; sha: string };
+    html_url: string;
+    mergeable?: boolean | null;
+    mergeable_state?: string;
+    merged?: boolean;
+    merged_at?: string | null;
+    created_at: string;
+    updated_at: string;
+    user: { login: string } | null;
+    assignees?: { login: string }[] | null;
+    labels?: { name: string }[] | null;
+  }
 
 export class PROperations {
   private client: GitHubClient;
@@ -119,6 +141,7 @@ export class PROperations {
       owner: this.client.repoOwner,
       repo: this.client.repoName,
       state: "open",
+      per_page: 100,
     });
 
     return data.map((pr) => this.toPullRequest(pr));
@@ -132,6 +155,7 @@ export class PROperations {
       owner: this.client.repoOwner,
       repo: this.client.repoName,
       state: "open",
+      per_page: 100,
     });
 
     return Promise.all(data.map((pr) => this.enrichPR(pr)));
@@ -145,6 +169,7 @@ export class PROperations {
       owner: this.client.repoOwner,
       repo: this.client.repoName,
       pull_number: prNumber,
+      per_page: 100,
     });
 
     return data.map((review) => ({
@@ -161,40 +186,59 @@ export class PROperations {
    * Get check status for a PR
    */
   async getCheckStatus(ref: string): Promise<CheckStatus> {
-    try {
-      const { data } = await this.client.api.checks.listForRef({
-        owner: this.client.repoOwner,
-        repo: this.client.repoName,
-        ref,
-      });
+    const params = { owner: this.client.repoOwner, repo: this.client.repoName, ref };
+    // CI reports through check runs (Actions) or commit statuses (many external services).
+    const [runs, statuses] = await Promise.all([
+      this.client.api.checks
+        .listForRef({ ...params, per_page: 100 })
+        .then(({ data }) => data.check_runs)
+        .catch(() => []),
+      this.client.api.repos
+        .getCombinedStatusForRef({ ...params, per_page: 100 })
+        .then(({ data }) => data.statuses)
+        .catch(() => []),
+    ]);
 
-      const checks = data.check_runs;
-      const total = checks.length;
-      const passed = checks.filter((c) => c.conclusion === "success").length;
-      const failed = checks.filter(
-        (c) => c.conclusion === "failure" || c.conclusion === "cancelled"
-      ).length;
-      const pending = checks.filter(
-        (c) => c.status === "in_progress" || c.status === "queued"
-      ).length;
-
-      let state: CheckStatus["state"] = null;
-      if (total === 0) {
-        state = null;
-      } else if (pending > 0) {
-        state = "pending";
-      } else if (failed > 0) {
-        state = "failure";
-      } else if (passed === total) {
-        state = "success";
-      } else {
-        state = "error";
-      }
-
-      return { state, total, passed, failed, pending };
-    } catch {
-      return { state: null, total: 0, passed: 0, failed: 0, pending: 0 };
+    let passed = 0;
+    let failed = 0;
+    let pending = 0;
+    for (const run of runs) {
+      if (run.status !== "completed") pending++;
+      else if (["success", "neutral", "skipped"].includes(run.conclusion ?? "")) passed++;
+      else failed++;
     }
+    for (const status of statuses) {
+      if (status.state === "pending") pending++;
+      else if (status.state === "success") passed++;
+      else failed++;
+    }
+
+    const total = runs.length + statuses.length;
+    let state: CheckStatus["state"] = null;
+    if (total > 0) {
+      state = pending > 0 ? "pending" : failed > 0 ? "failure" : "success";
+    }
+    return { state, total, passed, failed, pending };
+  }
+
+  /**
+   * Resolves what a command should act on: a PR number (`42`, `#42`), a PR URL,
+   * or a branch name (open PR first, then the most recent closed or merged one).
+   */
+  async resolve(target: string): Promise<PullRequest> {
+    const number = parsePRNumber(target);
+    if (number !== null) {
+      return this.get(number);
+    }
+    const pr = (await this.findByBranch(target)) ?? (await this.findByBranchAnyState(target));
+    if (!pr) {
+      throw new PileGitHubError(
+        "PR_NOT_FOUND",
+        `No pull request found for "${target}"`,
+        "Pass a PR number, a PR URL, or a branch that has a PR (run `pile submit` to create one).",
+      );
+    }
+    return pr;
   }
 
   /**
@@ -298,32 +342,20 @@ export class PROperations {
   }
 
   /**
-   * Convert PR to draft (requires GraphQL)
+   * Convert PR to draft. GitHub only supports this through GraphQL.
    */
   async convertToDraft(prNumber: number): Promise<void> {
-    // Get the PR node ID first
-    const { data: pr } = await this.client.api.pulls.get({
-      owner: this.client.repoOwner,
-      repo: this.client.repoName,
-      pull_number: prNumber,
-    });
-
-    const nodeId = pr.node_id;
-
-    await this.client.api.graphql(
-      `mutation($id: ID!) {
-        convertPullRequestToDraft(input: { pullRequestId: $id }) {
-          pullRequest { id }
-        }
-      }`,
-      { id: nodeId }
-    );
+    return withGraphQL("Converting a pull request to draft", () => this.setDraft(prNumber, true));
   }
 
   /**
-   * Mark PR as ready for review (requires GraphQL)
+   * Mark PR as ready for review. GitHub only supports this through GraphQL.
    */
   async markReadyForReview(prNumber: number): Promise<void> {
+    return withGraphQL("Marking a pull request ready for review", () => this.setDraft(prNumber, false));
+  }
+
+  private async setDraft(prNumber: number, draft: boolean): Promise<void> {
     // Get the PR node ID first
     const { data: pr } = await this.client.api.pulls.get({
       owner: this.client.repoOwner,
@@ -331,40 +363,16 @@ export class PROperations {
       pull_number: prNumber,
     });
 
-    const nodeId = pr.node_id;
-
-    await this.client.api.graphql(
-      `mutation($id: ID!) {
-        markPullRequestReadyForReview(input: { pullRequestId: $id }) {
-          pullRequest { id }
-        }
-      }`,
-      { id: nodeId }
-    );
+    const mutation = draft
+      ? "convertPullRequestToDraft(input: { pullRequestId: $id }) { pullRequest { id } }"
+      : "markPullRequestReadyForReview(input: { pullRequestId: $id }) { pullRequest { id } }";
+    await this.client.api.graphql(`mutation($id: ID!) { ${mutation} }`, { id: pr.node_id });
   }
 
   /**
    * Convert raw PR data to PullRequest without fetching reviews/checks
    */
-  private toPullRequest(pr: {
-    number: number;
-    title: string;
-    body: string | null;
-    state: string;
-    draft?: boolean;
-    head: { ref: string; sha: string };
-    base: { ref: string; sha: string };
-    html_url: string;
-    mergeable?: boolean | null;
-    mergeable_state?: string;
-    merged?: boolean;
-    merged_at?: string | null;
-    created_at: string;
-    updated_at: string;
-    user: { login: string } | null;
-    assignees?: { login: string }[] | null;
-    labels?: { name: string }[] | null;
-  }): PullRequest {
+  private toPullRequest(pr: RawPullRequest): PullRequest {
     const isMerged = pr.merged === true || pr.merged_at != null;
 
     return {
@@ -395,54 +403,12 @@ export class PROperations {
   /**
    * Enrich PR data with reviews and checks
    */
-  private async enrichPR(pr: {
-    number: number;
-    title: string;
-    body: string | null;
-    state: string;
-    draft?: boolean;
-    head: { ref: string; sha: string };
-    base: { ref: string; sha: string };
-    html_url: string;
-    mergeable?: boolean | null;
-    mergeable_state?: string;
-    merged?: boolean;
-    merged_at?: string | null;
-    created_at: string;
-    updated_at: string;
-    user: { login: string } | null;
-    assignees?: { login: string }[] | null;
-    labels?: { name: string }[] | null;
-  }): Promise<PullRequest> {
-    const reviews = await this.getReviews(pr.number);
-    const checks = await this.getCheckStatus(pr.head.sha);
-
-    // If merged_at exists, the PR was merged (list endpoint may not include merged field)
-    const isMerged = pr.merged === true || pr.merged_at != null;
-
-    return {
-      number: pr.number,
-      title: pr.title,
-      body: pr.body,
-      state: pr.state as PullRequest["state"],
-      draft: pr.draft ?? false,
-      head: pr.head,
-      base: pr.base,
-      html_url: pr.html_url,
-      mergeable: pr.mergeable ?? null,
-      mergeable_state: pr.mergeable_state ?? "",
-      merged: isMerged,
-      merged_at: pr.merged_at ?? null,
-      created_at: pr.created_at,
-      updated_at: pr.updated_at,
-      user: {
-        login: pr.user?.login ?? "unknown",
-      },
-      assignees: pr.assignees?.map((a) => ({ login: a.login })) ?? undefined,
-      labels: pr.labels?.map((l) => ({ name: l.name })) ?? undefined,
-      reviews,
-      checks,
-    };
+  private async enrichPR(pr: RawPullRequest): Promise<PullRequest> {
+    const [reviews, checks] = await Promise.all([
+      this.getReviews(pr.number),
+      this.getCheckStatus(pr.head.sha),
+    ]);
+    return { ...this.toPullRequest(pr), reviews, checks };
   }
 }
 
