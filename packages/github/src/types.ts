@@ -41,6 +41,24 @@ export interface PullRequest {
   reviewDecision?: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
   reviews: Review[];
   checks: CheckStatus;
+  /** Membership in a native GitHub stack, when the PR is part of one. */
+  stack?: PRStackInfo;
+}
+
+export interface PRStackInfo {
+  number: number;
+  /** 1 is the bottom of the stack. */
+  position: number;
+  size: number;
+  /** Branch the whole stack merges into. */
+  base: string;
+}
+
+export interface AsyncMergeResult {
+  status: "pending" | "merged" | "enqueued" | "failed";
+  uuid?: string;
+  message?: string;
+  sha?: string;
 }
 
 export interface Review {
