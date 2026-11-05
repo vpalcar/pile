@@ -19,9 +19,19 @@ export interface GlobalFlags {
   yes?: boolean;
 }
 
+/**
+ * Same rule Ink uses (is-in-ci): any CI, CONTINUOUS_INTEGRATION or CI_* variable,
+ * even empty, unless CI is "0" or "false". Ink stops drawing live frames in CI, so
+ * a prompt shown there would be invisible and the command would hang.
+ */
+export function isCI(env: NodeJS.ProcessEnv): boolean {
+  if (env.CI === "0" || env.CI === "false") return false;
+  return "CI" in env || "CONTINUOUS_INTEGRATION" in env || Object.keys(env).some((key) => key.startsWith("CI_"));
+}
+
 export function resolveOptions(flags: GlobalFlags, env = process.env): OutputOptions {
   const json = !!flags.json;
-  const ci = !!env.CI && env.CI !== "false" && env.CI !== "0";
+  const ci = isCI(env);
   return {
     json,
     interactive:
