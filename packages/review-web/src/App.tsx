@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, CircleAlert, ExternalLink, Inbox as InboxIcon, KeyRound, Moon, RefreshCw, Search, Sun } from "lucide-react";
+import { ChevronLeft, ChevronRight, CircleAlert, CircleHelp, ExternalLink, Inbox as InboxIcon, KeyRound, Moon, RefreshCw, Search, Sun } from "lucide-react";
 import type { Detail, InboxItem } from "./api";
 import { api, load, prefetch, refKey, RequestError, useResource } from "./lib/client";
 import { modKey, navigate, sameRef, useRoute, useShortcuts, usePersisted } from "./lib/util";
@@ -150,12 +150,22 @@ function Shell() {
         {route.ref && (
           <div className="flex min-w-0 flex-1 animate-fade-in items-center gap-2 text-fg-2">
             <ChevronRight size={14} className="shrink-0 text-fg-4" />
-            <PRStateIcon state={detail.data?.state ?? current?.state ?? "open"} size={14} />
+            {detail.error && !current ? (
+              <CircleHelp size={14} className="shrink-0 text-fg-4" />
+            ) : (
+              <PRStateIcon state={detail.data?.state ?? current?.state ?? "open"} size={14} />
+            )}
             <span className="shrink-0 text-fg-3 tabular">{route.ref.kind === "pr" ? `#${route.ref.number}` : route.ref.name}</span>
             <b className="min-w-0 truncate font-medium text-fg">{detail.data?.title ?? current?.title ?? ""}</b>
           </div>
         )}
         {!route.ref && <span className="flex-1" />}
+        {detail.data?.url && route.ref && (
+          <a className={cx(buttonClass({ variant: "ghost" }), "no-underline")} href={detail.data.url} target="_blank" rel="noreferrer" data-kbd="o" data-tip="Open on GitHub">
+            <span className="max-[1100px]:hidden">GitHub</span> <ExternalLink size={13} />
+          </a>
+        )}
+        <span id="topbar-actions" className="contents" />
         {route.ref && index >= 0 && (
           <div className="mr-1 flex shrink-0 items-center gap-0.5 whitespace-nowrap text-xs text-fg-3 tabular">
             <Button variant="ghost" icon onClick={() => step(-1)} disabled={index <= 0} data-tip="Previous" data-kbd="[">
@@ -169,12 +179,6 @@ function Shell() {
             </Button>
           </div>
         )}
-        {detail.data?.url && route.ref && (
-          <a className={cx(buttonClass({ variant: "ghost" }), "no-underline")} href={detail.data.url} target="_blank" rel="noreferrer" data-kbd="o" data-tip="Open on GitHub">
-            <span className="max-[1100px]:hidden">GitHub</span> <ExternalLink size={13} />
-          </a>
-        )}
-        <span id="topbar-actions" className="contents" />
         <button
           className="mx-1 inline-flex h-7 shrink-0 items-center gap-2 rounded-lg border border-line bg-panel pl-2.5 pr-1.5 text-[12.5px] leading-none text-fg-3 transition-colors hover:border-line-2 hover:text-fg-2"
           onClick={() => setPalette(true)}

@@ -162,8 +162,8 @@ export function DiffStat({ additions, deletions, bar = false }: { additions: num
   const dels = total === 0 ? 0 : Math.min(blocks - adds, Math.round((deletions / total) * blocks));
   return (
     <span className="inline-flex items-center gap-1.5 font-mono text-xs leading-none tabular">
-      <span className="text-ok">+{additions.toLocaleString()}</span>
-      <span className="text-bad">−{deletions.toLocaleString()}</span>
+      <span className={additions ? "text-ok" : "text-fg-4"}>+{additions.toLocaleString()}</span>
+      <span className={deletions ? "text-bad" : "text-fg-4"}>−{deletions.toLocaleString()}</span>
       {bar && (
         <span className="ml-0.5 inline-flex items-center gap-[2px]" aria-hidden>
           {Array.from({ length: blocks }, (_, i) => (
@@ -247,7 +247,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const id = useRef(0);
   const show = useCallback<ShowToast>((content, options = {}) => {
     const toast = { id: ++id.current, key: options.key, content };
-    setToasts((all) => [...all.filter((t) => !options.key || t.key !== options.key).slice(-2), toast]);
+    setToasts((all) => [...all.filter((t) => !options.key || t.key !== options.key).slice(-1), toast]);
     setTimeout(() => setToasts((all) => all.map((t) => (t.id === toast.id ? { ...t, leaving: true } : t))), 3500);
     setTimeout(() => setToasts((all) => all.filter((t) => t.id !== toast.id)), 3700);
   }, []);
@@ -259,7 +259,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={show}>
       {children}
-      <div className="pointer-events-none fixed bottom-5 right-5 z-[90] flex flex-col items-end gap-2" role="status" aria-live="polite">
+      <div className="pointer-events-none fixed bottom-5 right-5 z-[70] flex flex-col items-end gap-2" role="status" aria-live="polite">
         {toasts.map((t) => (
           <div
             key={t.id}

@@ -281,7 +281,7 @@ await page.click('[data-row="pr-101"]');
 await detailReady();
 await check("header: status, number, title, branches, size", async () => {
   const header = (await text("[data-page=detail] header")).replace(/\s+/g, " ");
-  for (const part of ["Checks failing", "#101", "Rate limit the public API", "alice", "api/rate-limit", "main", "7 files", "+412", "−87"]) {
+  for (const part of ["Checks failing", "#101", "Rate limit the public API", "alice", "api/rate-limit", "main", "7 files", "+1,511", "−7"]) {
     expect(header.includes(part), `missing "${part}" in "${header}"`);
   }
   await shot("top");
@@ -360,7 +360,7 @@ await check("composer: an unsent draft survives leaving the page", async () => {
 });
 await check("rail: status, checks with durations, reviewers, labels, assignees", async () => {
   const rail = (await text("[data-page=detail] > aside")).replace(/\s+/g, " ");
-  for (const part of ["Checks failing", "3/5", "typecheck", "42s", "1m 35s", "frank", "Approved", "erin", "Changes requested", "grace", "Commented", "platform-team", "Requested", "api", "security", "alice", "bob"]) {
+  for (const part of ["Checks failing", "2 passed · 1 failed · 1 running", "typecheck", "42s", "1m 35s", "frank", "Approved", "erin", "Changes requested", "grace", "Commented", "platform-team", "Requested", "api", "security", "alice", "bob"]) {
     expect(rail.includes(part), `missing "${part}"`);
   }
   const order = await page.locator("[data-page=detail] > aside a[href*='example.com/ci'], [data-page=detail] > aside a:not([href])").allInnerTexts();
@@ -455,6 +455,11 @@ await check("modified file: hunks, word-level changes, syntax colors", async () 
   expect((await file.locator("tr.hunk").count()) >= 2, "hunk rows");
   expect((await file.locator("mark.w-add").count()) > 0 || (await file.locator("td.add").count()) > 0, "changes highlighted");
   expect((await file.locator(".code span[style*='--shiki-dark']").count()) > 0, "syntax colors");
+  // Red is reserved for deletions; syntax colors never use it.
+  const reds = await file.locator(".code span[style*='--shiki-dark']").evaluateAll((spans) =>
+    spans.map((s) => s.style.getPropertyValue("--shiki-dark")).filter((c) => /^#e06c75/i.test(c)),
+  );
+  expect(reds.length === 0, `red syntax tokens: ${reds.length}`);
   await file.screenshot({ path: join(OUT, `${String(++shots).padStart(3, "0")} files - limit split.png`) });
 });
 await check("existing inline threads show under their lines", async () => {
@@ -477,8 +482,9 @@ await check("expanding context reveals hidden lines", async () => {
 await check("+ on a line opens a centred composer; comment becomes pending", async () => {
   const file = page.locator('.file[data-path="src/api/limit.ts"]');
   const row = file.locator("tr", { hasText: "rule25 = limit" }).first();
-  await row.hover();
-  const button = row.locator("button.add-comment").last();
+  await row.locator("td.code").last().hover();
+  expect((await row.locator("button.add-comment:visible").count()) === 1, "only the hovered half offers +");
+  const button = row.locator("button.add-comment:visible");
   const b = await button.boundingBox();
   const icon = await button.locator("svg").boundingBox();
   expect(Math.abs(icon.x + icon.width / 2 - (b.x + b.width / 2)) < 0.6 && Math.abs(icon.y + icon.height / 2 - (b.y + b.height / 2)) < 0.6, "plus centred");
@@ -487,6 +493,10 @@ await check("+ on a line opens a centred composer; comment becomes pending", asy
   await page.keyboard.type("Could this read the limit from config?");
   const thread = file.locator("tr.thread", { has: page.locator("textarea") });
   await thread.screenshot({ path: join(OUT, `${String(++shots).padStart(3, "0")} files - inline composer.png`) });
+  await page.waitForTimeout(500);
+  const submit = await thread.getByRole("button", { name: /Add to review/ }).boundingBox();
+  const viewport = page.viewportSize();
+  expect(submit && submit.y + submit.height <= viewport.height && submit.y >= 0, `composer buttons in view (y=${submit?.y})`);
   await page.keyboard.press("Meta+Enter");
   await file.getByText("Pending").waitFor();
   await toast("Comment added to your review");
@@ -645,7 +655,7 @@ await check("PR with nothing filled in", async () => {
   await page.goto(`${server.url}/#/pr/110`);
   await detailReady();
   const content = await text("[data-page=detail]");
-  for (const part of ["No description provided.", "No activity yet.", "No checks reported.", "No reviewers yet.", "None"]) expect(content.includes(part), `missing "${part}"`);
+  for (const part of ["No description provided.", "No activity yet.", "No checks reported.", "Ready to merge", "No checks are configured.", "frank", "None"]) expect(content.includes(part), `missing "${part}"`);
   await shot("empty PR");
 });
 await check("local branch: banner, local stack, commits, no review button", async () => {

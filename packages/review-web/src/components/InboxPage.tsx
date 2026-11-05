@@ -3,7 +3,7 @@ import { ArrowUpRight, GitBranch, Layers, MessageSquare, Search, Sparkles } from
 import type { Inbox, InboxGroup, InboxItem, Session } from "../api";
 import { api, prefetch, refKey } from "../lib/client";
 import { itemReadiness } from "../lib/status";
-import { navigate, plural, timeAgo, useNow, useShortcuts, usePersisted } from "../lib/util";
+import { modKey, navigate, plural, timeAgo, useNow, useShortcuts, usePersisted } from "../lib/util";
 import { ChecksDot, cx, Kbd, Pill, PRStateIcon, StatusBadge } from "./ui";
 
 type Filter = "all" | InboxGroup["id"];
@@ -140,8 +140,10 @@ export function InboxPage({ inbox, session, loading }: { inbox: Inbox | undefine
       <div ref={sentinel} className="mt-7 h-px" aria-hidden />
       <div
         className={cx(
-          "sticky top-0 z-10 -mx-8 mb-2 flex items-center gap-3 border-b bg-bg/95 px-8 py-2.5 backdrop-blur-xl transition-colors",
-          stuck ? "border-line" : "border-transparent",
+          "sticky top-0 z-10 -mx-8 mb-2 flex items-center gap-3 bg-bg px-8 py-2.5",
+          // The hairline spans the content column, not the padded bleed.
+          "after:absolute after:inset-x-8 after:bottom-0 after:h-px after:transition-colors",
+          stuck ? "after:bg-line" : "after:bg-transparent",
         )}
       >
         <div className="inline-flex items-center gap-0.5 rounded-[10px] border border-line bg-panel p-[3px]" role="tablist">
@@ -228,8 +230,8 @@ export function InboxPage({ inbox, session, loading }: { inbox: Inbox | undefine
         {[
           [["j", "k"], "move"],
           [["↵"], "open"],
-          [["1", "5"], "filter"],
-          [["⌘", "K"], "jump anywhere"],
+          [["1–5"], "filter"],
+          [[modKey, "K"], "jump anywhere"],
         ].map(([keys, label]) => (
           <span key={label as string} className="inline-flex items-center gap-1">
             {(keys as string[]).map((k) => (
@@ -281,12 +283,12 @@ function StackCluster({ cluster, cursor, onHover }: { cluster: Cluster; cursor: 
   );
 }
 
-/** One segment per stack entry, colored by its status, bottom on the left. */
+/** One segment per stack entry, colored by its status, in the same order as the rows (top first). */
 function StackMap({ items }: { items: InboxItem[] }) {
   const tone = { green: "bg-ok", red: "bg-bad", amber: "bg-warn/80", blue: "bg-accent", purple: "bg-merged", gray: "bg-line-3" } as const;
   return (
     <span className="inline-flex items-center gap-[3px]">
-      {items.slice(0, 12).map((i) => {
+      {[...items].reverse().slice(0, 12).map((i) => {
         const status = itemReadiness(i);
         return <i key={i.id} className={cx("h-1.5 w-3.5 rounded-full", tone[status.tone])} data-tip={`${i.ref.kind === "pr" ? `#${i.ref.number}` : i.branch}: ${status.label}`} />;
       })}
@@ -363,7 +365,7 @@ const Row = memo(function Row({ item, active, onHover, stacked }: { item: InboxI
               <i className="h-full bg-ok" style={{ width: `${sizeWidth(total) * ((item.additions ?? 0) / Math.max(1, total))}px` }} />
               <i className="h-full bg-bad" style={{ width: `${sizeWidth(total) * ((item.deletions ?? 0) / Math.max(1, total))}px` }} />
             </span>
-            <span className="w-8 text-right font-mono text-[11px] leading-none text-fg-3 tabular">{compact(total)}</span>
+            <span className="w-8 text-right text-xs leading-none text-fg-3 tabular">{compact(total)}</span>
           </>
         ) : (
           <span className="h-1.5 w-16 animate-pulse-soft rounded-full bg-panel-3" />
@@ -372,7 +374,13 @@ const Row = memo(function Row({ item, active, onHover, stacked }: { item: InboxI
       <span className="text-right text-xs leading-none text-fg-3 tabular" data-tip={item.updatedAt ?? undefined}>
         {timeAgo(item.updatedAt).replace(" ago", "")}
       </span>
-      <ArrowUpRight size={14} className="-translate-x-0.5 translate-y-0.5 text-fg-2 opacity-0 transition-all duration-150 group-hover:translate-x-0 group-hover:translate-y-0 group-hover:opacity-100" />
+      <ArrowUpRight
+        size={14}
+        className={cx(
+          "text-fg-2 transition-all duration-150",
+          active ? "opacity-100" : "-translate-x-0.5 translate-y-0.5 opacity-0 group-hover:translate-x-0 group-hover:translate-y-0 group-hover:opacity-100",
+        )}
+      />
     </a>
   );
 });

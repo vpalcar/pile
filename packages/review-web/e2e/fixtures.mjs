@@ -55,7 +55,7 @@ const local = (name, title, base, extra = {}) => ({
   title,
   branch: name,
   base,
-  author: person("You"),
+  author: VIEWER,
   state: "local",
   updatedAt: ago(5),
   additions: 42,
@@ -104,7 +104,7 @@ export const inbox = {
       id: "mine",
       title: "Your pull requests",
       items: [
-        pr(110, "Add settings schema", "settings/schema", { author: VIEWER, reviewDecision: "approved", comments: 2 }),
+        pr(110, "Add settings schema", "settings/schema", { author: VIEWER, reviewDecision: "approved", checks: checks("none", 0, 0, 0), comments: 2 }),
         pr(111, "Settings API", "settings/api", { author: VIEWER, reviewDecision: "changes_requested", comments: 9 }),
         pr(112, "Settings page", "settings/ui", { author: VIEWER, state: "draft", checks: checks("none", 0, 0, 0) }),
         pr(113, "Upgrade React to 19", "deps/react-19", {
@@ -235,7 +235,15 @@ function checkRunsFor(summary) {
   return runs;
 }
 
+/** Header totals always match the files the detail actually carries. */
 export function detailFor(number) {
+  const detail = buildDetail(number);
+  if (!detail) return null;
+  const sum = (key) => detail.files.reduce((n, f) => n + f[key], 0);
+  return { ...detail, additions: sum("additions"), deletions: sum("deletions") };
+}
+
+function buildDetail(number) {
   const item = inbox.groups.flatMap((g) => g.items).find((i) => i.ref.kind === "pr" && i.ref.number === number);
   if (!item) return null;
   const base = {
@@ -319,7 +327,7 @@ export function detailFor(number) {
       files,
     };
   }
-  if (number === 110) return { ...base, bodyHtml: null, files: [files[0]], timeline: [], checks: [], checksSummary: null };
+  if (number === 110) return { ...base, bodyHtml: null, files: [files[0]], timeline: [], checks: [], checksSummary: null, reviewers: [{ person: person("frank"), state: "approved" }] };
   if (number === 113) return { ...base, bodyHtml: "<p>Mechanical upgrade.</p>", files: [files[5], files[6]] };
   return base;
 }

@@ -25,6 +25,7 @@ export function Composer({ placeholder, submitLabel, onSubmit, onCancel, autoFoc
   const [busy, setBusy] = useState(false);
   const [focused, setFocused] = useState(false);
   const local = useRef<HTMLTextAreaElement>(null);
+  const box = useRef<HTMLDivElement>(null);
   const ref = inputRef ?? local;
 
   useLayoutEffect(() => {
@@ -35,8 +36,13 @@ export function Composer({ placeholder, submitLabel, onSubmit, onCancel, autoFoc
   }, [text, ref]);
 
   useEffect(() => {
-    if (autoFocus) ref.current?.focus();
+    if (autoFocus) ref.current?.focus({ preventScroll: true });
   }, [autoFocus, ref]);
+
+  // Once the footer has rendered, bring the whole composer (buttons included) into view.
+  useEffect(() => {
+    if (focused) box.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [focused]);
 
   useEffect(() => {
     if (draftKey) writeDraft(draftKey, text);
@@ -61,8 +67,9 @@ export function Composer({ placeholder, submitLabel, onSubmit, onCancel, autoFoc
 
   return (
     <div
+      ref={box}
       className={cx(
-        "border border-line bg-panel transition-[border-color,box-shadow] duration-150 focus-within:border-line-3 focus-within:shadow-[0_0_0_3px_var(--accent-soft)]",
+        "scroll-my-6 border border-line bg-panel transition-[border-color,box-shadow] duration-150 focus-within:border-line-3 focus-within:shadow-[0_0_0_3px_var(--accent-soft)]",
         inset ? "rounded-lg" : "rounded-xl",
       )}
     >
@@ -71,11 +78,7 @@ export function Composer({ placeholder, submitLabel, onSubmit, onCancel, autoFoc
         rows={1}
         value={text}
         placeholder={placeholder}
-        onFocus={(e) => {
-          setFocused(true);
-          const box = e.currentTarget.parentElement;
-          requestAnimationFrame(() => box?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
-        }}
+        onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {

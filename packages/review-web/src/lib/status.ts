@@ -37,7 +37,12 @@ export function readiness({ state, decision, checks, unpushed }: Signals): Readi
   if (decision === "approved") {
     if (checks?.state === "pending") return { label: "Approved", detail: "Approved; checks are still running.", tone: "green", rank: 3 };
     if (unpushed) return { label: "Approved", detail: "Approved, but local commits aren't pushed yet.", tone: "green", rank: 3 };
-    return { label: "Ready to merge", detail: "Approved and checks pass.", tone: "green", rank: 2 };
+    return {
+      label: "Ready to merge",
+      detail: !checks || checks.state === "none" ? "Approved. No checks are configured." : "Approved and checks pass.",
+      tone: "green",
+      rank: 2,
+    };
   }
   if (decision === "review_required") return { label: "In review", detail: "Waiting for requested reviewers.", tone: "blue", rank: 4 };
   if (decision === "commented") return { label: "In review", detail: "Reviewers have commented; no approval yet.", tone: "blue", rank: 4 };

@@ -4,7 +4,7 @@ import { AlertTriangle, ArrowRight, Check, ChevronDown, CircleAlert, Copy, Exter
 import type { Detail as DetailData, InboxItem, ItemRef, ReviewRequest, StackEntry, TimelineEntry } from "../api";
 import { api, load, refKey } from "../lib/client";
 import { detailReadiness, entryReadiness, type Readiness } from "../lib/status";
-import { absoluteTime, copy, navigate, plural, timeAgo, useNow, useShortcuts } from "../lib/util";
+import { absoluteTime, copy, modKey, navigate, plural, timeAgo, useNow, useShortcuts } from "../lib/util";
 import { Composer } from "./Composer";
 import { FilesPanel } from "./FilesPanel";
 import type { PendingComment } from "./FileDiff";
@@ -220,10 +220,10 @@ function ReviewPopover({ detail, pendingCount, onClose, onSubmit }: { detail: De
   ];
 
   return (
-    <div ref={ref} role="dialog" aria-label="Submit review" className="popover absolute right-0 top-[calc(100%+8px)] z-50 w-[420px] origin-top-right animate-pop-in rounded-[14px] bg-panel p-3 shadow-pop">
+    <div ref={ref} role="dialog" aria-label="Submit review" className="popover absolute right-0 top-[calc(100%+14px)] z-50 w-[420px] origin-top-right animate-pop-in rounded-[14px] bg-panel p-3 shadow-pop">
       <textarea
         autoFocus
-        placeholder="Leave a summary (optional for approvals)"
+        placeholder={event === "APPROVE" || pendingCount > 0 ? "Leave a summary (optional)" : "Leave a summary (required)"}
         value={body}
         onChange={(e) => setBody(e.target.value)}
         onKeyDown={(e) => {
@@ -232,7 +232,7 @@ function ReviewPopover({ detail, pendingCount, onClose, onSubmit }: { detail: De
             submit();
           }
         }}
-        className="block min-h-24 w-full resize-y rounded-lg border border-line-2 bg-bg px-3 py-2.5 text-fg outline-none placeholder:text-fg-3 focus:border-line-3 focus:shadow-[0_0_0_3px_var(--accent-soft)]"
+        className="block min-h-24 w-full resize-none rounded-lg border border-line-2 bg-bg px-3 py-2.5 text-fg outline-none placeholder:text-fg-3 focus:border-line-3 focus:shadow-[0_0_0_3px_var(--accent-soft)]"
       />
       <div className="my-2.5 grid gap-1" role="radiogroup">
         {choices.map(([value, label, help]) => {
@@ -261,7 +261,7 @@ function ReviewPopover({ detail, pendingCount, onClose, onSubmit }: { detail: De
           );
         })}
       </div>
-      {own && <p className="-mt-1 mb-2.5 px-1 text-xs text-fg-2">You can't approve or request changes on your own pull request.</p>}
+      {own && <p className="-mt-1 mb-2.5 pl-[36px] pr-2 text-xs text-fg-3">You can't approve or request changes on your own pull request.</p>}
       {error && <div className="mb-2.5 rounded-lg border border-bad/30 bg-bad-soft px-3 py-2 text-fg">{error}</div>}
       <div className="flex items-center gap-2">
         <span className="text-xs text-fg-3">{pendingCount > 0 ? `Includes ${plural(pendingCount, "inline comment")}` : ""}</span>
@@ -273,7 +273,7 @@ function ReviewPopover({ detail, pendingCount, onClose, onSubmit }: { detail: De
           {busy && <Spinner size={12} />}
           Submit review
           <span className="ml-0.5 inline-flex gap-0.5 opacity-60 [&_kbd]:border-current/30 [&_kbd]:bg-transparent [&_kbd]:text-current">
-            <Kbd>⌘</Kbd>
+            <Kbd>{modKey}</Kbd>
             <Kbd>↵</Kbd>
           </span>
         </Button>
@@ -553,7 +553,7 @@ function Rail({ detail, status, onReview }: { detail: DetailData; status: Readin
     detail.checks.length > 0
       ? {
           total: detail.checks.length,
-          passed: detail.checks.filter((c) => c.state === "success" || c.state === "neutral").length,
+          passed: detail.checks.filter((c) => c.state === "success").length,
           failed: detail.checks.filter((c) => c.state === "failure").length,
           pending: detail.checks.filter((c) => c.state === "pending").length,
         }
@@ -592,7 +592,11 @@ function Rail({ detail, status, onReview }: { detail: DetailData; status: Readin
             <span className="flex-1" />
             {summary && summary.total > 0 && (
               <span className="tabular">
-                {summary.passed}/{summary.total}
+                {summary.failed || summary.pending
+                  ? [summary.passed && `${summary.passed} passed`, summary.failed && `${summary.failed} failed`, summary.pending && `${summary.pending} running`]
+                      .filter(Boolean)
+                      .join(" · ")
+                  : `${summary.passed} of ${summary.total} passed`}
               </span>
             )}
           </Label>
@@ -649,7 +653,7 @@ function Rail({ detail, status, onReview }: { detail: DetailData; status: Readin
             <div className="flex flex-wrap gap-1.5">
               {detail.labels.map((l) => (
                 <span key={l.name} className="inline-flex h-[22px] items-center gap-1.5 rounded-full border border-line-2 px-2 text-[11.5px] font-medium leading-none text-fg-2">
-                  <i className="size-2 shrink-0 rounded-full shadow-[inset_0_0_0_1px_var(--border-3)]" style={{ background: `#${l.color}` }} />
+                  <i className="size-2 shrink-0 rounded-full shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--text)_28%,transparent)]" style={{ background: `#${l.color}` }} />
                   {l.name}
                 </span>
               ))}

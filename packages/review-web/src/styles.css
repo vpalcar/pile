@@ -308,7 +308,9 @@
     box-shadow: 0 2px 8px -2px color-mix(in srgb, var(--accent) 60%, transparent);
   }
   .add-comment svg { display: block; flex: none; }
-  .diff-table tr:hover .add-comment, .diff-table td:hover > .add-comment, .add-comment:focus-visible { display: flex; }
+  .diff-table:not(.split) tr:hover .add-comment, .add-comment:focus-visible { display: flex; }
+  /* Split rows hold two lines; only the hovered half offers a comment. */
+  .diff-table.split td.ln:hover > .add-comment, .diff-table.split td.ln:has(+ td:hover) > .add-comment { display: flex; }
 
   /* Command palette (cmdk renders these attributes) */
   .palette [cmdk-input] { width: 100%; height: 52px; padding: 0 18px; border: 0; border-bottom: 1px solid var(--border); outline: none; background: none; color: var(--text); font: 15px var(--font-sans); }

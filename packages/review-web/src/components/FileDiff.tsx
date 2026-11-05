@@ -357,7 +357,7 @@ function DiffBody(props: Props) {
                 ? "Show more lines"
                 : row.hidden <= EXPAND_STEP
                   ? `Show ${row.hidden} more line${row.hidden === 1 ? "" : "s"}`
-                  : `Show ${EXPAND_STEP} lines`}
+                  : `Show ${EXPAND_STEP} more lines`}
           </button>
           {row.hidden > EXPAND_STEP && (
             <button className={expandButton} onClick={() => expand(row.key, row.gap, true)}>
