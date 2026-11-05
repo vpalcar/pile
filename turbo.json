@@ -26,6 +26,12 @@
         "^build"
       ],
       "outputs": []
+    },
+    "pile-cli#test": {
+      "dependsOn": [
+        "build"
+      ],
+      "outputs": []
     }
   }
 }
