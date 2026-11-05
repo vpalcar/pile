@@ -44,6 +44,9 @@ function normalizeKey(key: string): string {
   return `${key.slice(0, first).toLowerCase()}${key.slice(first, last)}${key.slice(last).toLowerCase()}`;
 }
 
+/** Orders branch names naturally, so `step-2` sorts before `step-10`. */
+const byName = (a: string, b: string) => a.localeCompare(b, "en", { numeric: true });
+
 export class StateManager {
   private readonly repoRoot: string;
   private cache: Map<string, string> | null = null;
@@ -221,11 +224,11 @@ export class StateManager {
     return [...this.parents()]
       .filter(([, parent]) => parent === branchName)
       .map(([branch]) => branch)
-      .sort();
+      .sort(byName);
   }
 
   getAllTrackedBranches(): string[] {
-    return [...this.parents().keys()].sort();
+    return [...this.parents().keys()].sort(byName);
   }
 
   // ---------------------------------------------------------------------------

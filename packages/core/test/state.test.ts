@@ -44,7 +44,7 @@ describe("StateManager", () => {
     const fresh = createStateManager(repo.dir);
     expect(fresh.getBranchRelationship("Team/v1.2-Fix")).toMatchObject({ parent: "main", prNumber: 7 });
     expect(fresh.getChildren("Team/v1.2-Fix")).toEqual(["team/v1.2-fix"]);
-    expect(fresh.getAllTrackedBranches()).toEqual(["Team/v1.2-Fix", "team/v1.2-fix"]);
+    expect(fresh.getAllTrackedBranches()).toEqual(["team/v1.2-fix", "Team/v1.2-Fix"]);
   });
 
   it("reads mixed-case config keys written by older versions", () => {
@@ -52,6 +52,16 @@ describe("StateManager", () => {
     repo.git("config", "pile.autoOpenPR", "true");
     repo.git("config", "pile.mergeMethod", "rebase");
     expect(createStateManager(repo.dir).getConfig()).toMatchObject({ autoOpenPR: true, mergeMethod: "rebase" });
+  });
+
+  it("orders branches naturally", () => {
+    const repo = createTestRepo();
+    for (const name of ["step-10", "step-2", "step-1"]) {
+      repo.git("config", `branch.${name}.pile-parent`, "main");
+    }
+    const state = createStateManager(repo.dir);
+    expect(state.getAllTrackedBranches()).toEqual(["step-1", "step-2", "step-10"]);
+    expect(state.getChildren("main")).toEqual(["step-1", "step-2", "step-10"]);
   });
 
   it("removes relationships and keeps the cache consistent", () => {
