@@ -175,6 +175,19 @@ describe("StackManager", () => {
     expect(repo.git("branch", "--show-current")).toBe("a");
   });
 
+  it("reparents children when deleting a branch", async () => {
+    const repo = createTestRepo();
+    await createChain(repo, ["a", "b", "c"]);
+    await createChain(repo, ["b2"], "b");
+    repo.git("switch", "-q", "main");
+    const { stack, state } = await repo.pile();
+
+    await stack.deleteBranch("b", true);
+    expect(state.getParent("c")).toBe("a");
+    expect(state.getParent("b2")).toBe("a");
+    expect(stack.getAllTrackedBranches()).toEqual(["a", "b2", "c"]);
+  });
+
   it("invalidates cached state when git deletes a branch", async () => {
     const repo = createTestRepo();
     await createChain(repo, ["a", "b"]);
