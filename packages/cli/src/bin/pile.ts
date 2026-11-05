@@ -24,6 +24,8 @@ import { EditCommand } from "../commands/edit.js";
 import { RequestCommand } from "../commands/request.js";
 import { ReviewCommand } from "../commands/review.js";
 import { DiffCommand } from "../commands/diff.js";
+import { NavCommand } from "../commands/nav.js";
+import { TrackCommand, UntrackCommand } from "../commands/track.js";
 import { getSecretPileMessage, getPileWisdom } from "../utils/fun.js";
 import { resolveOptions } from "../utils/output.js";
 import { describeCommands } from "../utils/schema.js";
@@ -406,6 +408,66 @@ program
         approve: opts.approve,
         requestChanges: opts.requestChanges,
         message: opts.message,
+        options: resolveOptions(globalOpts),
+      }),
+    );
+  });
+
+// navigation commands
+for (const [direction, alias, description] of [
+  ["up", "u", "Check out the child branch (steps up the stack)"],
+  ["down", "dn", "Check out the parent branch (steps down the stack)"],
+  ["top", "t", "Check out the top of the current stack"],
+  ["bottom", "b", "Check out the bottom of the current stack"],
+] as const) {
+  const command = program.command(direction).alias(alias).description(description);
+  if (direction === "up" || direction === "down") {
+    command.argument("[steps]", "Number of levels to move", "1");
+  }
+  if (direction === "up" || direction === "top") {
+    command.option("--to <branch>", "Child to follow when a branch has several children");
+  }
+  command.action((...args: unknown[]) => {
+    const hasSteps = direction === "up" || direction === "down";
+    const steps = hasSteps ? parseInt(String(args[0]), 10) : 1;
+    const opts = (hasSteps ? args[1] : args[0]) as { to?: string };
+    const globalOpts = program.opts();
+    render(
+      React.createElement(NavCommand, {
+        direction,
+        steps: Number.isFinite(steps) && steps > 0 ? steps : 1,
+        to: opts?.to,
+        options: resolveOptions(globalOpts),
+      }),
+    );
+  });
+}
+
+// track command
+program
+  .command("track [branch]")
+  .description("Start tracking a branch in pile (default: current branch)")
+  .option("-p, --parent <branch>", "Parent branch (default: detected from history)")
+  .action((branch, opts) => {
+    const globalOpts = program.opts();
+    render(
+      React.createElement(TrackCommand, {
+        branch,
+        parent: opts.parent,
+        options: resolveOptions(globalOpts),
+      }),
+    );
+  });
+
+// untrack command
+program
+  .command("untrack [branch]")
+  .description("Stop tracking a branch (keeps the git branch; children move to its parent)")
+  .action((branch) => {
+    const globalOpts = program.opts();
+    render(
+      React.createElement(UntrackCommand, {
+        branch,
         options: resolveOptions(globalOpts),
       }),
     );

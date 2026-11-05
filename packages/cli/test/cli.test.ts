@@ -21,7 +21,7 @@ describe("pile commands", () => {
 
     const { commands, globalOptions, exitCodes } = result.json.data;
     const names = commands.map((c: { name: string }) => c.name);
-    for (const name of ["status", "submit", "sync", "checkout", "commands"]) {
+    for (const name of ["up", "down", "top", "bottom", "track", "untrack", "status", "submit", "sync", "checkout"]) {
       expect(names).toContain(name);
     }
     expect(names).not.toContain("wisdom");
