@@ -219,13 +219,14 @@ program
 
 // status command
 program
-  .command("status")
+  .command("status [target]")
   .alias("st")
-  .description("Show PR status for the current branch")
-  .action(() => {
+  .description("Show PR status (target: branch, PR number or URL; default: current branch)")
+  .action((target) => {
     const globalOpts = program.opts();
     render(
       React.createElement(StatusCommand, {
+        target,
         options: resolveOptions(globalOpts),
       }),
     );
@@ -233,13 +234,14 @@ program
 
 // diff command
 program
-  .command("diff")
+  .command("diff [target]")
   .alias("d")
-  .description("Show changes in current branch compared to its parent")
-  .action(() => {
+  .description("Show changes compared to the parent branch (target: branch; default: current)")
+  .action((target) => {
     const globalOpts = program.opts();
     render(
       React.createElement(DiffCommand, {
+        target,
         options: resolveOptions(globalOpts),
       }),
     );
@@ -247,13 +249,14 @@ program
 
 // merge command
 program
-  .command("merge")
-  .description("Merge the current branch's PR (squash by default)")
-  .option("-f, --force", "Merge even if checks are failing or reviews pending")
-  .action((opts) => {
+  .command("merge [target]")
+  .description("Merge a PR (target: branch, PR number or URL; default: current branch)")
+  .option("-f, --force", "Merge even if checks are failing or pending, or changes are requested")
+  .action((target, opts) => {
     const globalOpts = program.opts();
     render(
       React.createElement(MergeCommand, {
+        target,
         force: opts.force,
         options: resolveOptions(globalOpts),
       }),
@@ -311,13 +314,14 @@ program
 
 // close command
 program
-  .command("close")
-  .description("Close the current branch's PR without merging")
+  .command("close [target]")
+  .description("Close a PR without merging (target: branch, PR number or URL; default: current)")
   .option("--reopen", "Reopen a closed PR")
-  .action((opts) => {
+  .action((target, opts) => {
     const globalOpts = program.opts();
     render(
       React.createElement(CloseCommand, {
+        target,
         reopen: opts.reopen,
         options: resolveOptions(globalOpts),
       }),
@@ -343,8 +347,8 @@ program
 
 // edit command
 program
-  .command("edit")
-  .description("Edit the current branch's PR metadata")
+  .command("edit [target]")
+  .description("Edit PR metadata (target: branch, PR number or URL; default: current branch)")
   .option("-t, --title <title>", "Update PR title")
   .option("-b, --body [body]", "Update PR body (use '-' for stdin, omit value for editor)")
   .option("--draft", "Convert PR to draft")
@@ -352,8 +356,8 @@ program
   .option("--labels <labels>", "Set labels (comma-separated, replaces existing)")
   .option("--add-labels <labels>", "Add labels (comma-separated, keeps existing)")
   .option("--assignees <assignees>", "Set assignees (comma-separated)")
-  .option("--milestone <milestone>", "Set milestone")
-  .action(async (opts) => {
+  .option("--milestone <milestone>", "Set milestone (number or title)")
+  .action(async (target, opts) => {
     const globalOpts = program.opts();
 
     // Handle stdin for body
@@ -370,6 +374,7 @@ program
 
     render(
       React.createElement(EditCommand, {
+        target,
         title: opts.title,
         body: body,
         draft: opts.draft,
@@ -386,12 +391,14 @@ program
 // request command
 program
   .command("request [reviewers...]")
-  .description("Request review on the current branch's PR")
+  .description("Request review on a PR (default: the current branch's PR)")
   .option("-t, --team <teams...>", "Request review from teams")
+  .option("--pr <target>", "PR to request review on: branch, PR number or URL (default: current branch)")
   .action((reviewers, opts) => {
     const globalOpts = program.opts();
     render(
       React.createElement(RequestCommand, {
+        target: opts.pr,
         reviewers: reviewers || [],
         teams: opts.team,
         options: resolveOptions(globalOpts),

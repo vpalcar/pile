@@ -2,31 +2,31 @@ import React, { useState, useEffect } from "react";
 import { Box, Text } from "ink";
 import { createPile } from "@pile/core";
 import { Spinner } from "../components/Spinner.js";
+import { CommandError, OutputOptions, formatJson, createResult } from "../utils/output.js";
 import {
-  ErrorMessage,
-  WarningMessage,
-} from "../components/Message.js";
-import { OutputOptions, formatJson, createResult } from "../utils/output.js";
+  CommandFailure,
+  FailureMessage,
+  notInitialized,
+  onTrunk,
+  reportFailure,
+} from "../utils/pr-target.js";
 
 export interface DiffCommandProps {
+  /** Local branch to diff against its parent. Default: current branch. */
+  target?: string;
   options: OutputOptions;
 }
 
-type State =
-  | "checking"
-  | "success"
-  | "not_initialized"
-  | "on_trunk"
-  | "error";
+type State = "checking" | "success" | "error";
 
 interface DiffFile {
   path: string;
   status: string;
 }
 
-export function DiffCommand({ options }: DiffCommandProps): React.ReactElement {
+export function DiffCommand({ target, options }: DiffCommandProps): React.ReactElement {
   const [state, setState] = useState<State>("checking");
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<CommandError | null>(null);
   const [files, setFiles] = useState<DiffFile[]>([]);
   const [parent, setParent] = useState<string>("");
   const [current, setCurrent] = useState<string>("");
@@ -35,46 +35,39 @@ export function DiffCommand({ options }: DiffCommandProps): React.ReactElement {
     async function run() {
       try {
         const pile = await createPile();
-
-        if (!pile.state.isInitialized()) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "Pile not initialized"))
-            );
-            process.exit(1);
-          }
-          setState("not_initialized");
-          return;
-        }
+        if (!pile.state.isInitialized()) throw notInitialized();
 
         const trunk = pile.stack.getTrunk();
-        const currentBranch = await pile.git.getCurrentBranch();
-        setCurrent(currentBranch);
+        const branch = target ?? (await pile.git.getCurrentBranch());
+        setCurrent(branch);
 
-        if (currentBranch === trunk) {
-          if (options.json) {
-            console.log(
-              formatJson(
-                createResult(false, null, "On trunk branch, nothing to diff")
-              )
-            );
-            process.exit(1);
-          }
-          setState("on_trunk");
-          return;
+        if (target && !(await pile.git.branchExists(target))) {
+          throw new CommandFailure(
+            "BRANCH_NOT_FOUND",
+            `Branch "${target}" not found`,
+            "Pass the name of a local branch.",
+          );
+        }
+        if (branch === trunk) {
+          if (!target) throw onTrunk(trunk);
+          throw new CommandFailure(
+            "ON_TRUNK",
+            `${trunk} is the trunk branch, nothing to diff against`,
+            "Pass a stacked branch.",
+          );
         }
 
-        const parentBranch = pile.state.getParent(currentBranch) ?? trunk;
+        const parentBranch = pile.state.getParent(branch) ?? trunk;
         setParent(parentBranch);
 
-        const diffFiles = await pile.git.getDiffFiles(parentBranch, currentBranch);
+        const diffFiles = await pile.git.getDiffFiles(parentBranch, branch);
         setFiles(diffFiles);
 
         if (options.json) {
           console.log(
             formatJson(
               createResult(true, {
-                branch: currentBranch,
+                branch,
                 parent: parentBranch,
                 files: diffFiles,
               })
@@ -85,18 +78,13 @@ export function DiffCommand({ options }: DiffCommandProps): React.ReactElement {
 
         setState("success");
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (options.json) {
-          console.log(formatJson(createResult(false, null, message)));
-          process.exit(1);
-        }
-        setError(message);
+        setFailure(reportFailure(options, err));
         setState("error");
       }
     }
 
     run();
-  }, [options.json]);
+  }, [options.json, target]);
 
   if (options.json) {
     return <></>;
@@ -132,16 +120,8 @@ export function DiffCommand({ options }: DiffCommandProps): React.ReactElement {
           )}
         </Box>
       );
-    case "on_trunk":
-      return (
-        <WarningMessage>On trunk branch, nothing to diff.</WarningMessage>
-      );
-    case "not_initialized":
-      return (
-        <ErrorMessage>Pile not initialized. Run `pile init` first.</ErrorMessage>
-      );
     case "error":
-      return <ErrorMessage>{error}</ErrorMessage>;
+      return failure ? <FailureMessage failure={failure} /> : <></>;
     default:
       return <></>;
   }

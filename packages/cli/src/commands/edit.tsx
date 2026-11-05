@@ -1,17 +1,30 @@
 import React, { useState, useEffect } from "react";
 import { Box, Text } from "ink";
-import { createPile } from "@pile/core";
-import { createGitHub } from "@pile/github";
 import { Spinner } from "../components/Spinner.js";
-import { SuccessMessage, ErrorMessage } from "../components/Message.js";
+import { SuccessMessage } from "../components/Message.js";
 import { Link } from "../components/Link.js";
-import { OutputOptions, formatJson, createResult } from "../utils/output.js";
-import { execSync, spawnSync } from "node:child_process";
+import {
+  CommandError,
+  OutputOptions,
+  exitNeedsInput,
+  formatJson,
+  createResult,
+} from "../utils/output.js";
+import {
+  CommandFailure,
+  FailureMessage,
+  openPRContext,
+  reportFailure,
+  resolveTargetPR,
+} from "../utils/pr-target.js";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
 export interface EditCommandProps {
+  /** Branch, PR number, #number or PR URL. Default: current branch. */
+  target?: string;
   title?: string;
   body?: string | boolean; // string = inline, true = editor, "-" handled before
   draft?: boolean;
@@ -23,16 +36,9 @@ export interface EditCommandProps {
   options: OutputOptions;
 }
 
-type State =
-  | "loading"
-  | "editing"
-  | "success"
-  | "no_pr"
-  | "no_github"
-  | "not_initialized"
-  | "on_trunk"
-  | "no_changes"
-  | "error";
+type State = "loading" | "editing" | "success" | "error";
+
+const EDIT_FLAGS = "--title <title>, --body <body>, --labels, --add-labels, --assignees, --milestone, --draft or --ready";
 
 interface EditResult {
   branch: string;
@@ -56,23 +62,8 @@ function openEditor(initialContent: string): string | null {
   }
 }
 
-function readStdin(): Promise<string> {
-  return new Promise((resolve) => {
-    let data = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("readable", () => {
-      let chunk;
-      while ((chunk = process.stdin.read()) !== null) {
-        data += chunk;
-      }
-    });
-    process.stdin.on("end", () => {
-      resolve(data);
-    });
-  });
-}
-
 export function EditCommand({
+  target,
   title,
   body,
   draft,
@@ -85,72 +76,11 @@ export function EditCommand({
 }: EditCommandProps): React.ReactElement {
   const [state, setState] = useState<State>("loading");
   const [result, setResult] = useState<EditResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<CommandError | null>(null);
 
   useEffect(() => {
     async function editPR() {
       try {
-        const pile = await createPile();
-
-        if (!pile.state.isInitialized()) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "Pile not initialized"))
-            );
-            process.exit(1);
-          }
-          setState("not_initialized");
-          return;
-        }
-
-        const config = pile.state.getConfig();
-        const trunk = config?.trunk ?? "main";
-        const currentBranch = await pile.git.getCurrentBranch();
-
-        if (currentBranch === trunk) {
-          if (options.json) {
-            console.log(
-              formatJson(
-                createResult(false, null, "Cannot edit PR from trunk branch")
-              )
-            );
-            process.exit(1);
-          }
-          setState("on_trunk");
-          return;
-        }
-
-        const repoRoot = await pile.git.getRepoRoot();
-        const github = await createGitHub(`${repoRoot}/.pile`);
-
-        if (!github) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "GitHub not configured"))
-            );
-            process.exit(1);
-          }
-          setState("no_github");
-          return;
-        }
-
-        // Find PR for current branch
-        const pr = await github.prs.findByBranch(currentBranch);
-
-        if (!pr) {
-          if (options.json) {
-            console.log(
-              formatJson(
-                createResult(false, null, "No open PR found for this branch")
-              )
-            );
-            process.exit(1);
-          }
-          setState("no_pr");
-          return;
-        }
-
-        // Check if any changes were requested
         const hasChanges =
           title !== undefined ||
           body !== undefined ||
@@ -162,19 +92,43 @@ export function EditCommand({
           milestone !== undefined;
 
         if (!hasChanges) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "No changes specified"))
-            );
-            process.exit(1);
+          if (!options.interactive) {
+            exitNeedsInput(options, { message: "No changes specified", flag: EDIT_FLAGS });
           }
-          setState("no_changes");
-          return;
+          throw new CommandFailure("NEEDS_INPUT", "No changes specified", `Use ${EDIT_FLAGS}.`);
         }
+        if (draft && ready) {
+          throw new CommandFailure("INVALID_ARGS", "--draft and --ready cannot be combined");
+        }
+        // `-b` without a value opens an editor, which needs a terminal.
+        if (body === true && !options.interactive) {
+          exitNeedsInput(options, {
+            message: "Editing the body in an editor needs a terminal",
+            flag: "--body <text> (or --body - to read stdin)",
+          });
+        }
+
+        const context = await openPRContext(target);
+        const { github } = context;
+        const { pr, branch } = await resolveTargetPR(context, target);
 
         setState("editing");
 
         const changes: string[] = [];
+
+        // Draft <-> ready needs GraphQL, which can be unavailable; do it first so a
+        // failure leaves the PR untouched.
+        if (draft && !pr.draft) {
+          await github.prs.convertToDraft(pr.number);
+          changes.push("Converted to draft");
+        } else if (ready && pr.draft) {
+          await github.prs.markReadyForReview(pr.number);
+          changes.push("Marked ready for review");
+        } else if (draft) {
+          changes.push("Already a draft");
+        } else if (ready) {
+          changes.push("Already ready for review");
+        }
 
         // Handle body editing
         let bodyContent: string | undefined;
@@ -199,15 +153,6 @@ export function EditCommand({
           if (bodyContent !== undefined) changes.push("Body updated");
         }
 
-        // Handle draft/ready
-        if (draft && !pr.draft) {
-          await github.prs.convertToDraft(pr.number);
-          changes.push("Converted to draft");
-        } else if (ready && pr.draft) {
-          await github.prs.markReadyForReview(pr.number);
-          changes.push("Marked ready for review");
-        }
-
         // Handle labels
         if (labels) {
           const labelList = labels.split(",").map((l) => l.trim());
@@ -226,14 +171,28 @@ export function EditCommand({
           changes.push(`Assignees: ${assigneeList.join(", ")}`);
         }
 
-        // Handle milestone (not implemented yet - would need separate API)
+        // Milestones are set on the PR's issue, by number; accept a number or a title.
         if (milestone) {
-          // TODO: Implement milestone support
-          changes.push(`Milestone: ${milestone} (not yet supported)`);
+          const api = github.client.api;
+          const repo = { owner: github.client.repoOwner, repo: github.client.repoName };
+          let milestoneNumber = /^\d+$/.test(milestone) ? parseInt(milestone, 10) : null;
+          if (milestoneNumber === null) {
+            const { data } = await api.issues.listMilestones({ ...repo, state: "all", per_page: 100 });
+            milestoneNumber = data.find((m) => m.title === milestone)?.number ?? null;
+            if (milestoneNumber === null) {
+              throw new CommandFailure(
+                "MILESTONE_NOT_FOUND",
+                `Milestone "${milestone}" not found`,
+                "Pass a milestone title or number that exists in the repository.",
+              );
+            }
+          }
+          await api.issues.update({ ...repo, issue_number: pr.number, milestone: milestoneNumber });
+          changes.push(`Milestone: ${milestone}`);
         }
 
         const editResult: EditResult = {
-          branch: currentBranch,
+          branch,
           prNumber: pr.number,
           prUrl: pr.html_url,
           changes,
@@ -247,18 +206,13 @@ export function EditCommand({
         setResult(editResult);
         setState("success");
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (options.json) {
-          console.log(formatJson(createResult(false, null, message)));
-          process.exit(1);
-        }
-        setError(message);
+        setFailure(reportFailure(options, err));
         setState("error");
       }
     }
 
     editPR();
-  }, [options.json, title, body, draft, ready, labels, addLabels, assignees, milestone]);
+  }, [options.json, target, title, body, draft, ready, labels, addLabels, assignees, milestone]);
 
   if (options.json) {
     return <></>;
@@ -285,41 +239,8 @@ export function EditCommand({
           </Box>
         </Box>
       );
-    case "no_pr":
-      return (
-        <Box flexDirection="column">
-          <Text color="yellow">No open PR found for this branch.</Text>
-          <Text color="gray">Run `pile submit` to create one.</Text>
-        </Box>
-      );
-    case "no_changes":
-      return (
-        <Box flexDirection="column">
-          <Text color="yellow">No changes specified.</Text>
-          <Text color="gray">Use -t for title, -b for body, --labels, --assignees, --draft, or --ready.</Text>
-        </Box>
-      );
-    case "on_trunk":
-      return (
-        <Text color="yellow">
-          Cannot edit PR from trunk branch. Checkout a feature branch first.
-        </Text>
-      );
-    case "no_github":
-      return (
-        <Box flexDirection="column">
-          <ErrorMessage>GitHub not configured</ErrorMessage>
-          <Text color="gray">
-            Set GITHUB_TOKEN environment variable or run `gh auth login`
-          </Text>
-        </Box>
-      );
-    case "not_initialized":
-      return (
-        <ErrorMessage>Pile not initialized. Run `pile init` first.</ErrorMessage>
-      );
     case "error":
-      return <ErrorMessage>{error}</ErrorMessage>;
+      return failure ? <FailureMessage failure={failure} /> : <></>;
     default:
       return <></>;
   }

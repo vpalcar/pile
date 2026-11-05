@@ -1,29 +1,26 @@
 import React, { useState, useEffect } from "react";
 import { Box, Text } from "ink";
-import { createPile } from "@pile/core";
-import { createGitHub } from "@pile/github";
 import { Spinner } from "../components/Spinner.js";
-import { SuccessMessage, ErrorMessage } from "../components/Message.js";
+import { SuccessMessage } from "../components/Message.js";
 import { Link } from "../components/Link.js";
-import { OutputOptions, formatJson, createResult } from "../utils/output.js";
+import { CommandError, OutputOptions, formatJson, createResult } from "../utils/output.js";
+import {
+  CommandFailure,
+  FailureMessage,
+  openPRContext,
+  reportFailure,
+  resolveTargetPR,
+} from "../utils/pr-target.js";
 import { getCloseMessage, getReopenMessage } from "../utils/fun.js";
 
 export interface CloseCommandProps {
+  /** Branch, PR number, #number or PR URL. Default: current branch. */
+  target?: string;
   reopen?: boolean;
   options: OutputOptions;
 }
 
-type State =
-  | "loading"
-  | "closing"
-  | "success"
-  | "no_pr"
-  | "no_github"
-  | "not_initialized"
-  | "on_trunk"
-  | "already_closed"
-  | "already_open"
-  | "error";
+type State = "loading" | "closing" | "success" | "error";
 
 interface ResultData {
   branch: string;
@@ -33,142 +30,43 @@ interface ResultData {
 }
 
 export function CloseCommand({
+  target,
   reopen,
   options,
 }: CloseCommandProps): React.ReactElement {
   const [state, setState] = useState<State>("loading");
   const [result, setResult] = useState<ResultData | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<CommandError | null>(null);
 
   useEffect(() => {
     async function closePR() {
       try {
-        const pile = await createPile();
+        const context = await openPRContext(target);
+        const { pr, branch } = await resolveTargetPR(context, target);
 
-        if (!pile.state.isInitialized()) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "Pile not initialized"))
-            );
-            process.exit(1);
-          }
-          setState("not_initialized");
-          return;
-        }
-
-        const config = pile.state.getConfig();
-        const trunk = config?.trunk ?? "main";
-        const currentBranch = await pile.git.getCurrentBranch();
-
-        if (currentBranch === trunk) {
-          if (options.json) {
-            console.log(
-              formatJson(
-                createResult(false, null, "Cannot close PR from trunk branch")
-              )
-            );
-            process.exit(1);
-          }
-          setState("on_trunk");
-          return;
-        }
-
-        const repoRoot = await pile.git.getRepoRoot();
-        const github = await createGitHub(`${repoRoot}/.pile`);
-
-        if (!github) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "GitHub not configured"))
-            );
-            process.exit(1);
-          }
-          setState("no_github");
-          return;
-        }
-
-        // Find PR - check stored PR number first (survives renames), then API lookup
-        const rel = pile.state.getBranchRelationship(currentBranch);
-        let pr = null;
-        if (rel?.prNumber) {
-          try {
-            pr = await github.prs.get(rel.prNumber);
-          } catch {
-            // Stored PR might be invalid
-          }
-        }
-        if (!pr) {
-          pr = reopen
-            ? await github.prs.findByBranchAnyState(currentBranch)
-            : await github.prs.findByBranch(currentBranch);
-        }
-
-        if (!pr) {
-          if (options.json) {
-            console.log(
-              formatJson(
-                createResult(false, null, "No PR found for this branch")
-              )
-            );
-            process.exit(1);
-          }
-          setState("no_pr");
-          return;
-        }
-
-        // Check current state
         if (reopen) {
-          if (pr.state === "open") {
-            if (options.json) {
-              console.log(
-                formatJson(
-                  createResult(false, null, "PR is already open")
-                )
-              );
-              process.exit(1);
-            }
-            setState("already_open");
-            return;
-          }
           if (pr.merged) {
-            if (options.json) {
-              console.log(
-                formatJson(
-                  createResult(false, null, "Cannot reopen a merged PR")
-                )
-              );
-              process.exit(1);
-            }
-            setError("Cannot reopen a merged PR");
-            setState("error");
-            return;
+            throw new CommandFailure("PR_MERGED", `PR #${pr.number} is merged and cannot be reopened`);
           }
-        } else {
-          if (pr.state === "closed" || pr.merged) {
-            if (options.json) {
-              console.log(
-                formatJson(
-                  createResult(false, null, "PR is already closed")
-                )
-              );
-              process.exit(1);
-            }
-            setState("already_closed");
-            return;
+          if (pr.state === "open") {
+            throw new CommandFailure("ALREADY_OPEN", `PR #${pr.number} is already open`);
           }
+        } else if (pr.state === "closed" || pr.merged) {
+          throw new CommandFailure(
+            "ALREADY_CLOSED",
+            `PR #${pr.number} is already ${pr.merged ? "merged" : "closed"}`,
+            pr.merged ? undefined : "Use `pile close --reopen` to reopen it.",
+          );
         }
 
         setState("closing");
-
-        // Update PR state
-        const newState = reopen ? "open" : "closed";
-        await github.prs.update({
+        await context.github.prs.update({
           number: pr.number,
-          state: newState,
+          state: reopen ? "open" : "closed",
         });
 
         const resultData: ResultData = {
-          branch: currentBranch,
+          branch,
           prNumber: pr.number,
           prUrl: pr.html_url,
           action: reopen ? "reopened" : "closed",
@@ -182,18 +80,13 @@ export function CloseCommand({
         setResult(resultData);
         setState("success");
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (options.json) {
-          console.log(formatJson(createResult(false, null, message)));
-          process.exit(1);
-        }
-        setError(message);
+        setFailure(reportFailure(options, err));
         setState("error");
       }
     }
 
     closePR();
-  }, [options.json, reopen]);
+  }, [options.json, reopen, target]);
 
   if (options.json) {
     return <></>;
@@ -221,38 +114,8 @@ export function CloseCommand({
           </Box>
         </Box>
       );
-    case "no_pr":
-      return (
-        <Box flexDirection="column">
-          <Text color="yellow">No PR found for this branch.</Text>
-          <Text color="gray">Run `pile submit` to create one.</Text>
-        </Box>
-      );
-    case "already_closed":
-      return <Text color="yellow">PR is already closed.</Text>;
-    case "already_open":
-      return <Text color="yellow">PR is already open.</Text>;
-    case "on_trunk":
-      return (
-        <Text color="yellow">
-          Cannot close PR from trunk branch. Checkout a feature branch first.
-        </Text>
-      );
-    case "no_github":
-      return (
-        <Box flexDirection="column">
-          <ErrorMessage>GitHub not configured</ErrorMessage>
-          <Text color="gray">
-            Set GITHUB_TOKEN environment variable or run `gh auth login`
-          </Text>
-        </Box>
-      );
-    case "not_initialized":
-      return (
-        <ErrorMessage>Pile not initialized. Run `pile init` first.</ErrorMessage>
-      );
     case "error":
-      return <ErrorMessage>{error}</ErrorMessage>;
+      return failure ? <FailureMessage failure={failure} /> : <></>;
     default:
       return <></>;
   }
