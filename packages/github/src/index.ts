@@ -14,6 +14,8 @@ export {
 export {
   GitHubClient,
   createGitHubClient,
+  createOctokit,
+  GITHUB_API_VERSION,
   getGitHubToken,
   parseGitRemote,
   getGitHubConfig,
@@ -41,3 +43,6 @@ export {
 
 // GitHub instance
 export { createGitHub, type GitHubInstance } from "./github.js";
+
+// Errors
+export { PileGitHubError, isGraphQLUnavailable, withGraphQL, parsePRNumber } from "./errors.js";

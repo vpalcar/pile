@@ -1,7 +1,11 @@
+import type { Octokit } from "@octokit/rest";
+
 export interface GitHubConfig {
   token: string;
   owner: string;
   repo: string;
+  /** Injected client, for tests. */
+  octokit?: Octokit;
 }
 
 export interface PullRequest {

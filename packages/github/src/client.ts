@@ -1,7 +1,25 @@
 import { Octokit } from "@octokit/rest";
-import { execSync } from "node:child_process";
-import simpleGit from "simple-git";
+import { execFileSync } from "node:child_process";
+import { runGit } from "@pile/core";
 import { GitHubConfig } from "./types.js";
+
+/** Per-request timeout, so a stalled connection fails instead of hanging the CLI. */
+const REQUEST_TIMEOUT_MS = 20_000;
+
+/** REST API version pinned for every request (stacks and other recent endpoints need it). */
+export const GITHUB_API_VERSION = "2026-03-10";
+
+export function createOctokit(token: string): Octokit {
+  return new Octokit({
+    auth: token,
+    userAgent: "pile-cli",
+    request: {
+      fetch: (url: string | URL | Request, init?: RequestInit) =>
+        fetch(url, { ...init, signal: init?.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS) }),
+    },
+    headers: { "x-github-api-version": GITHUB_API_VERSION },
+  });
+}
 
 export class GitHubClient {
   private octokit: Octokit;
@@ -9,7 +27,7 @@ export class GitHubClient {
   private repo: string;
 
   constructor(config: GitHubConfig) {
-    this.octokit = new Octokit({ auth: config.token });
+    this.octokit = config.octokit ?? createOctokit(config.token);
     this.owner = config.owner;
     this.repo = config.repo;
   }
@@ -44,7 +62,10 @@ export function getGitHubToken(): string | null {
 
   // Try to get token from gh CLI
   try {
-    const token = execSync("gh auth token", { encoding: "utf-8" }).trim();
+    const token = execFileSync("gh", ["auth", "token"], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
     if (token) {
       return token;
     }
@@ -59,53 +80,33 @@ export function getGitHubToken(): string | null {
  * Parse owner and repo from git remote URL
  */
 export function parseGitRemote(remoteUrl: string): { owner: string; repo: string } | null {
-  // SSH format: git@github.com:owner/repo.git
-  const sshMatch = remoteUrl.match(/git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/);
-  if (sshMatch) {
-    return { owner: sshMatch[1], repo: sshMatch[2] };
+  // git@github.com:owner/repo.git, ssh://git@github.com/owner/repo.git,
+  // https://github.com/owner/repo(.git), https://user@github.com/owner/repo
+  const match = remoteUrl
+    .trim()
+    .match(/^(?:git@github\.com:|(?:ssh|https?|git):\/\/(?:[^@/]+@)?github\.com(?::\d+)?\/)([^/]+)\/(.+?)(?:\.git)?\/?$/);
+  if (!match) {
+    return null;
   }
-
-  // HTTPS format: https://github.com/owner/repo.git
-  const httpsMatch = remoteUrl.match(/https:\/\/github\.com\/([^/]+)\/(.+?)(?:\.git)?$/);
-  if (httpsMatch) {
-    return { owner: httpsMatch[1], repo: httpsMatch[2] };
-  }
-
-  return null;
+  return { owner: match[1], repo: match[2] };
 }
 
 /**
  * Get GitHub config from the current git repository
  */
-export async function getGitHubConfig(repoPath?: string): Promise<GitHubConfig | null> {
+export async function getGitHubConfig(
+  repoPath?: string,
+  remote = "origin",
+): Promise<GitHubConfig | null> {
   const token = getGitHubToken();
   if (!token) {
     return null;
   }
 
   try {
-    const git = simpleGit(repoPath);
-    const remotes = await git.remote(["-v"]);
-    if (!remotes) {
-      return null;
-    }
-
-    // Find origin remote
-    const match = remotes.match(/origin\s+(\S+)/);
-    if (!match) {
-      return null;
-    }
-
-    const parsed = parseGitRemote(match[1]);
-    if (!parsed) {
-      return null;
-    }
-
-    return {
-      token,
-      owner: parsed.owner,
-      repo: parsed.repo,
-    };
+    const url = await runGit(["remote", "get-url", remote], { cwd: repoPath });
+    const parsed = parseGitRemote(url);
+    return parsed ? { token, owner: parsed.owner, repo: parsed.repo } : null;
   } catch {
     return null;
   }
@@ -145,7 +146,7 @@ export interface GitHubUser {
  * Get current user info and their organizations
  */
 export async function getGitHubUserInfo(token: string): Promise<GitHubUser> {
-  const octokit = new Octokit({ auth: token });
+  const octokit = createOctokit(token);
 
   const [userResponse, orgsResponse] = await Promise.all([
     octokit.users.getAuthenticated(),
@@ -169,7 +170,7 @@ export async function createGitHubRepo(
   token: string,
   options: CreateRepoOptions
 ): Promise<CreateRepoResult> {
-  const octokit = new Octokit({ auth: token });
+  const octokit = createOctokit(token);
 
   let data;
   if (options.org) {

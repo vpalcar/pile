@@ -14,16 +14,17 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@octokit/rest": "^21.0.0",
-    "@pile/core": "workspace:*",
-    "simple-git": "^3.33.0"
+    "@pile/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.19.37",
     "tsup": "^8.5.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^5.1.0"
   }
 }
