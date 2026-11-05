@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
-import type { ApiError, Detail, FileContent, Inbox, ItemRef, ReviewRequest, Session } from "../api";
+import type { ApiError, Detail, FileContent, Inbox, ItemRef, PRUpdate, RepoOptions, RerunRequest, ReviewRequest, Session } from "../api";
 
 /**
  * The server prints a URL with `#token=…`. The token moves to sessionStorage and the
@@ -69,6 +69,9 @@ export const api = {
     request<FileContent>("GET", `/file?ref=${encodeURIComponent(ref)}&path=${encodeURIComponent(path)}`),
   comment: (number: number, body: string) => request<{ ok: true }>("POST", `/pr/${number}/comments`, { body }),
   review: (number: number, review: ReviewRequest) => request<{ ok: true }>("POST", `/pr/${number}/reviews`, review),
+  options: () => request<RepoOptions>("GET", "/options"),
+  update: (number: number, change: PRUpdate) => request<Detail>("PATCH", `/pr/${number}`, change),
+  rerun: (number: number, rerun: RerunRequest) => request<Detail>("POST", `/pr/${number}/checks/rerun`, rerun),
 };
 
 // -----------------------------------------------------------------------------

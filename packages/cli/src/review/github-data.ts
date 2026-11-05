@@ -135,6 +135,8 @@ export async function fetchChecks(octokit: Octokit, repo: Repo, ref: string): Pr
       summary: run.output?.title ?? null,
       url: run.html_url ?? run.details_url ?? null,
       durationSeconds: started && done ? Math.round((done - started) / 1000) : null,
+      // An Actions check run's id is its job's id.
+      jobId: run.app?.slug === "github-actions" ? run.id : null,
     };
   });
   for (const status of statuses) {
@@ -144,6 +146,7 @@ export async function fetchChecks(octokit: Octokit, repo: Repo, ref: string): Pr
       summary: status.description ?? null,
       url: status.target_url ?? null,
       durationSeconds: null,
+      jobId: null,
     });
   }
   return checks.sort((a, b) => order(a.state) - order(b.state) || a.name.localeCompare(b.name));

@@ -9,6 +9,9 @@ import type {
   InboxItem,
   ItemRef,
   PRState,
+  PRUpdate,
+  RepoOptions,
+  RerunRequest,
   ReviewRequest,
   Session,
   StackEntry,
@@ -552,7 +555,8 @@ export class ReviewService {
       const { data } = await this.octokit.repos.getContent({ ...this.repo, path, ref, mediaType: { format: "raw" } });
       return String(data);
     });
-    return { path, ref, lines: text.split("\n") };
+    // A final newline ends the last line rather than starting another.
+    return { path, ref, lines: text.replace(/\r?\n$/, "").split("\n") };
   }
 
   async comment(number: number, body: string): Promise<void> {
@@ -583,6 +587,68 @@ export class ReviewService {
       }
       throw error;
     }
+  }
+
+  /** People and labels a PR can be given; cached for a few minutes. */
+  options(): Promise<RepoOptions> {
+    this.requireGitHub();
+    return this.cached("options", 5 * 60_000, async () => {
+      const [people, labels] = await Promise.all([
+        this.octokit!.paginate(this.octokit!.issues.listAssignees, { ...this.repo!, per_page: 100 }).catch(() => []),
+        this.octokit!.paginate(this.octokit!.issues.listLabelsForRepo, { ...this.repo!, per_page: 100 }).catch(() => []),
+      ]);
+      return {
+        people: people.map((p) => person(p)!).sort((a, b) => a.login.localeCompare(b.login)),
+        labels: labels.map((l) => ({ name: l.name, color: l.color ?? "888888", description: l.description ?? null })),
+      };
+    });
+  }
+
+  /** Changes reviewers, assignees, labels or draft state, then returns the fresh PR. */
+  async update(number: number, change: PRUpdate): Promise<Detail> {
+    this.requireGitHub();
+    const repo = this.repo!;
+    const api = this.octokit!;
+    const tasks: Array<Promise<unknown>> = [];
+    const { reviewers, assignees, labels, draft } = change;
+    if (reviewers?.add?.length) tasks.push(api.pulls.requestReviewers({ ...repo, pull_number: number, reviewers: reviewers.add }));
+    if (reviewers?.remove?.length) tasks.push(api.pulls.removeRequestedReviewers({ ...repo, pull_number: number, reviewers: reviewers.remove }));
+    if (assignees?.add?.length) tasks.push(api.issues.addAssignees({ ...repo, issue_number: number, assignees: assignees.add }));
+    if (assignees?.remove?.length) tasks.push(api.issues.removeAssignees({ ...repo, issue_number: number, assignees: assignees.remove }));
+    // Setting labels creates any that don't exist yet.
+    if (labels) tasks.push(api.issues.setLabels({ ...repo, issue_number: number, labels }));
+    if (draft !== undefined) tasks.push(draft ? this.github!.prs.convertToDraft(number) : this.github!.prs.markReadyForReview(number));
+    try {
+      await Promise.all(tasks);
+    } catch (error) {
+      this.invalidate({ kind: "pr", number });
+      throw cleanGitHubError(error);
+    }
+    if (labels) this.memo.delete("options");
+    this.invalidate({ kind: "pr", number });
+    return this.detail({ kind: "pr", number });
+  }
+
+  /** Re-runs one GitHub Actions job, or every failed job on the PR's head commit. */
+  async rerun(number: number, request: RerunRequest): Promise<Detail> {
+    this.requireGitHub();
+    const repo = this.repo!;
+    const api = this.octokit!;
+    try {
+      if (request.jobId) {
+        await api.actions.reRunJobForWorkflowRun({ ...repo, job_id: request.jobId });
+      } else {
+        const { data: pr } = await api.pulls.get({ ...repo, pull_number: number });
+        const failed = (await fetchChecks(api, repo, pr.head.sha)).filter((c) => c.state === "failure" && c.url);
+        const runs = new Set(failed.map((c) => c.url!.match(/\/actions\/runs\/(\d+)/)?.[1]).filter((id): id is string => !!id));
+        if (runs.size === 0) throw new ReviewError(400, "NOTHING_TO_RERUN", "There are no failed GitHub Actions checks to re-run");
+        await Promise.all([...runs].map((id) => api.actions.reRunWorkflowFailedJobs({ ...repo, run_id: Number(id) })));
+      }
+    } catch (error) {
+      throw cleanGitHubError(error);
+    }
+    this.invalidate({ kind: "pr", number });
+    return this.detail({ kind: "pr", number });
   }
 
   private requireGitHub(): void {
@@ -664,4 +730,15 @@ function sortByStack(items: InboxItem[]): InboxItem[] {
     .map((group) => group.sort((a, b) => (a.stack?.index ?? 0) - (b.stack?.index ?? 0)))
     .sort((a, b) => latest(b) - latest(a))
     .flat();
+}
+
+/** GitHub's messages end with a docs link and may hide the reason in `errors`. */
+function cleanGitHubError(error: unknown): unknown {
+  if (error instanceof ReviewError || error instanceof PileGitHubError) return error;
+  const status = (error as { status?: number }).status;
+  if (!status) return error;
+  const data = (error as { response?: { data?: { message?: string; errors?: Array<{ message?: string } | string> } } }).response?.data;
+  const detail = data?.errors?.map((e) => (typeof e === "string" ? e : e.message)).filter(Boolean).join("; ");
+  const message = (detail || data?.message || (error as Error).message).replace(/ - https:.*$/, "");
+  return new ReviewError(status >= 400 && status < 500 ? status : 502, `GITHUB_${status}`, message);
 }

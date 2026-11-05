@@ -23,7 +23,9 @@ await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: 
 const page = await context.newPage();
 
 const consoleErrors = [];
-page.on("console", (m) => m.type() === "error" && !m.text().includes("401") && !m.text().includes("503") && !m.text().includes("404") && !m.text().includes("422") && consoleErrors.push(m.text()));
+// Failed requests the suite provokes on purpose (gate, server down, missing PR, GitHub rejections, git failure).
+const EXPECTED = /\b(401|404|422|500|503)\b/;
+page.on("console", (m) => m.type() === "error" && !(m.text().startsWith("Failed to load resource") && EXPECTED.test(m.text())) && consoleErrors.push(m.text()));
 page.on("pageerror", (e) => consoleErrors.push(String(e)));
 
 const results = [];
@@ -468,6 +470,21 @@ await check("existing inline threads show under their lines", async () => {
   const first = (await threads.first().innerText()).replace(/\s+/g, " ");
   expect(first.includes("Nit: keep the old name") || first.includes("refills on every request"), first);
 });
+await check("added and removed files offer no context to expand", async () => {
+  for (const path of ["src/api/headers.ts", "src/legacy/throttle.js"]) {
+    const file = page.locator(`.file[data-path="${path}"]`);
+    await file.scrollIntoViewIfNeeded();
+    expect((await file.getByRole("button", { name: /^Show/ }).count()) === 0, `${path} has expand buttons`);
+  }
+});
+await check("a failed expand says why instead of doing nothing", async () => {
+  await setState("fileDown=true");
+  const file = page.locator('.file[data-path="src/api/limit.ts"]');
+  await file.scrollIntoViewIfNeeded();
+  await file.getByRole("button", { name: /Show 19 more lines/ }).click();
+  await toast("Couldn't load more of src/api/limit.ts");
+  await setState("fileDown=false");
+});
 await check("expanding context reveals hidden lines", async () => {
   const file = page.locator('.file[data-path="src/api/limit.ts"]');
   const before = await file.locator("tr:not(.hunk):not(.thread)").count();
@@ -677,6 +694,130 @@ await check("missing PR shows an error and a way back", async () => {
   await shot("not found");
   await page.getByRole("button", { name: "Back to inbox" }).click();
   await page.waitForSelector("[data-page=inbox]");
+});
+
+// =============================================================================
+section = "editing";
+log("\nEditing a PR from the rail");
+const rail = () => page.locator("[data-page=detail] aside").last();
+const railSection = (name) => rail().locator("div.relative", { has: page.locator("h4", { hasText: name }) });
+const lastCall = async (type) => (await calls()).filter((c) => c.type === type).at(-1);
+
+await check("reviewers: request from the picker; the author can't be picked", async () => {
+  await open("#/pr/101");
+  await detailReady();
+  await railSection("Reviewers").getByRole("button", { name: "Request reviewers" }).click();
+  const picker = page.getByRole("dialog", { name: "Request reviews from" });
+  await picker.getByRole("option", { name: /bob/ }).waitFor();
+  expect(await picker.getByRole("option", { name: /alice/ }).isDisabled(), "author disabled");
+  const box = await picker.boundingBox();
+  expect(box.y >= 0 && box.y + box.height <= page.viewportSize().height, `picker on screen (${Math.round(box.y)}–${Math.round(box.y + box.height)})`);
+  await shot("reviewer picker");
+  await picker.locator("input").fill("bo");
+  expect((await picker.getByRole("option").count()) === 1, "filtered to bob");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Escape");
+  await toast("Requested review from bob");
+  const call = await lastCall("update");
+  expect(JSON.stringify(call.reviewers) === JSON.stringify({ add: ["bob"], remove: [] }), JSON.stringify(call));
+  expect((await railSection("Reviewers").innerText()).replace(/\s+/g, " ").includes("bob Requested"), "bob requested");
+});
+await check("reviewers: un-checking a request removes it", async () => {
+  await railSection("Reviewers").getByRole("button", { name: "Request reviewers" }).click();
+  const picker = page.getByRole("dialog", { name: "Request reviews from" });
+  await picker.getByRole("option", { name: /bob/ }).click();
+  await page.mouse.click(5, 300); // outside closes and applies
+  await toast("Reviewers updated");
+  const call = await lastCall("update");
+  expect(call.reviewers.remove.includes("bob"), JSON.stringify(call));
+  expect(!(await railSection("Reviewers").innerText()).includes("bob"), "bob removed");
+});
+await check("picker closed without changes sends nothing", async () => {
+  const before = (await calls()).length;
+  await railSection("Assignees").getByRole("button", { name: "Edit assignees" }).click();
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(300);
+  expect((await calls()).length === before, "no call");
+});
+await check("labels: toggle, create a new one, chips update", async () => {
+  await railSection("Labels").getByRole("button", { name: "Edit labels" }).click();
+  const picker = page.getByRole("dialog", { name: "Labels" });
+  await picker.getByRole("option", { name: /light/ }).click();
+  await picker.locator("input").fill("urgent");
+  await picker.getByRole("button", { name: /Create urgent/ }).click();
+  await shot("labels picker");
+  await page.keyboard.press("Escape");
+  await toast("Labels updated");
+  const call = await lastCall("update");
+  expect(JSON.stringify(call.labels) === JSON.stringify(["api", "security", "needs-docs", "urgent"]), JSON.stringify(call.labels));
+  const chips = await railSection("Labels").innerText();
+  expect(chips.includes("urgent") && !chips.includes("light"), chips);
+});
+await check("a rejected change shows GitHub's reason and reverts", async () => {
+  await railSection("Labels").getByRole("button", { name: "Edit labels" }).click();
+  const picker = page.getByRole("dialog", { name: "Labels" });
+  await picker.locator("input").fill("fail");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Escape");
+  await toast("Reviews may only be requested");
+  await page.waitForTimeout(800);
+  expect(!(await railSection("Labels").innerText()).includes("fail"), "reverted");
+});
+await check("assignees: add and remove", async () => {
+  await railSection("Assignees").getByRole("button", { name: "Edit assignees" }).click();
+  const picker = page.getByRole("dialog", { name: "Assign to" });
+  await picker.getByRole("option", { name: /bob/ }).click();
+  await picker.getByRole("option", { name: /carol/ }).click();
+  await page.keyboard.press("Escape");
+  await toast("Assignees updated");
+  const call = await lastCall("update");
+  expect(JSON.stringify(call.assignees) === JSON.stringify({ add: ["carol"], remove: ["bob"] }), JSON.stringify(call.assignees));
+  const text = await railSection("Assignees").innerText();
+  expect(text.includes("carol") && !text.includes("bob"), text);
+});
+await check("checks: re-run one from its row, or every failed one", async () => {
+  await page.mouse.move(5, 5);
+  const lint = rail().locator("div.group\\/check", { hasText: "lint" });
+  expect(!(await lint.getByRole("button").isVisible()), "re-run hidden until hover");
+  const row = rail().locator("div.group\\/check", { hasText: "typecheck" });
+  await row.hover();
+  await row.getByRole("button", { name: "Re-run typecheck" }).click();
+  await toast("Re-running typecheck");
+  expect((await lastCall("rerun")).jobId === 7001, "job id sent");
+  await page.waitForTimeout(300);
+  expect((await row.locator("svg").first().getAttribute("class"))?.includes("animate") || (await rail().innerText()).includes("2 running"), "shown as running");
+  await setState("reset=1");
+  await open("#/pr/101");
+  await detailReady();
+  await rail().getByRole("button", { name: /Re-run failed check/ }).click();
+  await toast("Re-running failed checks");
+  const call = await lastCall("rerun");
+  expect(call && call.jobId === undefined, JSON.stringify(call));
+});
+await check("status checks without a job can't be re-run", async () => {
+  const row = rail().locator("div.group\\/check", { hasText: "preview deploy" });
+  await row.hover();
+  expect((await row.getByRole("button").count()) === 0, "no re-run on a status");
+});
+await check("draft → ready for review, and back", async () => {
+  await open("#/pr/112");
+  await detailReady();
+  await shot("draft rail");
+  await rail().getByRole("button", { name: "Ready for review" }).click();
+  await toast("#112 is ready for review");
+  expect((await lastCall("update")).draft === false, "draft false sent");
+  await rail().getByRole("button", { name: "To draft" }).waitFor();
+  expect(!(await rail().getByRole("button", { name: "Ready for review" }).isVisible()), "ready button gone");
+  await rail().getByRole("button", { name: "To draft" }).click();
+  await toast("#112 is a draft again");
+  expect((await lastCall("update")).draft === true, "draft true sent");
+  await rail().getByRole("button", { name: "Ready for review" }).waitFor();
+});
+await check("local branches have nothing to edit", async () => {
+  await open("#/branch/spike%2Fparser-errors");
+  await detailReady();
+  expect((await count("aside button[aria-label^='Edit'], aside button[aria-label='Request reviewers'], aside button:has-text('To draft')")) === 0, "no edit controls");
+  await setState("reset=1");
 });
 
 // =============================================================================

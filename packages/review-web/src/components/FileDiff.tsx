@@ -64,7 +64,20 @@ export const FileDiff = memo(function FileDiff(props: Props) {
       data-path={file.path}
       className={cx("file scroll-mt-14 rounded-xl border bg-panel transition-[border-color] duration-150", active ? "border-line-3" : "border-line")}
     >
-      <div className={cx("sticky top-11 z-[5] flex h-10 items-center gap-2 bg-panel pl-2 pr-2", collapsed ? "rounded-xl" : "rounded-t-xl border-b border-line")}>
+      <div
+        className={cx(
+          "sticky top-11 z-[5] flex h-10 items-center gap-2 pl-2 pr-2",
+          collapsed
+            ? "rounded-xl bg-panel"
+            : // While stuck, lines scroll under the header. A square page-colored backdrop fills
+              // its rounded corners, and the header redraws the card's border on top of it.
+              cx(
+                "[border-color:inherit]",
+                "before:absolute before:-inset-x-px before:-top-px before:bottom-0 before:-z-20 before:bg-bg",
+                "after:absolute after:-inset-x-px after:-top-px after:bottom-0 after:-z-10 after:rounded-t-xl after:border after:bg-panel after:[border-color:inherit] after:border-b-line",
+              ),
+        )}
+      >
         <Button variant="ghost" size="sm" icon onClick={() => setCollapsed((c) => !c)} aria-label={collapsed ? "Expand file" : "Collapse file"}>
           <ChevronDown size={14} className={cx("transition-transform duration-150", collapsed && "-rotate-90")} />
         </Button>
@@ -174,6 +187,7 @@ type Row =
 
 function DiffBody(props: Props) {
   const { file, wrap, comments, pending } = props;
+  const toast = useToast();
   // A whole-file addition or deletion has nothing to show on the other side.
   const mode = file.status === "added" || file.status === "removed" ? "unified" : props.mode;
   const hunks = useMemo(() => parsePatch(file.patch ?? ""), [file.patch]);
@@ -184,7 +198,9 @@ function DiffBody(props: Props) {
   const [revealed, setRevealed] = useState<Record<string, number>>({});
   const [loadingGap, setLoadingGap] = useState<string | null>(null);
 
-  const allGaps = useMemo(() => gaps(hunks, fileLines?.length ?? null), [hunks, fileLines]);
+  // An added or removed file's patch is the whole file: there's no context to reveal.
+  const wholeFile = file.status === "added" || file.status === "removed";
+  const allGaps = useMemo(() => (wholeFile ? [] : gaps(hunks, fileLines?.length ?? null)), [hunks, fileLines, wholeFile]);
 
   // Syntax tokens: each side highlighted as one block; the full file when loaded.
   const [tokens, setTokens] = useState<{ old: Map<number, Token[]>; new: Map<number, Token[]> }>({ old: new Map(), new: new Map() });
@@ -215,9 +231,12 @@ function DiffBody(props: Props) {
       setLoadingGap(key);
       try {
         lines = (await api.file(props.headSha, file.path)).lines;
+        // A final newline isn't a line of its own.
+        if (lines.length > 0 && lines[lines.length - 1] === "") lines = lines.slice(0, -1);
         setFileLines(lines);
-      } catch {
+      } catch (error) {
         setLoadingGap(null);
+        toast(`Couldn't load more of ${file.path}: ${(error as Error).message}`, { key: "expand" });
         return;
       }
       setLoadingGap(null);

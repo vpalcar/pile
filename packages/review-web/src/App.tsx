@@ -25,7 +25,10 @@ function Shell() {
   const session = useResource("session", api.session);
   const inbox = useResource("inbox", () => api.inbox(), { refreshMs: 30_000 });
   const detailKey = route.ref ? refKey(route.ref) : null;
-  const detail = useResource<Detail>(detailKey, () => api.detail(route.ref!), { refreshMs: 60_000 });
+  // While checks run, poll often and past the server's cache so progress shows up live.
+  const [checksRunning, setChecksRunning] = useState(false);
+  const detail = useResource<Detail>(detailKey, () => api.detail(route.ref!, checksRunning), { refreshMs: checksRunning ? 8_000 : 60_000 });
+  useEffect(() => setChecksRunning(!!detail.data?.checks.some((c) => c.state === "pending")), [detail.data]);
 
   // The first answer may be the quick list; ask again until the full version arrives.
   useEffect(() => {
