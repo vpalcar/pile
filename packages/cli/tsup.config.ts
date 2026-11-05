@@ -7,7 +7,7 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   splitting: true,
-  noExternal: ["@pile/core", "@pile/github"],
+  noExternal: ["@pile/core", "@pile/github", "@pile/review-web"],
   external: [
     "commander",
     "ink",
