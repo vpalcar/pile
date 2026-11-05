@@ -3,7 +3,14 @@ import { Box, Text, useInput, useApp } from "ink";
 import { createPile, PileInstance } from "@pile/core";
 import { Spinner } from "../components/Spinner.js";
 import { ErrorMessage, SuccessMessage } from "../components/Message.js";
-import { OutputOptions, formatJson, createResult } from "../utils/output.js";
+import {
+  OutputOptions,
+  formatJson,
+  createResult,
+  exitWithError,
+  toCommandError,
+} from "../utils/output.js";
+import { trackBranchWithParent, untrackBranchKeepingChildren } from "./track.js";
 
 export interface BranchesCommandProps {
   options: OutputOptions;
@@ -40,7 +47,7 @@ export function BranchesCommand({
   const [trackingBranch, setTrackingBranch] = useState<string | null>(null);
   const [suggestedParent, setSuggestedParent] = useState<string | null>(null);
 
-  const loadBranches = async (pile: PileInstance) => {
+  const loadBranches = async (pile: PileInstance): Promise<BranchItem[]> => {
     const config = pile.state.getConfig();
     const trunkBranch = config?.trunk ?? "main";
     setTrunk(trunkBranch);
@@ -81,8 +88,12 @@ export function BranchesCommand({
 
     // Build tree structure starting from trunk
     const flatList: BranchItem[] = [];
+    const seen = new Set<string>();
 
     const addBranchAndChildren = (branchName: string, depth: number) => {
+      // Guards against parent cycles in config.
+      if (seen.has(branchName)) return;
+      seen.add(branchName);
       const children = childrenMap[branchName] || [];
 
       // Sort children: tracked first, then alphabetically
@@ -118,6 +129,7 @@ export function BranchesCommand({
     addBranchAndChildren(trunkBranch, 0);
 
     setBranches(flatList);
+    return flatList;
   };
 
   useEffect(() => {
@@ -127,51 +139,61 @@ export function BranchesCommand({
         setPileInstance(pile);
 
         if (!pile.state.isInitialized()) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "Pile not initialized"))
-            );
-            process.exit(1);
+          if (options.json || !options.interactive) {
+            exitWithError(options, {
+              code: "NOT_INITIALIZED",
+              message: "Pile not initialized",
+              hint: "Run `pile init` first.",
+            });
           }
           setState("not_initialized");
           return;
         }
 
-        await loadBranches(pile);
+        const list = await loadBranches(pile);
 
         if (options.json) {
           const config = pile.state.getConfig();
-          const trackedBranches = pile.stack.getAllTrackedBranches();
-          const localBranches = await pile.git.getAllBranches();
-          const remoteBranches = await pile.git.getRemoteBranches();
+          const refs = await pile.git.getRefs();
 
           console.log(
             formatJson(
               createResult(true, {
                 trunk: config?.trunk ?? "main",
-                tracked: trackedBranches,
-                local: localBranches,
-                remote: remoteBranches,
+                tracked: pile.stack.getAllTrackedBranches(),
+                local: [...refs.local.keys()],
+                remote: [...refs.remote.keys()],
+                branches: [...list].reverse().map((b) => ({
+                  name: b.name,
+                  tracked: b.isTracked,
+                  parent: b.isTrunk ? null : (b.parent ?? null),
+                  isCurrent: b.isCurrent,
+                  isTrunk: b.isTrunk,
+                })),
               })
             )
           );
           process.exit(0);
         }
 
-        if (!process.stdin.isTTY) {
-          setError("Interactive branches view requires a terminal. Use `pile --json branches` instead.");
-          setState("error");
-          return;
+        // Without a terminal, print the list instead of the browser.
+        if (!options.interactive) {
+          const lines = [...list].reverse().map((b) => {
+            const marker = b.isCurrent ? "*" : " ";
+            const status = b.isTrunk ? "trunk" : b.isTracked ? `on ${b.parent}` : "untracked";
+            return `${marker} ${b.name}  (${status})`;
+          });
+          process.stdout.write(`${lines.join("\n")}\n`);
+          process.exit(0);
         }
 
         setState("browsing");
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (options.json) {
-          console.log(formatJson(createResult(false, null, message)));
-          process.exit(1);
+        if (options.json || !options.interactive) {
+          exitWithError(options, toCommandError(err));
         }
-        setError(message);
+        process.exitCode = 1;
+        setError(err instanceof Error ? err.message : String(err));
         setState("error");
       }
     }
@@ -184,7 +206,7 @@ export function BranchesCommand({
 
     if (branch.isTracked) {
       // Untrack
-      await pileInstance.stack.untrackBranch(branch.name);
+      untrackBranchKeepingChildren(pileInstance, branch.name);
       setSuccessMessage(`Untracked ${branch.name}`);
       await loadBranches(pileInstance);
     } else {
@@ -198,7 +220,7 @@ export function BranchesCommand({
   const confirmTrack = async () => {
     if (!pileInstance || !trackingBranch || !suggestedParent) return;
 
-    await pileInstance.stack.trackBranch(trackingBranch, suggestedParent);
+    await trackBranchWithParent(pileInstance, trackingBranch, suggestedParent);
     setSuccessMessage(`Tracking ${trackingBranch}`);
     setTrackingBranch(null);
     setSuggestedParent(null);

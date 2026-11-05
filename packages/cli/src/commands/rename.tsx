@@ -8,8 +8,14 @@ import {
   ErrorMessage,
   WarningMessage,
 } from "../components/Message.js";
-import { OutputOptions, formatJson, createResult } from "../utils/output.js";
-import { execSync } from "node:child_process";
+import {
+  OutputOptions,
+  CommandError,
+  formatJson,
+  createResult,
+  exitWithError,
+  toCommandError,
+} from "../utils/output.js";
 
 export interface RenameCommandProps {
   newName: string;
@@ -39,19 +45,26 @@ export function RenameCommand({
   const [remoteRenamed, setRemoteRenamed] = useState(false);
   const [prUpdated, setPrUpdated] = useState(false);
 
+  // Non-interactive runs exit with a structured error; interactive runs render it.
+  const fail = (err: CommandError, view: State = "error") => {
+    if (options.json || !options.interactive) {
+      exitWithError(options, err);
+    }
+    process.exitCode = 1;
+    setError(err.message);
+    setState(view);
+  };
+
   useEffect(() => {
     async function run() {
       try {
         const pile = await createPile();
 
         if (!pile.state.isInitialized()) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "Pile not initialized"))
-            );
-            process.exit(1);
-          }
-          setState("not_initialized");
+          fail(
+            { code: "NOT_INITIALIZED", message: "Pile not initialized", hint: "Run `pile init` first." },
+            "not_initialized",
+          );
           return;
         }
 
@@ -60,129 +73,82 @@ export function RenameCommand({
         setOldName(currentBranch);
 
         if (currentBranch === trunk) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "Cannot rename trunk branch"))
-            );
-            process.exit(1);
-          }
-          setState("on_trunk");
+          fail({ code: "ON_TRUNK", message: "Cannot rename trunk branch" }, "on_trunk");
           return;
         }
 
         // Check if new name already exists
-        const newBranchExists = await pile.git.branchExists(newName);
-        if (newBranchExists) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, `Branch '${newName}' already exists`))
-            );
-            process.exit(1);
-          }
-          setState("name_exists");
+        if (await pile.git.branchExists(newName)) {
+          fail({ code: "BRANCH_EXISTS", message: `Branch '${newName}' already exists` }, "name_exists");
           return;
         }
 
         // Get current branch relationship
         const rel = pile.state.getBranchRelationship(currentBranch);
         if (!rel) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "Branch is not tracked by pile"))
-            );
-            process.exit(1);
-          }
-          setState("not_tracked");
+          fail(
+            {
+              code: "NOT_TRACKED",
+              message: "Branch is not tracked by pile",
+              hint: "Run `pile track` to track it first.",
+            },
+            "not_tracked",
+          );
           return;
         }
+        const children = pile.state.getChildren(currentBranch);
+        const remote = pile.git.remoteName;
+        const hasRemote = (await pile.git.getRefs()).remote.has(`${remote}/${currentBranch}`);
 
-        const repoRoot = await pile.git.getRepoRoot();
-
-        // Rename local branch
+        // Rename local branch. Git moves the branch.<name>.* config section (and so the
+        // pile metadata) to the new name; the cached state is invalidated by the call.
         setState("renaming_local");
-        execSync(`git branch -m "${currentBranch}" "${newName}"`, {
-          cwd: repoRoot,
-          encoding: "utf-8",
-          stdio: ["pipe", "pipe", "pipe"],
-        });
+        await pile.git.renameBranch(currentBranch, newName);
 
         // Update pile tracking
         setState("updating_tracking");
-
-        // Remove old relationship and create new one
-        pile.state.removeBranchRelationship(currentBranch);
-        pile.state.setBranchRelationship(newName, {
-          ...rel,
-          name: newName,
-        });
+        pile.state.setBranchRelationship(newName, { ...rel, name: newName });
 
         // Update children's parent references
-        const children = pile.state.getChildren(currentBranch);
         for (const child of children) {
           const childRel = pile.state.getBranchRelationship(child);
           if (childRel && childRel.parent === currentBranch) {
-            pile.state.setBranchRelationship(child, {
-              ...childRel,
-              parent: newName,
-            });
+            pile.state.setBranchRelationship(child, { ...childRel, parent: newName });
           }
         }
 
-        // Try to rename remote branch
+        // Rename the remote branch. GitHub's rename endpoint keeps open PRs attached;
+        // pushing a new branch and deleting the old one would close them.
         setState("renaming_remote");
         let renamedRemote = false;
-        try {
-          // Check if remote branch exists
-          const remoteBranches = await pile.git.getRemoteBranches();
-          const hasRemote = remoteBranches.some(
-            (b) => b === `origin/${currentBranch}` || b.endsWith(`/${currentBranch}`)
-          );
-
-          if (hasRemote) {
-            // Push new branch name
-            execSync(`git push origin "${newName}"`, {
-              cwd: repoRoot,
-              encoding: "utf-8",
-              stdio: ["pipe", "pipe", "pipe"],
+        let updatedPr = false;
+        const github = hasRemote ? await createGitHub(pile).catch(() => null) : null;
+        if (hasRemote && github) {
+          try {
+            await github.client.api.repos.renameBranch({
+              owner: github.client.repoOwner,
+              repo: github.client.repoName,
+              branch: currentBranch,
+              new_name: newName,
             });
-
-            // Delete old remote branch
-            execSync(`git push origin --delete "${currentBranch}"`, {
-              cwd: repoRoot,
-              encoding: "utf-8",
-              stdio: ["pipe", "pipe", "pipe"],
-            });
-
-            // Set upstream
-            execSync(`git branch -u "origin/${newName}"`, {
-              cwd: repoRoot,
-              encoding: "utf-8",
-              stdio: ["pipe", "pipe", "pipe"],
-            });
-
+            await pile.git.fetch(true);
+            await pile.git.run(["branch", "--set-upstream-to", `${remote}/${newName}`, newName]);
             renamedRemote = true;
+            updatedPr = !!rel.prNumber;
+          } catch {
+            // Remote rename failed; the local rename still stands.
           }
-        } catch {
-          // Remote rename failed, that's okay
+        } else if (hasRemote && !rel.prNumber) {
+          // No GitHub access and no PR to keep: push the new name, drop the old one.
+          try {
+            await pile.git.pushSetUpstream(newName);
+            await pile.git.deleteRemoteBranch(currentBranch);
+            renamedRemote = true;
+          } catch {
+            // Remote rename failed, that's okay
+          }
         }
         setRemoteRenamed(renamedRemote);
-
-        // Try to update PR if exists
-        setState("updating_pr");
-        let updatedPr = false;
-        const github = await createGitHub(`${repoRoot}/.pile`);
-        if (github && rel.prNumber) {
-          try {
-            // GitHub automatically updates the PR when the branch is renamed
-            // But we should verify the PR still exists and is linked
-            const pr = await github.prs.get(rel.prNumber);
-            if (pr) {
-              updatedPr = true;
-            }
-          } catch {
-            // PR update failed
-          }
-        }
         setPrUpdated(updatedPr);
 
         if (options.json) {
@@ -193,6 +159,7 @@ export function RenameCommand({
                 newName,
                 remoteRenamed: renamedRemote,
                 prUpdated: updatedPr,
+                childrenUpdated: children,
               })
             )
           );
@@ -201,13 +168,7 @@ export function RenameCommand({
 
         setState("success");
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (options.json) {
-          console.log(formatJson(createResult(false, null, message)));
-          process.exit(1);
-        }
-        setError(message);
-        setState("error");
+        fail(toCommandError(err));
       }
     }
 
@@ -260,7 +221,7 @@ export function RenameCommand({
     case "not_tracked":
       return (
         <WarningMessage>
-          Branch is not tracked by pile. Run `pile branches` to track it first.
+          Branch is not tracked by pile. Run `pile track` to track it first.
         </WarningMessage>
       );
     case "on_trunk":

@@ -4,10 +4,18 @@ import { createPile } from "@pile/core";
 import { createGitHub } from "@pile/github";
 import { Spinner } from "../components/Spinner.js";
 import { SuccessMessage, ErrorMessage, WarningMessage } from "../components/Message.js";
-import { OutputOptions, formatJson, createResult } from "../utils/output.js";
-import { execSync } from "node:child_process";
+import {
+  OutputOptions,
+  CommandError,
+  formatJson,
+  createResult,
+  exitWithError,
+  toCommandError,
+} from "../utils/output.js";
 
 export interface DeleteCommandProps {
+  /** Branch to delete (default: current branch). */
+  branch?: string;
   force?: boolean;
   options: OutputOptions;
 }
@@ -22,13 +30,25 @@ type State =
   | "error";
 
 export function DeleteCommand({
+  branch,
   force,
   options,
 }: DeleteCommandProps): React.ReactElement {
   const [state, setState] = useState<State>("loading");
   const [deletedBranch, setDeletedBranch] = useState<string | null>(null);
   const [closedPR, setClosedPR] = useState<number | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Non-interactive runs exit with a structured error; interactive runs render it.
+  const fail = (err: CommandError, view: State = "error") => {
+    if (options.json || !options.interactive) {
+      exitWithError(options, err);
+    }
+    process.exitCode = 1;
+    setError(err.message);
+    setState(view);
+  };
 
   useEffect(() => {
     async function deleteBranch() {
@@ -36,109 +56,111 @@ export function DeleteCommand({
         const pile = await createPile();
 
         if (!pile.state.isInitialized()) {
-          if (options.json) {
-            console.log(formatJson(createResult(false, null, "Pile not initialized")));
-            process.exit(1);
-          }
-          setState("not_initialized");
+          fail(
+            { code: "NOT_INITIALIZED", message: "Pile not initialized", hint: "Run `pile init` first." },
+            "not_initialized",
+          );
           return;
         }
 
-        const config = pile.state.getConfig();
-        const trunk = config?.trunk ?? "main";
+        const trunk = pile.stack.getTrunk();
         const currentBranch = await pile.git.getCurrentBranch();
+        const target = branch ?? currentBranch;
 
-        if (currentBranch === trunk) {
-          if (options.json) {
-            console.log(formatJson(createResult(false, null, "Cannot delete trunk branch")));
-            process.exit(1);
-          }
-          setState("on_trunk");
+        if (target === trunk) {
+          fail({ code: "ON_TRUNK", message: "Cannot delete trunk branch" }, "on_trunk");
+          return;
+        }
+
+        const refs = await pile.git.getRefs();
+        if (!refs.local.has(target)) {
+          fail({
+            code: "BRANCH_NOT_FOUND",
+            message: `Branch "${target}" does not exist`,
+            hint: "Run `pile log` to see tracked branches.",
+          });
           return;
         }
 
         // Check for children
-        const children = pile.state.getChildren(currentBranch);
+        const children = pile.state.getChildren(target);
         if (children.length > 0 && !force) {
-          if (options.json) {
-            console.log(
-              formatJson(
-                createResult(false, null, `Branch has ${children.length} child branch(es). Use --force to reparent them and delete.`)
-              )
-            );
-            process.exit(1);
-          }
-          setState("has_children");
+          fail(
+            {
+              code: "HAS_CHILDREN",
+              message: `Branch has ${children.length} child branch(es): ${children.join(", ")}`,
+              hint: "Use --force to reparent them onto its parent and delete.",
+              data: { children },
+            },
+            "has_children",
+          );
           return;
         }
 
         setState("deleting");
 
-        const repoRoot = await pile.git.getRepoRoot();
-        const parent = pile.state.getParent(currentBranch) ?? trunk;
-        const rel = pile.state.getBranchRelationship(currentBranch);
+        const parent = pile.state.getParent(target) ?? trunk;
+        const rel = pile.state.getBranchRelationship(target);
 
-        // Reparent children to this branch's parent
-        if (children.length > 0) {
-          for (const child of children) {
-            const childRel = pile.state.getBranchRelationship(child);
-            if (childRel) {
-              pile.state.setBranchRelationship(child, { ...childRel, parent });
+        // Reparent children to this branch's parent. Their base commit stays, so the
+        // next restack replays only their own commits onto the new parent.
+        for (const child of children) {
+          const childRel = pile.state.getBranchRelationship(child);
+          if (childRel) {
+            pile.state.setBranchRelationship(child, { ...childRel, parent });
+          }
+        }
+
+        // Close the PR if there is one; GitHub problems never block the delete.
+        let prClosed: number | null = null;
+        if (rel?.prNumber) {
+          const github = await createGitHub(pile).catch(() => null);
+          if (!github) {
+            setWarning(`Could not reach GitHub; PR #${rel.prNumber} was left open.`);
+          } else {
+            try {
+              const pr = await github.prs.get(rel.prNumber);
+              if (pr.state === "open") {
+                await github.prs.update({ number: rel.prNumber, state: "closed" });
+                prClosed = rel.prNumber;
+                setClosedPR(rel.prNumber);
+              }
+            } catch (err) {
+              setWarning(`Could not close PR #${rel.prNumber}: ${toCommandError(err).message}`);
             }
           }
         }
 
-        // Close PR if exists
-        const github = await createGitHub(`${repoRoot}/.pile`);
-        if (github && rel?.prNumber) {
-          try {
-            const pr = await github.prs.get(rel.prNumber);
-            if (pr && pr.state === "open") {
-              await github.prs.update({ number: rel.prNumber, state: "closed" });
-              setClosedPR(rel.prNumber);
-            }
-          } catch {
-            // PR close failed, continue with branch deletion
-          }
+        // Leave the branch before deleting it.
+        const switchedTo = target === currentBranch ? parent : null;
+        if (switchedTo) {
+          await pile.git.checkout(switchedTo);
         }
-
-        // Switch to parent branch
-        await pile.git.checkout(parent);
 
         // Delete remote branch
-        try {
-          execSync(`git push origin --delete "${currentBranch}"`, {
-            cwd: repoRoot,
-            encoding: "utf-8",
-            stdio: ["pipe", "pipe", "pipe"],
-          });
-        } catch {
-          // Remote delete failed, that's ok
+        if (refs.remote.has(`${pile.git.remoteName}/${target}`)) {
+          try {
+            await pile.git.deleteRemoteBranch(target);
+          } catch {
+            // Remote delete failed, that's ok
+          }
         }
 
         // Delete local branch and tracking
-        pile.state.removeBranchRelationship(currentBranch);
-        try {
-          await pile.git.deleteBranch(currentBranch, true);
-        } catch {
-          // Force delete if needed
-          execSync(`git branch -D "${currentBranch}"`, {
-            cwd: repoRoot,
-            encoding: "utf-8",
-            stdio: ["pipe", "pipe", "pipe"],
-          });
-        }
+        pile.state.removeBranchRelationship(target);
+        await pile.git.deleteBranch(target, true);
 
-        setDeletedBranch(currentBranch);
+        setDeletedBranch(target);
 
         if (options.json) {
           console.log(
             formatJson(
               createResult(true, {
-                deleted: currentBranch,
-                closedPR: closedPR,
+                deleted: target,
+                closedPR: prClosed,
+                prClosed: prClosed !== null,
                 reparented: children,
-                switchedTo: parent,
+                switchedTo,
               })
             )
           );
@@ -147,18 +169,12 @@ export function DeleteCommand({
 
         setState("success");
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (options.json) {
-          console.log(formatJson(createResult(false, null, message)));
-          process.exit(1);
-        }
-        setError(message);
-        setState("error");
+        fail(toCommandError(err));
       }
     }
 
     deleteBranch();
-  }, [force, options.json]);
+  }, [branch, force, options.json]);
 
   if (options.json) return <></>;
 
@@ -168,17 +184,20 @@ export function DeleteCommand({
       return <Spinner label="Deleting branch..." />;
     case "success":
       return (
-        <SuccessMessage>
-          <Text>Deleted {deletedBranch}</Text>
-          {closedPR && <Text color="gray"> (closed PR #{closedPR})</Text>}
-        </SuccessMessage>
+        <>
+          <SuccessMessage>
+            <Text>Deleted {deletedBranch}</Text>
+            {closedPR && <Text color="gray"> (closed PR #{closedPR})</Text>}
+          </SuccessMessage>
+          {warning && <WarningMessage>{warning}</WarningMessage>}
+        </>
       );
     case "on_trunk":
       return <WarningMessage>Cannot delete trunk branch.</WarningMessage>;
     case "has_children":
       return (
         <ErrorMessage>
-          Branch has children. Use --force to reparent them and delete.
+          {error} Use --force to reparent them and delete.
         </ErrorMessage>
       );
     case "not_initialized":

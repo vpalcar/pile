@@ -4,7 +4,15 @@ import { createPile, PileInstance } from "@pile/core";
 import { createPRCacheManager } from "@pile/github";
 import { Spinner } from "../components/Spinner.js";
 import { ErrorMessage } from "../components/Message.js";
-import { OutputOptions, formatJson, createResult } from "../utils/output.js";
+import {
+  OutputOptions,
+  CommandError,
+  formatJson,
+  createResult,
+  exitWithError,
+  exitNeedsInput,
+  toCommandError,
+} from "../utils/output.js";
 import { PRStatusType } from "../components/StackTree.js";
 
 export interface CheckoutCommandProps {
@@ -44,6 +52,16 @@ export function CheckoutCommand({
   const [checkedOutBranch, setCheckedOutBranch] = useState<string | null>(null);
   const [pileInstance, setPileInstance] = useState<PileInstance | null>(null);
 
+  // Non-interactive runs exit with a structured error; interactive runs render it.
+  const fail = (err: CommandError) => {
+    if (options.json || !options.interactive) {
+      exitWithError(options, err);
+    }
+    process.exitCode = 1;
+    setError(err.message);
+    setState("error");
+  };
+
   useEffect(() => {
     async function load() {
       try {
@@ -51,11 +69,12 @@ export function CheckoutCommand({
         setPileInstance(pile);
 
         if (!pile.state.isInitialized()) {
-          if (options.json) {
-            console.log(
-              formatJson(createResult(false, null, "Pile not initialized"))
-            );
-            process.exit(1);
+          if (options.json || !options.interactive) {
+            exitWithError(options, {
+              code: "NOT_INITIALIZED",
+              message: "Pile not initialized",
+              hint: "Run `pile init` first.",
+            });
           }
           setState("not_initialized");
           return;
@@ -76,6 +95,18 @@ export function CheckoutCommand({
             setTimeout(() => exit(), 100);
             return;
           }
+          const refs = await pile.git.getRefs();
+          if (
+            !refs.local.has(targetBranch) &&
+            !refs.remote.has(`${pile.git.remoteName}/${targetBranch}`)
+          ) {
+            fail({
+              code: "BRANCH_NOT_FOUND",
+              message: `Branch "${targetBranch}" does not exist`,
+              hint: "Run `pile log` to see tracked branches.",
+            });
+            return;
+          }
           try {
             await pile.git.checkout(targetBranch);
             if (options.json) {
@@ -86,20 +117,22 @@ export function CheckoutCommand({
             setState("success");
             setTimeout(() => exit(), 100);
           } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            if (options.json) {
-              console.log(formatJson(createResult(false, null, message)));
-              process.exit(1);
-            }
-            setError(message);
-            setState("error");
+            fail(toCommandError(err));
           }
           return;
         }
 
+        // Non-interactive: the branch list is the answer to "which branch?"
+        if (!options.interactive) {
+          exitNeedsInput(options, {
+            message: "No branch given and no terminal to pick one",
+            arg: "branch",
+            choices: [trunkBranch, ...pile.stack.getAllTrackedBranches()],
+          });
+        }
+
         // Load PR cache
-        const repoRoot = await pile.git.getRepoRoot();
-        const cacheManager = createPRCacheManager(`${repoRoot}/.pile`);
+        const cacheManager = createPRCacheManager(pile.state.getPileDir());
         const cachedPRs = cacheManager.getAllCachedPRs();
 
         const prCacheMap: Record<string, { number: number; status: PRStatusType }> =
@@ -115,6 +148,9 @@ export function CheckoutCommand({
         );
 
         const flatList: BranchItem[] = [];
+        const syncStatuses = new Map(
+          (await pile.git.getSyncStatuses(allTracked)).map((status, i) => [allTracked[i], status]),
+        );
 
         const addBranchAndChildren = async (
           branchName: string,
@@ -131,7 +167,7 @@ export function CheckoutCommand({
           }
 
           const prInfo = prCacheMap[branchName];
-          const syncStatus = await pile.git.getBranchSyncStatus(branchName);
+          const syncStatus = syncStatuses.get(branchName);
 
           flatList.push({
             name: branchName,
@@ -163,31 +199,9 @@ export function CheckoutCommand({
           setSelectedIndex(currentIndex);
         }
 
-        if (options.json) {
-          console.log(
-            formatJson(
-              createResult(true, { branches: flatList.map((b) => b.name) })
-            )
-          );
-          process.exit(0);
-        }
-
-        if (!process.stdin.isTTY) {
-          setError("Interactive checkout requires a terminal. Use `pile checkout <branch>` instead.");
-          setState("error");
-          setTimeout(() => exit(), 100);
-          return;
-        }
-
         setState("selecting");
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (options.json) {
-          console.log(formatJson(createResult(false, null, message)));
-          process.exit(1);
-        }
-        setError(message);
-        setState("error");
+        fail(toCommandError(err));
       }
     }
 

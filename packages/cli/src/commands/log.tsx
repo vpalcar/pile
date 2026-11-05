@@ -6,7 +6,13 @@ import { Spinner } from "../components/Spinner.js";
 import { StackTree, CachedPRInfo } from "../components/StackTree.js";
 import { SyncStatus } from "../components/SyncStatus.js";
 import { ErrorMessage } from "../components/Message.js";
-import { OutputOptions, formatJson, stackToJson } from "../utils/output.js";
+import {
+  OutputOptions,
+  formatJson,
+  stackToJson,
+  exitWithError,
+  toCommandError,
+} from "../utils/output.js";
 import { getPileCountMessage } from "../utils/fun.js";
 
 export interface LogCommandProps {
@@ -14,6 +20,40 @@ export interface LogCommandProps {
 }
 
 type State = "loading" | "ready" | "not_initialized" | "error";
+
+interface StackJson {
+  name: string;
+  parent: string | null;
+  prNumber: number | null;
+  prUrl: string | null;
+  commits: number;
+  syncStatus: string;
+  isCurrent: boolean;
+  children: StackJson[];
+}
+
+function treeToJson(node: StackNode): StackJson {
+  return {
+    name: node.branch.name,
+    parent: node.branch.parent,
+    prNumber: node.branch.prNumber ?? null,
+    prUrl: node.branch.prUrl ?? null,
+    commits: node.branch.commits.length,
+    syncStatus: node.branch.syncStatus,
+    isCurrent: node.isCurrentBranch,
+    children: node.children.map(treeToJson),
+  };
+}
+
+/** The current branch's stack (bottom first), taken from already-loaded trees. */
+function currentPath(trees: StackNode[]): StackNode[] {
+  for (const tree of trees) {
+    if (tree.isCurrentBranch) return [tree];
+    const rest = currentPath(tree.children);
+    if (rest.length > 0) return [tree, ...rest];
+  }
+  return [];
+}
 
 export function LogCommand({ options }: LogCommandProps): React.ReactElement {
   const [state, setState] = useState<State>("loading");
@@ -30,7 +70,7 @@ export function LogCommand({ options }: LogCommandProps): React.ReactElement {
 
         if (!pile.state.isInitialized()) {
           if (options.json) {
-            console.log(formatJson(stackToJson(null, "", 0)));
+            console.log(formatJson({ ...stackToJson(null, "", 0), stacks: [] }));
             process.exit(0);
           }
           setState("not_initialized");
@@ -46,8 +86,7 @@ export function LogCommand({ options }: LogCommandProps): React.ReactElement {
         setPendingOps(pending);
 
         // Load PR cache
-        const repoRoot = await pile.git.getRepoRoot();
-        const cacheManager = createPRCacheManager(`${repoRoot}/.pile`);
+        const cacheManager = createPRCacheManager(pile.state.getPileDir());
         const cachedPRs = cacheManager.getAllCachedPRs();
 
         const prCacheMap: Record<string, CachedPRInfo> = {};
@@ -62,22 +101,32 @@ export function LogCommand({ options }: LogCommandProps): React.ReactElement {
         setPrCache(prCacheMap);
 
         const trees = await pile.stack.getAllStackTrees();
-        const stackData = await pile.stack.getStack();
 
         if (options.json) {
-          console.log(formatJson(stackToJson(stackData, current, pending)));
+          const stackData = {
+            id: current,
+            branches: currentPath(trees).map((node) => node.branch),
+            trunk: trunkBranch,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+          console.log(
+            formatJson({
+              ...stackToJson(stackData, current, pending),
+              stacks: trees.map(treeToJson),
+            }),
+          );
           process.exit(0);
         }
 
         setStackTrees(trees);
         setState("ready");
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (options.json) {
-          console.log(formatJson({ error: message }));
-          process.exit(1);
+        if (options.json || !options.interactive) {
+          exitWithError(options, toCommandError(err));
         }
-        setError(message);
+        process.exitCode = 1;
+        setError(err instanceof Error ? err.message : String(err));
         setState("error");
       }
     }
