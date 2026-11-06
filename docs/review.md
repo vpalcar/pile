@@ -22,14 +22,21 @@ What needs you, grouped:
 | **Yours** | Pull requests you opened |
 | **Local** | Branches pile tracks that have no pull request yet |
 
-Everyone else's open pull requests aren't listed, but search finds them: type a title,
-branch, author or number and matches show up under "Other open pull requests".
+Below "Waiting for your review", **Recently in review** lists the five pull requests with the
+latest activity that are in review, one row each (with where they sit in their stack), so
+what's moving is easy to spot without opening whole stacks.
 
-Every row shows where it stands at a glance: **Draft**, **Local**, **In review**, **Changes
-requested**, **Checks failing**, **Approved**, **Ready to merge**, plus its checks, comments and
-size. Stacks are kept together as one card with a rail through their PRs, top of the stack
-first. Search filters by title, branch, author or number (`/`), `1`–`4` switch tabs and `j` / `k`
-move through the list.
+Every row shows its readiness: **Draft**, **Local**, **In review**, **Changes requested**,
+**Checks failing**, **Approved**, **Ready to merge**, plus the author, checks, comments and size.
+Stacks are kept together as one card with a rail through their PRs, top of the stack first.
+`1`–`4` switch tabs and `j` / `k` move through the list.
+
+### Search
+
+`⌘K` (or `/` on the inbox) searches every open pull request in the repository, not only
+yours: by title, number (`#123`), branch or author. With nothing typed it suggests a few
+pull requests and the actions; as you type, matches from your inbox show at once and the
+rest of the repository follows from GitHub.
 
 ### Stacks that branch
 

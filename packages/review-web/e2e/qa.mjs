@@ -134,7 +134,7 @@ await check("greets the viewer and summarizes", async () => {
 });
 await check("tabs show counts per group", async () => {
   const tabs = await page.locator("[role=tab]").allInnerTexts();
-  expect(tabs.join("|").replace(/\s+/g, " ") === "All 18|Needs review 3|Yours 12|Local 3".replace(/\s+/g, " ").replace(/\|/g, "|"), tabs.join(" | "));
+  expect(tabs.join("|").replace(/\s+/g, " ") === "All 24|Needs review 3|Yours 18|Local 3".replace(/\s+/g, " ").replace(/\|/g, "|"), tabs.join(" | "));
 });
 await check("every row shows its readiness", async () => {
   const status = async (id) => (await page.locator(`[data-row="${id}"]`).innerText()).replace(/\s+/g, " ");
@@ -189,34 +189,28 @@ await check("stack rails pass through every dot", async () => {
   );
   expect(misaligned.length === 0, `misaligned by ${misaligned.join(", ")}px`);
 });
-await check("other people's PRs aren't in the inbox, only in search", async () => {
+await check("the inbox is your work: no search box, nobody else's PRs", async () => {
+  expect((await count("input[placeholder^='Filter by']")) === 0, "no search box on the page");
   const sections = await page.locator("section h2").allInnerTexts();
   expect(!sections.some((t) => t.startsWith("Other open pull requests")), sections.join(" | "));
-  expect((await count('[data-row="pr-130"]')) === 0, "dave's PR hidden");
-  const search = page.locator("input[placeholder^='Filter by']");
-  try {
-    await search.fill("dark mode");
-    await page.locator('[data-row="pr-130"]').waitFor();
-    const titles = await page.locator("section h2").allInnerTexts();
-    expect(titles.some((t) => t.startsWith("Other open pull requests")), titles.join(" | "));
-    expect((await page.locator('[data-row="pr-130"]').innerText()).includes("Open"), "status from the list alone");
-    expect((await page.locator('[data-row="pr-130"] .skeleton').count()) === 0, "no loading skeleton on search-only rows");
-    await shot("search finds others");
-  } finally {
-    await search.press("Escape");
-  }
-  await page.locator("body").click({ position: { x: 5, y: 400 } });
+  expect((await count('[data-row="pr-130"]')) === 0, "dave's PR isn't listed");
+  expect(await page.getByRole("button", { name: /Search all PRs/ }).isVisible(), "a way to search everything");
 });
-await check("search reaches every open PR in the repo, through GitHub", async () => {
-  const search = page.locator("input[placeholder^='Filter by']");
-  try {
-    await search.fill("safari");
-    await page.locator('[data-row="pr-150"]').waitFor({ timeout: 5000 });
-    expect((await page.locator('[data-row="pr-150"]').innerText()).includes("Flaky e2e on Safari"), "found by the server");
-    expect((await calls()).some((c) => c.type === "search" && c.q === "safari"), "asked once typing paused");
-  } finally {
-    await search.press("Escape");
-  }
+await check("Recently in review: the latest PRs in review, one row each", async () => {
+  const section = page.locator("[data-recent]");
+  const rows = section.locator("[data-recent-row]");
+  const n = await rows.count();
+  expect(n > 0 && n <= 5, `rows: ${n}`);
+  for (const text of await rows.allInnerTexts()) expect(text.includes("In review"), text.slice(0, 80));
+  expect((await section.innerText()).includes("in a stack"), "says where a stacked PR sits");
+  // Shortcut rows aren't part of j / k (they repeat PRs listed below).
+  expect((await section.locator("[data-row]").count()) === 0, "not in the keyboard list");
+  await section.screenshot({ path: join(OUT, `${String(++shots).padStart(3, "0")} inbox - recently in review.png`) });
+});
+await check("rows show the author's picture", async () => {
+  const author = page.locator('[data-row="pr-101"] [data-author]');
+  expect((await author.innerText()).includes("alice"), await author.innerText());
+  expect((await author.locator("img, span[aria-hidden]").count()) === 1, "avatar next to the name");
 });
 await check("filters with 1–4 and shows only that group", async () => {
   await page.keyboard.press("2");
@@ -226,23 +220,32 @@ await check("filters with 1–4 and shows only that group", async () => {
   expect((await count("[data-row]")) === 3, "3 local rows");
   await page.keyboard.press("1");
 });
-await check("search filters by title, branch, author and number", async () => {
-  const before = await count("[data-row]");
+await check("⌘K with nothing typed: a short list, the actions in view", async () => {
   await page.keyboard.press("/");
-  await page.keyboard.type("rate-limit");
-  expect((await count("[data-row]")) === 2, `rows for "rate-limit": ${await count("[data-row]")}`);
-  await shot("search");
+  const palette = page.locator(".palette");
+  await palette.waitFor();
+  const jump = palette.locator("[cmdk-group]", { hasText: "Jump to" });
+  expect((await jump.locator("[cmdk-item]").count()) === 5, `suggestions: ${await jump.locator("[cmdk-item]").count()}`);
+  const list = await palette.locator("[cmdk-list]").boundingBox();
+  const refresh = await palette.locator("[cmdk-item]", { hasText: "Refresh" }).boundingBox();
+  expect(refresh.y + refresh.height <= list.y + list.height, "actions visible without scrolling");
+  await shot("palette empty");
+});
+await check("⌘K search: matches, then every open PR through GitHub, with a loading row", async () => {
+  await page.keyboard.type("safari");
+  await page.locator("[data-searching]").waitFor({ timeout: 2000 });
+  expect((await page.getByText("No pull requests, branches, files or actions match").count()) === 0, "no 'no results' while searching");
+  await page.locator(".palette [cmdk-item]", { hasText: "Flaky e2e on Safari" }).waitFor({ timeout: 5000 });
+  expect((await calls()).some((c) => c.type === "search" && c.q === "safari"), "asked GitHub once typing paused");
+  await shot("palette search");
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.type("#103");
+  await page.locator(".palette [cmdk-item]", { hasText: "Fix typo in the onboarding email" }).waitFor();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.type("zzzzqq");
+  await page.getByText("No pull requests, branches, files or actions match").waitFor({ timeout: 5000 });
   await page.keyboard.press("Escape");
-  await page.locator("input[placeholder^='Filter by']").fill("#103");
-  expect((await count("[data-row]")) === 1, "#103 by number");
-  await page.locator("input[placeholder^='Filter by']").fill("carol");
-  expect((await count("[data-row]")) === 7, `by author: ${await count("[data-row]")}`); // #103 and her 6-PR search stack
-  await page.locator("input[placeholder^='Filter by']").fill("zzzz");
-  await page.getByText("No pull requests or branches match").waitFor();
-  await shot("search no match");
-  await page.locator("input[placeholder^='Filter by']").press("Escape");
-  // Clearing brings every row back (a long stack may come back unfolded if the cursor is in it).
-  expect((await count("[data-row]")) >= before && (await page.getByText("No pull requests or branches match").count()) === 0, "cleared");
+  expect((await count(".palette")) === 0, "closed");
 });
 await check("j / k move the selection, Enter opens it", async () => {
   await page.locator("body").click({ position: { x: 5, y: 300 } });
@@ -286,7 +289,7 @@ await check("navbar: Inbox › branch on the left, repo in the middle, actions a
   expect(xs.every((x, i) => i === 0 || x > xs[i - 1]), `order ${xs.map(Math.round)}`);
   // The repo name is the bar's one link to GitHub: the repo's default branch.
   expect((await count("nav a")) === 1 && (await page.locator("nav a[data-repo]").getAttribute("href")) === "https://github.com/acme/web", "repo link");
-  expect((await text("nav")).includes("2 of 18"), "position: stacks are listed top first, so #102 comes before #101");
+  expect((await text("nav")).includes("2 of 24"), "position: stacks are listed top first, so #102 comes before #101");
   expect(!(await page.locator("nav button[data-tip=Previous]").isDisabled()), "previous enabled: #102 is listed above #101");
   await shot("breadcrumb");
 });
@@ -735,7 +738,7 @@ await check("jumps to another PR by title", async () => {
 await check("shows an empty state", async () => {
   await page.keyboard.press("Meta+k");
   await page.keyboard.type("qqqqqqq");
-  await page.getByText("No results").waitFor();
+  await page.getByText("No pull requests, branches, files or actions match").waitFor();
   await shot("no results");
   await page.keyboard.press("Escape");
 });
@@ -743,6 +746,7 @@ await check("actions: inbox, shortcuts, theme", async () => {
   await page.keyboard.press("Meta+k");
   await page.keyboard.type("light theme");
   await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.documentElement.dataset.theme === "light", null, { timeout: 2000 }).catch(() => {});
   expect((await page.evaluate(() => document.documentElement.dataset.theme)) === "light", "light");
   await page.keyboard.press("Meta+k");
   await page.keyboard.type("system theme");
@@ -1000,8 +1004,6 @@ await check("merge: higher up, the stack is blocked by the PRs below", async () 
 });
 await check("diverging stack in the inbox: one card, every branch on its own lane", async () => {
   await open();
-  // carol's stack is someone else's: it shows up when searching.
-  await page.locator("input[placeholder^='Filter by']").fill("search");
   const card = page.locator("div.rounded-\\[14px\\]", { hasText: "Index documents for search" });
   const header = (await card.innerText()).replace(/\s+/g, " ");
   expect(header.includes("Stack of 6 on main · 3 branches"), header.slice(0, 80));

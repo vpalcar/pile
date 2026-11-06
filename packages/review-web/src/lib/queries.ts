@@ -105,13 +105,18 @@ export function usePreference<K extends keyof Preferences>(key: K, fallback: Pre
 // -----------------------------------------------------------------------------
 // Search across every open PR in the repo (everyone else's aren't in the inbox)
 
-/** Asks GitHub once typing pauses; results are kept a minute per query. */
-export function useRepoSearch(text: string): InboxItem[] {
+/**
+ * Asks GitHub once typing pauses; results are kept a minute per query. `searching`
+ * covers both the pause and the request, so a "no results" never shows too early.
+ */
+export function useRepoSearch(text: string): { items: InboxItem[]; searching: boolean } {
   const [q, setQ] = useState("");
+  const wanted = text.trim();
   useEffect(() => {
-    const timer = setTimeout(() => setQ(text.trim()), 250);
+    const timer = setTimeout(() => setQ(wanted), 250);
     return () => clearTimeout(timer);
-  }, [text]);
-  const { data } = useQuery({ queryKey: ["search", q], queryFn: () => api.search(q), enabled: q.length >= 2, staleTime: 60_000 });
-  return q.length >= 2 && q === text.trim() ? (data ?? []) : [];
+  }, [wanted]);
+  const { data, isFetching } = useQuery({ queryKey: ["search", q], queryFn: () => api.search(q), enabled: q.length >= 2, staleTime: 60_000 });
+  if (wanted.length < 2) return { items: [], searching: false };
+  return { items: q === wanted ? (data ?? []) : [], searching: q !== wanted || isFetching };
 }

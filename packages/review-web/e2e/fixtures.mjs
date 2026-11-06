@@ -61,7 +61,7 @@ const searchTree = [
   [144, "Filters on the search page", "search/ui-filters", "search/ui", 3, "approved"],
   [145, "Empty and error states for search", "search/ui-empty", "search/ui", 3, "review_required"],
 ].map(([number, title, branch, base, index, reviewDecision]) =>
-  pr(number, title, branch, { author: person("carol"), base, reviewDecision, stack: { index, size: 6, nativeStack: null }, updatedAt: ago(90 + number) }),
+  pr(number, title, branch, { author: VIEWER, base, reviewDecision, stack: { index, size: 6, nativeStack: null }, updatedAt: ago(90 + number) }),
 );
 
 const local = (name, title, base, extra = {}) => ({
@@ -131,6 +131,7 @@ export const inbox = {
           deletions: 9311,
         }),
         ...longStack,
+        ...searchTree,
       ],
     },
     {
@@ -149,7 +150,6 @@ export const inbox = {
       items: [
         pr(130, "Dark mode for the dashboard", "ui/dark-mode", { author: person("dave"), reviewDecision: null, checks: checks("none", 0, 0, 0) }),
         pr(131, "Speed up CI with remote caching", "ci/cache", { author: person("erin"), reviewDecision: "commented", comments: 3 }),
-        ...searchTree,
       ],
     },
   ],

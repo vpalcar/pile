@@ -1,10 +1,10 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUpRight, GitBranch, Layers, MessageSquare, Search, Sparkles } from "lucide-react";
 import type { Inbox, InboxGroup, InboxItem, Session } from "../api";
-import { prefetchDetail, useRepoSearch } from "../lib/queries";
+import { prefetchDetail } from "../lib/queries";
 import { itemReadiness } from "../lib/status";
 import { modKey, navigate, plural, timeAgo, useNow, useShortcuts, usePersisted } from "../lib/util";
-import { ChecksDot, cx, Kbd, Pill, PRStateIcon, StatusBadge } from "./ui";
+import { Avatar, ChecksDot, cx, Kbd, Pill, PRStateIcon, StatusBadge } from "./ui";
 import { clusters, type Cluster } from "./Inbox";
 import { RailCell, railWidth } from "./StackRail";
 import type { RailRow } from "../lib/stack-tree";
@@ -29,16 +29,16 @@ const GROUP_TITLES: Record<InboxGroup["id"], string> = {
  * Row columns, shared by every row so badges, sizes and times line up:
  * icon · title · status · checks · comments · size · time · arrow
  */
+/** How many PRs "Recently in review" shows. */
+const RECENT = 5;
 const ROW_GRID = "grid grid-cols-[22px_minmax(0,1fr)_136px_10px_40px_96px_44px_14px] items-center gap-x-3";
 /** The same columns with a wider rail for diverging stacks; everything else stays aligned. */
 const rowColumns = (lanes: number) => ({ gridTemplateColumns: `${railWidth(lanes)}px minmax(0,1fr) 136px 10px 40px 96px 44px 14px` });
 
-export function InboxPage({ inbox, session, loading }: { inbox: Inbox | undefined; session: Session | undefined; loading: boolean }) {
+export function InboxPage({ inbox, session, loading, onSearch }: { inbox: Inbox | undefined; session: Session | undefined; loading: boolean; onSearch: () => void }) {
   useNow();
   const [filter, setFilter] = usePersisted<Filter>("pile:inbox-filter", "all");
-  const [query, setQuery] = useState("");
   const [cursor, setCursor] = usePersisted<string | null>("pile:inbox-cursor", null);
-  const searchRef = useRef<HTMLInputElement>(null);
   // The filter bar gets a hairline border once it sticks to the top.
   const sentinel = useRef<HTMLDivElement>(null);
   const [stuck, setStuck] = useState(false);
@@ -49,29 +49,25 @@ export function InboxPage({ inbox, session, loading }: { inbox: Inbox | undefine
     return () => observer.disconnect();
   }, []);
 
-  const found = useRepoSearch(query);
+  // The inbox is your work; everyone else's PRs are found with ⌘K.
   const groups = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    // Matches from across the repo join "Other open pull requests" (not repeating yours).
-    const known = new Set((inbox?.groups ?? []).flatMap((g) => g.items.map((i) => i.id)));
-    const fromRepo = found.filter((i) => !known.has(i.id));
-    const all = (inbox?.groups ?? []).some((g) => g.id === "others")
-      ? (inbox?.groups ?? [])
-      : [...(inbox?.groups ?? []), { id: "others" as const, title: "", items: [], searchOnly: true }];
-    // Other people's PRs aren't part of the inbox; they show up when you search.
     const shown = FILTERS.some(([id]) => id === filter) ? filter : "all";
-    return all
-      .filter((g) => (g.searchOnly ? !!q && shown === "all" : shown === "all" || g.id === shown))
-      .map((g) => {
-        const local = q
-          ? g.items.filter((i) =>
-              [i.title, i.branch, i.author?.login ?? "", i.ref.kind === "pr" ? `#${i.ref.number}` : ""].some((s) => s.toLowerCase().includes(q)),
-            )
-          : g.items;
-        return { ...g, items: g.id === "others" ? [...local, ...fromRepo.filter((i) => !local.some((l) => l.id === i.id))] : local };
-      })
-      .filter((g) => g.items.length > 0 || (g.id === "needs_review" && !q));
-  }, [inbox, filter, query, found]);
+    return (inbox?.groups ?? [])
+      .filter((g) => !g.searchOnly && g.id !== "others" && (shown === "all" || g.id === shown))
+      .filter((g) => g.items.length > 0 || g.id === "needs_review");
+  }, [inbox, filter]);
+
+  // The few PRs most recently active in review, one row each (not their whole stacks).
+  const recent = useMemo(
+    () =>
+      (inbox?.groups ?? [])
+        .filter((g) => g.id === "needs_review" || g.id === "mine")
+        .flatMap((g) => g.items)
+        .filter((i) => itemReadiness(i).label === "In review")
+        .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""))
+        .slice(0, RECENT),
+    [inbox],
+  );
 
   // Display order: stacks top first, as drawn, so j / k move the way the rows read.
   const visible = useMemo(() => groups.flatMap((g) => clusters(g.items).flatMap((c) => c.items)), [groups]);
@@ -107,7 +103,7 @@ export function InboxPage({ inbox, session, loading }: { inbox: Inbox | undefine
       ArrowUp: () => move(-1),
       Enter: () => visible[index] && navigate(visible[index].ref),
       o: () => visible[index] && navigate(visible[index].ref),
-      "/": () => searchRef.current?.focus(),
+      "/": () => onSearch(),
       ...Object.fromEntries(FILTERS.map(([id], i) => [String(i + 1), () => setFilter(id)])),
     },
     [visible, index],
@@ -171,35 +167,39 @@ export function InboxPage({ inbox, session, loading }: { inbox: Inbox | undefine
           ))}
         </div>
         <span className="flex-1" />
-        <label className="relative flex h-9 w-[300px] items-center max-[900px]:w-[220px]">
-          <Search size={13} className="pointer-events-none absolute left-2.5 text-fg-3" />
-          <input
-            ref={searchRef}
-            className="h-9 w-full rounded-lg border border-line bg-panel pl-8 pr-8 text-[12.5px] text-fg outline-none transition-[border-color,box-shadow] placeholder:text-fg-3 focus:border-line-3 focus:shadow-[0_0_0_3px_var(--accent-soft)]"
-            placeholder="Filter by title, branch or author"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") {
-                setQuery("");
-                (e.target as HTMLInputElement).blur();
-              }
-              if (e.key === "Enter" && visible[0]) navigate(visible[0].ref);
-            }}
-          />
-          <span className="pointer-events-none absolute right-2 flex">
-            <Kbd>/</Kbd>
+        <button
+          className="inline-flex h-9 items-center gap-2 rounded-lg px-2.5 text-[12.5px] text-fg-3 transition-colors hover:bg-hover hover:text-fg-2"
+          onClick={onSearch}
+          data-tip="Search every open pull request"
+        >
+          <Search size={13} />
+          Search all PRs
+          <span className="flex gap-0.5">
+            <Kbd>{modKey}</Kbd>
+            <Kbd>K</Kbd>
           </span>
-        </label>
+        </button>
       </div>
 
       {loading && !inbox ? (
         <InboxSkeleton />
-      ) : visible.length === 0 && query ? (
-        <div className="rounded-xl border border-dashed border-line-2 p-5 text-center text-fg-3">No pull requests or branches match “{query}”.</div>
       ) : (
         groups.map((group) => (
-          <section className="mt-7" key={group.id}>
+          <Fragment key={group.id}>
+          {group.id !== "needs_review" && group === groups.find((g) => g.id !== "needs_review") && filter === "all" && recent.length > 0 && (
+            <section className="mt-7" data-recent>
+              <h2 className="mb-2.5 ml-0.5 flex h-5 items-center gap-2 text-[13px] font-semibold leading-none tracking-[-0.005em]">
+                Recently in review
+                <span className="font-normal text-fg-3">latest activity first</span>
+              </h2>
+              <div className="flex flex-col gap-2">
+                {recent.map((item) => (
+                  <Row key={item.id} item={item} active={false} onHover={() => {}} showStack recent />
+                ))}
+              </div>
+            </section>
+          )}
+          <section className="mt-7">
             <h2 className="mb-2.5 ml-0.5 flex h-5 items-center gap-2 text-[13px] font-semibold leading-none tracking-[-0.005em]">
               {GROUP_TITLES[group.id]}
               <span className="font-normal text-fg-3 tabular">{group.items.length}</span>
@@ -213,14 +213,15 @@ export function InboxPage({ inbox, session, loading }: { inbox: Inbox | undefine
               <div className="flex flex-col gap-2">
                 {clusters(group.items).map((cluster) =>
                   cluster.items.length > 1 ? (
-                    <StackCluster key={cluster.key} cluster={cluster} cursor={visible[index]?.id} onHover={setCursor} loading={!!inbox?.partial && !group.searchOnly} />
+                    <StackCluster key={cluster.key} cluster={cluster} cursor={visible[index]?.id} onHover={setCursor} loading={!!inbox?.partial} />
                   ) : (
-                    <Row key={cluster.key} item={cluster.items[0]} active={visible[index]?.id === cluster.items[0].id} onHover={setCursor} loading={!!inbox?.partial && !group.searchOnly} />
+                    <Row key={cluster.key} item={cluster.items[0]} active={visible[index]?.id === cluster.items[0].id} onHover={setCursor} loading={!!inbox?.partial} />
                   ),
                 )}
               </div>
             )}
           </section>
+          </Fragment>
         ))
       )}
 
@@ -303,6 +304,8 @@ const Row = memo(function Row({
   onHover,
   rail,
   loading,
+  showStack,
+  recent,
 }: {
   item: InboxItem;
   active: boolean;
@@ -310,6 +313,10 @@ const Row = memo(function Row({
   /** Set for rows in a stack: where this row sits on the stack's rail. */
   /** The inbox is still the quick first pass. */
   loading?: boolean;
+  /** Say where it sits in its stack (rows shown on their own, outside their stack). */
+  showStack?: boolean;
+  /** A shortcut row in "Recently in review": not part of j / k. */
+  recent?: boolean;
   rail?: { row: RailRow; lanes: number };
 }) {
   const stacked = !!rail;
@@ -318,7 +325,8 @@ const Row = memo(function Row({
   const loadingSignals = loading && item.checks === null && item.state !== "local" && item.state !== "draft";
   return (
     <a
-      data-row={item.id}
+      data-row={recent ? undefined : item.id}
+      data-recent-row={recent ? item.id : undefined}
       href={item.ref.kind === "pr" ? `#/pr/${item.ref.number}` : `#/branch/${encodeURIComponent(item.ref.name)}`}
       style={rail && rail.lanes > 1 ? rowColumns(rail.lanes) : undefined}
       className={cx(
@@ -362,7 +370,19 @@ const Row = memo(function Row({
           {item.author && (
             <>
               <span className="text-fg-4">·</span>
-              <span className="shrink-0">{item.author.login}</span>
+              <span className="inline-flex shrink-0 items-center gap-1.5" data-author>
+                <Avatar person={item.author} size="sm" />
+                {item.author.login}
+              </span>
+            </>
+          )}
+          {showStack && item.stack && (
+            <>
+              <span className="text-fg-4">·</span>
+              <span className="inline-flex shrink-0 items-center gap-1">
+                <Layers size={11} />
+                {item.stack.index} of {item.stack.size} in a stack
+              </span>
             </>
           )}
         </span>

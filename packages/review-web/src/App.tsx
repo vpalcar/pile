@@ -205,7 +205,7 @@ function Shell() {
         <div className="glow pointer-events-none absolute inset-x-0 top-0 h-[440px]" aria-hidden />
         <div className="relative">
           {!route.ref ? (
-            <InboxPage inbox={inbox.data} session={session.data} loading={inbox.isPending} />
+            <InboxPage inbox={inbox.data} session={session.data} loading={inbox.isPending} onSearch={() => setPalette(true)} />
           ) : detail.data ? (
             <DetailView key={detailKey} detail={detail.data} scrollEl={scrollEl} initialFile={route.file} trunk={session.data?.trunk ?? "main"} inboxItems={items} currentBranch={session.data?.currentBranch ?? null} />
           ) : detail.error ? (
