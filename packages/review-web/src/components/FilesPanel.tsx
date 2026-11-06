@@ -33,6 +33,7 @@ export function FilesPanel({ detail, itemKey, scrollEl, pending, onAddPending, o
     (path: string, smooth = true) => {
       const el = document.getElementById(fileAnchor(path));
       if (!el || !scrollEl) return;
+      // Lands where the header sticks: 10px under the files bar, level with the tree filter.
       const bar = 44;
       const top = el.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top + scrollEl.scrollTop - bar - 10;
       scrollEl.scrollTo({ top, behavior: smooth ? "smooth" : "auto" });
@@ -149,7 +150,7 @@ export function FilesPanel({ detail, itemKey, scrollEl, pending, onAddPending, o
       </div>
       <div className={cx("grid items-start transition-[grid-template-columns] duration-200", treeOpen ? "grid-cols-[264px_minmax(0,1fr)]" : "grid-cols-[0_minmax(0,1fr)]")}>
         <FileTree files={files} active={files[index]?.path ?? null} isViewed={isViewed} onSelect={(p) => scrollTo(p)} />
-        <div className="flex min-w-0 flex-col gap-3.5 px-4 pb-10 pt-3.5">
+        <div className="flex min-w-0 flex-col gap-3.5 px-4 pb-10 pt-2.5">
           {files.map((file) => (
             <FileDiff
               key={file.path}

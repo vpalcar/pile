@@ -62,18 +62,19 @@ export const FileDiff = memo(function FileDiff(props: Props) {
       ref={ref}
       id={fileAnchor(file.path)}
       data-path={file.path}
-      className={cx("file scroll-mt-14 rounded-xl border bg-panel transition-[border-color] duration-150", active ? "border-line-3" : "border-line")}
+      className={cx("file scroll-mt-[54px] rounded-xl border bg-panel transition-[border-color] duration-150", active ? "border-line-3" : "border-line")}
     >
       <div
         className={cx(
-          "sticky top-11 z-[5] flex h-10 items-center gap-2 pl-2 pr-2",
+          // Sticks 10px under the files bar, level with the tree's filter box.
+          "sticky top-[54px] z-[5] flex h-10 items-center gap-2 pl-2 pr-2",
           collapsed
             ? "rounded-xl bg-panel"
-            : // While stuck, lines scroll under the header. A square page-colored backdrop fills
-              // its rounded corners, and the header redraws the card's border on top of it.
+            : // While stuck, lines scroll under the header. A page-colored backdrop fills its
+              // rounded corners and the 10px gap above it; the header redraws the card's border.
               cx(
                 "[border-color:inherit]",
-                "before:absolute before:-inset-x-px before:-top-px before:bottom-0 before:-z-20 before:bg-bg",
+                "before:absolute before:-inset-x-px before:-top-[11px] before:bottom-0 before:-z-20 before:bg-bg",
                 "after:absolute after:-inset-x-px after:-top-px after:bottom-0 after:-z-10 after:rounded-t-xl after:border after:bg-panel after:[border-color:inherit] after:border-b-line",
               ),
         )}
