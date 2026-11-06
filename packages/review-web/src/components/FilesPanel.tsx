@@ -110,7 +110,11 @@ export function FilesPanel({ detail, itemKey, scrollEl, pending, onAddPending, o
 
   if (files.length === 0) {
     return (
-      <div className="mt-9 border-t border-line p-10 text-center text-fg-3">No changes in this {detail.number ? "pull request" : "branch"}.</div>
+      <div className="mt-9 border-t border-line p-10 text-center text-fg-3" data-files-unavailable={detail.filesUnavailable ? "" : undefined}>
+        {detail.filesUnavailable
+          ? `Files can't be shown right now: ${detail.filesUnavailable}. Everything else on this page is up to date.`
+          : `No changes in this ${detail.number ? "pull request" : "branch"}.`}
+      </div>
     );
   }
 

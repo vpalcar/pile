@@ -34,6 +34,8 @@ export interface ApiUsage {
   limit: number | null;
   /** When the limit resets (ISO time). */
   resetAt: string | null;
+  /** GraphQL has a separate budget, in points: what pile spent and what's left. */
+  graphql: { points: number; queries: number; remaining: number | null; limit: number | null; resetAt: string | null };
 }
 
 const usage = new WeakMap<Octokit, ApiUsage>();
@@ -44,6 +46,18 @@ export const apiUsage = (octokit: Octokit): ApiUsage | undefined => usage.get(oc
  * against the rate limit. With `file`, the cache survives restarts, so starting
  * `pile review` again costs almost nothing.
  */
+/** Adds a GraphQL query's cost, as reported by its `rateLimit` field. */
+export function recordGraphQL(octokit: Octokit, rate: { cost: number; remaining: number; limit: number; resetAt: string } | undefined): void {
+  const stats = usage.get(octokit);
+  if (!stats) return;
+  stats.graphql.queries++;
+  if (!rate) return;
+  stats.graphql.points += rate.cost;
+  stats.graphql.remaining = rate.remaining;
+  stats.graphql.limit = rate.limit;
+  stats.graphql.resetAt = rate.resetAt;
+}
+
 export function enableEtagCache(octokit: Octokit, file?: string): void {
   const cache = new Map<string, { etag: string; response: unknown }>(file ? loadEtags(file) : []);
   let dirty = false;
@@ -56,7 +70,15 @@ export function enableEtagCache(octokit: Octokit, file?: string): void {
     setInterval(save, 5_000).unref();
     process.once("exit", save);
   }
-  const stats: ApiUsage = { counted: 0, notModified: 0, byRoute: {}, remaining: null, limit: null, resetAt: null };
+  const stats: ApiUsage = {
+    counted: 0,
+    notModified: 0,
+    byRoute: {},
+    remaining: null,
+    limit: null,
+    resetAt: null,
+    graphql: { points: 0, queries: 0, remaining: null, limit: null, resetAt: null },
+  };
   usage.set(octokit, stats);
   const track = (route: string, headers: Record<string, unknown> | undefined, free: boolean) => {
     if (free) stats.notModified++;
@@ -74,6 +96,8 @@ export function enableEtagCache(octokit: Octokit, file?: string): void {
   octokit.hook.wrap("request", async (request, options) => {
     const method = (options.method ?? "GET").toUpperCase();
     const route = `${method} ${options.url}`;
+    // GraphQL is counted in points from the query's own rateLimit field (see recordGraphQL).
+    if (String(options.url).endsWith("/graphql")) return request(options);
     if (method !== "GET") {
       const response = await request(options);
       track(route, response.headers as Record<string, unknown>, false);
@@ -211,6 +235,25 @@ export async function fetchChecks(octokit: Octokit, repo: Repo, ref: string): Pr
       .then(({ data }) => data.statuses)
       .catch(() => []),
   ]);
+  return mapChecks(runs, statuses);
+}
+
+type RawCheckRun = {
+  id: number;
+  name: string;
+  status: string | null;
+  conclusion: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  output?: { title?: string | null } | null;
+  html_url?: string | null;
+  details_url?: string | null;
+  app?: { slug?: string } | null;
+};
+type RawStatus = { context: string; state: string; description?: string | null; target_url?: string | null };
+
+/** Check runs and commit statuses (REST shapes; GraphQL's are converted to them). */
+export function mapChecks(runs: RawCheckRun[], statuses: RawStatus[]): CheckRun[] {
   const checks: CheckRun[] = runs.map((run) => {
     const started = run.started_at ? Date.parse(run.started_at) : null;
     const done = run.completed_at ? Date.parse(run.completed_at) : null;

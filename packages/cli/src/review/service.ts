@@ -41,6 +41,7 @@ import {
 } from "./github-data.js";
 import { diffStats, localCommits, localFiles, localState } from "./local-data.js";
 import { cleanupMergedBranch } from "../utils/merge-cleanup.js";
+import { checksFromNode, fetchInboxGraphQL, fetchPRGraphQL, listedFromNode, reviewsFromNode, type InboxNode } from "./github-graphql.js";
 
 type ListedPR = Awaited<ReturnType<Octokit["pulls"]["list"]>>["data"][number];
 type FullPR = Awaited<ReturnType<Octokit["pulls"]["get"]>>["data"] & {
@@ -63,6 +64,9 @@ export class ReviewError extends Error {
 const SHARED_READ_MS = 10_000;
 const WARM_LIMIT = 8;
 const LOW_QUOTA = 300;
+const GRAPHQL_RETRY_MS = 10 * 60_000;
+/** How long the list of open PRs (one GraphQL query) is shared by the inbox and PR pages. */
+const OPEN_PRS_MS = 15_000;
 const PENDING_CHECKS_MS = 60_000;
 /** How often the inbox is rebuilt from GitHub; much less often when the quota runs low. */
 const INBOX_FRESH_MS = 20_000;
@@ -86,6 +90,12 @@ export class ReviewService {
   /** PR pages already warmed, by version, so each is prepared once per change. */
   private warmed = new Map<string, string>();
   private warmedOnce = false;
+  /** GraphQL reads (fewer, richer queries); off when unavailable, until `graphqlOffUntil`. */
+  private graphqlOffUntil = 0;
+  private graphqlOffReason: string | null = null;
+  /** The inbox query's PRs, by number: inbox rows and stack entries come from these. */
+  private inboxNodes = new Map<number, InboxNode>();
+  private graphqlViewer: { login: string; avatar_url: string } | null = null;
   private openPRs: { at: number; prs: Promise<ListedPR[]> } | null = null;
   private memo = new Map<string, { at: number; value: Promise<unknown> }>();
 
@@ -93,16 +103,23 @@ export class ReviewService {
     private readonly pile: PileInstance,
     private readonly github: GitHubInstance | null,
     /** Where GitHub responses are cached between runs (.git/pile/review-cache.json). */
-    options: { cacheFile?: string } = {},
+    options: { cacheFile?: string; graphql?: boolean } = {},
   ) {
+    if (options.graphql === false || process.env.PILE_REVIEW_REST === "1") this.graphqlOffUntil = Infinity;
     this.octokit = github?.client.api ?? null;
     this.repo = github ? { owner: github.client.repoOwner, repo: github.client.repoName } : null;
     if (this.octokit) enableEtagCache(this.octokit, options.cacheFile);
   }
 
-  private viewer() {
+  /** Who you are: from the inbox query when GraphQL is in use, otherwise REST. */
+  private viewer(): Promise<{ login: string; avatar_url: string } | null> {
     if (!this.octokit) return Promise.resolve(null);
-    this.viewerPromise ??= this.octokit.users
+    if (this.graphql()) return this.listOpenPRs().then(() => this.graphqlViewer ?? this.restViewer());
+    return this.restViewer();
+  }
+
+  private restViewer() {
+    this.viewerPromise ??= this.octokit!.users
       .getAuthenticated()
       .then(({ data }) => ({ login: data.login, avatar_url: data.avatar_url }))
       .catch(() => null);
@@ -112,13 +129,38 @@ export class ReviewService {
   /** Open PRs, shared by the inbox and stack lookups for a few seconds. */
   private listOpenPRs(): Promise<ListedPR[]> {
     if (!this.octokit || !this.repo) return Promise.resolve([]);
-    if (!this.openPRs || Date.now() - this.openPRs.at > 5_000) {
-      this.openPRs = {
-        at: Date.now(),
-        prs: this.octokit.paginate(this.octokit.pulls.list, { ...this.repo, state: "open", per_page: 100 }),
-      };
+    if (!this.openPRs || Date.now() - this.openPRs.at > OPEN_PRS_MS) {
+      const rest = () => this.octokit!.paginate(this.octokit!.pulls.list, { ...this.repo!, state: "open", per_page: 100 });
+      // One GraphQL query brings every open PR with its reviews, checks and size, so
+      // inbox rows and stack entries need no further requests.
+      const prs = this.graphql()
+        ? fetchInboxGraphQL(this.octokit, this.repo).then(
+            ({ viewer, defaultBranch, nodes }) => {
+              this.inboxNodes = new Map(nodes.map((n) => [n.number, n]));
+              if (viewer) this.graphqlViewer = viewer as { login: string; avatar_url: string };
+              return nodes.map((n) => listedFromNode(n, defaultBranch) as unknown as ListedPR);
+            },
+            (error) => {
+              this.graphqlFailed(error);
+              return rest();
+            },
+          )
+        : rest();
+      this.openPRs = { at: Date.now(), prs };
     }
     return this.openPRs.prs;
+  }
+
+  /** Whether reads go over GraphQL right now. */
+  private graphql(): boolean {
+    return Date.now() >= this.graphqlOffUntil;
+  }
+
+  /** GraphQL failed (blocked in a sandbox, its own rate limit, an outage): REST for a while. */
+  private graphqlFailed(error: unknown): void {
+    this.graphqlOffReason = error instanceof Error ? error.message : String(error);
+    this.graphqlOffUntil = Date.now() + GRAPHQL_RETRY_MS;
+    this.inboxNodes.clear();
   }
 
   async session(initial: ItemRef | null): Promise<Session> {
@@ -206,8 +248,19 @@ export class ReviewService {
 
   /** Under 300 requests left this hour: stop extras and refresh rarely. */
   private lowOnQuota(): boolean {
-    const remaining = this.usage()?.remaining;
-    return remaining !== null && remaining !== undefined && remaining < LOW_QUOTA;
+    const quota = this.quota();
+    return !!quota && quota.remaining < LOW_QUOTA;
+  }
+
+  /** The tighter of the two budgets: GraphQL points (when in use) and REST requests. */
+  private quota(): { remaining: number; limit: number; resetAt: string | null } | null {
+    const usage = this.usage();
+    if (!usage) return null;
+    const budgets = [
+      usage.remaining != null ? { remaining: usage.remaining, limit: usage.limit ?? 5000, resetAt: usage.resetAt } : null,
+      this.graphql() && usage.graphql.remaining != null ? { remaining: usage.graphql.remaining, limit: usage.graphql.limit ?? 5000, resetAt: usage.graphql.resetAt } : null,
+    ].filter((b): b is NonNullable<typeof b> => !!b);
+    return budgets.sort((a, b) => a.remaining / a.limit - b.remaining / b.limit)[0] ?? null;
   }
 
   /**
@@ -328,13 +381,7 @@ export class ReviewService {
       // Not shown in the inbox; searched when you look for something specific.
       { id: "others", title: "Other open pull requests", items: sortByStack(others), searchOnly: true },
     ];
-    const quota = this.usage();
-    return {
-      groups,
-      fetchedAt: new Date().toISOString(),
-      partial: !enrich && !!this.octokit,
-      quota: quota?.remaining != null ? { remaining: quota.remaining, limit: quota.limit ?? 5000, resetAt: quota.resetAt } : null,
-    };
+    return { groups, fetchedAt: new Date().toISOString(), partial: !enrich && !!this.octokit, quota: this.quota() };
   }
 
   /** What the PR list alone tells us; checks, reviews and sizes come later. */
@@ -370,6 +417,19 @@ export class ReviewService {
     currentBranch: string,
   ): Promise<InboxItem> {
     const version = `${pr.updated_at}/${pr.head.sha}/${(pr.requested_reviewers ?? []).map((u) => u?.login).join(",")}`;
+    const node = this.inboxNodes.get(pr.number);
+    if (node) {
+      // Everything came with the inbox query.
+      return {
+        ...this.basicPRItem(pr),
+        additions: node.additions,
+        deletions: node.deletions,
+        comments: node.totalCommentsCount ?? 0,
+        reviewDecision: decisionFor(reviewsFromNode(node), pr, viewer),
+        checks: checksFromNode(node),
+        local: await localState(this.pile, pr.head.ref, refs, currentBranch),
+      };
+    }
     const known = this.enriched.get(pr.number);
     let item: InboxItem;
     let at = Date.now();
@@ -487,6 +547,14 @@ export class ReviewService {
     }
     const octokit = this.octokit;
     const repo = this.repo;
+    if (this.graphql()) {
+      try {
+        return await this.prDetailGraphQL(number);
+      } catch (error) {
+        if (error instanceof ReviewError) throw error;
+        this.graphqlFailed(error);
+      }
+    }
     // Everything that doesn't need the head commit starts right away, in parallel.
     const prPromise = octokit.pulls
       .get({ ...repo, pull_number: number, mediaType: { format: "full" } })
@@ -505,16 +573,56 @@ export class ReviewService {
     for (const p of [filesP, reviewsP, inlineP, partsP, contextP]) p.catch(() => {});
 
     const pr = await prPromise;
-    const [files, reviews, inline, checks, stack, [viewer, refs, currentBranch]] = await Promise.all([
-      filesP,
-      reviewsP,
-      inlineP,
-      this.getChecks(pr.head.sha),
-      this.prStack(pr),
-      contextP,
-    ]);
+    const [files, reviews, inline, checks] = await Promise.all([filesP, reviewsP, inlineP, this.getChecks(pr.head.sha)]);
+    return this.buildDetail(number, pr, { files, reviews, inline, checks, parts: partsP, context: contextP });
+  }
+
+  /** A PR page from one GraphQL query plus the files (REST: GraphQL has no patches). */
+  private async prDetailGraphQL(number: number): Promise<Detail> {
+    const octokit = this.octokit!;
+    const repo = this.repo!;
+    // Files are the one REST read here. If REST's quota is used up, the page still
+    // shows everything else, and says why the files are missing.
+    let filesUnavailable: string | null = null;
+    const filesP = fetchFiles(octokit, repo, number).catch((error) => {
+      const { body } = ReviewService.errorBody(error);
+      if (body.code !== "RATE_LIMITED") throw error;
+      filesUnavailable = body.error;
+      return [];
+    });
+    const contextP = Promise.all([this.viewer(), this.pile.git.getRefs(), this.pile.git.getCurrentBranch()]);
+    filesP.catch(() => {});
+    contextP.catch(() => {});
+    const data = await fetchPRGraphQL(octokit, repo, number);
+    if (!data) throw new ReviewError(404, "PR_NOT_FOUND", `Pull request #${number} doesn't exist`);
+    const files = await filesP;
+    const detail = await this.buildDetail(number, data.pr as unknown as FullPR, {
+      files,
+      reviews: data.reviews as unknown as Awaited<ReturnType<typeof fetchReviews>>,
+      inline: data.inline,
+      checks: data.checks,
+      parts: Promise.resolve([data.comments, data.commits]) as unknown as ReturnType<typeof fetchTimelineParts>,
+      context: contextP,
+    });
+    return filesUnavailable ? { ...detail, filesUnavailable } : detail;
+  }
+
+  private async buildDetail(
+    number: number,
+    pr: FullPR,
+    got: {
+      files: Awaited<ReturnType<typeof fetchFiles>>;
+      reviews: Awaited<ReturnType<typeof fetchReviews>>;
+      inline: Awaited<ReturnType<typeof fetchInlineComments>>;
+      checks: Awaited<ReturnType<typeof fetchChecks>>;
+      parts: ReturnType<typeof fetchTimelineParts>;
+      context: Promise<[Awaited<ReturnType<ReviewService["viewer"]>>, Awaited<ReturnType<PileInstance["git"]["getRefs"]>>, string]>;
+    },
+  ): Promise<Detail> {
+    const { files, reviews, inline, checks } = got;
+    const [stack, [viewer, refs, currentBranch]] = await Promise.all([this.prStack(pr), got.context]);
     const [timeline, local] = await Promise.all([
-      fetchTimeline(partsP, reviews, inline),
+      fetchTimeline(got.parts, reviews, inline),
       localState(this.pile, pr.head.ref, refs, currentBranch),
     ]);
     const state = prState(pr);
@@ -574,6 +682,18 @@ export class ReviewService {
     return mapLimit(entries, 4, async (entry) => {
       const listed = entry.ref.kind === "pr" ? byNumber.get(entry.ref.number) : undefined;
       if (!listed || entry.state === "merged" || entry.state === "closed") return entry;
+      const node = this.inboxNodes.get(listed.number);
+      if (node) {
+        // From the inbox query: no requests.
+        const reviews = reviewsFromNode(node);
+        const summary = checksFromNode(node);
+        return {
+          ...entry,
+          checks: summary,
+          reviewDecision: decisionFor(reviews, listed, viewer?.login ?? null),
+          blockers: blockingReasons({ draft: !!listed.draft, checks: summary, changesRequested: changesRequested(reviews), mergeable: null, mergeableState: null }).map((r) => r.message),
+        };
+      }
       const [checks, reviews] = await Promise.all([
         this.getChecks(listed.head.sha).catch(() => null),
         this.getReviews(listed.number).catch(() => null),

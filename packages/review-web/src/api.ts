@@ -237,6 +237,8 @@ export interface Detail {
   local: LocalState | null;
   /** Things the viewer can do. */
   can: { review: boolean; comment: boolean; merge: boolean; draft: boolean };
+  /** Why the files couldn't be loaded (GitHub's REST limit), when they couldn't. */
+  filesUnavailable?: string;
   /** What merging from here would do; null for local branches and finished PRs. */
   merge: MergeInfo | null;
 }

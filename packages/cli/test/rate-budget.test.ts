@@ -20,65 +20,84 @@ async function settle(count: () => number) {
 
 afterEach(() => vi.useRealTimers());
 
-async function setup(prs = 60) {
+async function setup(graphql: boolean, prs = 60) {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2026-11-06T12:00:00Z"));
-  const fake = fakeGitHub({ prs });
+  const fake = fakeGitHub({ prs, graphql });
   const { github, tick } = fake;
   const pile = await createPile(createCliRepo().dir);
   const cacheFile = join(mkdtempSync(join(tmpdir(), "pile-etags-")), "review-cache.json");
   const service = new ReviewService(pile, github, { cacheFile });
-  const counted = () => service.usage()!.counted;
   const advance = (ms: number) => vi.setSystemTime(Date.now() + ms);
   /** A new `pile review` process on the same repo, with the cache from disk. */
   const restart = () => new ReviewService(pile, fake.client(), { cacheFile });
-  return { service, counted, advance, tick, github, restart };
+  return { service, advance, tick, restart };
 }
 
-describe("GitHub request budget (60 open PRs)", () => {
-  it("stays within its budget: startup, an idle inbox, a PR page with running checks, a restart", async () => {
-    const { service, counted, advance, tick, restart } = await setup();
+/**
+ * Startup, an inbox left open for 10 minutes (polled every 30s while the repo
+ * changes), a PR page with running checks for 2 minutes (polled every 8s), and a
+ * restart. Returns REST requests that count, and GraphQL points, for each.
+ */
+async function measure(graphql: boolean) {
+  const { service, advance, tick, restart } = await setup(graphql);
+  const rest = () => service.usage()!.counted;
+  const points = () => service.usage()!.graphql.points;
+  const both = () => rest() + points();
+  const out: Record<string, { rest: number; points: number }> = {};
+  const phase = async (name: string, run: () => Promise<void>) => {
+    const [r, p] = [rest(), points()];
+    await run();
+    await settle(both);
+    out[name] = { rest: rest() - r, points: points() - p };
+  };
+  await phase("startup", async () => {
     await service.warm(null);
-    await settle(counted);
-    const startup = counted();
-    const atStart = { ...service.usage()!.byRoute };
-
-    // An inbox left open for 10 minutes: the page polls every 30 seconds.
+    await settle(both);
+  });
+  await phase("idle10min", async () => {
     for (let t = 0; t < 20; t++) {
       advance(30_000);
       tick();
       await service.inbox();
-      await settle(counted);
+      await settle(both);
     }
-    const idle = counted() - startup;
-    const idleRoutes = Object.fromEntries(
-      Object.entries(service.usage()!.byRoute)
-        .map(([k, v]) => [k.replace(/\/\d+\//g, "/N/").replace(/\d+/g, "N"), v - (atStart[k] ?? 0)] as const)
-        .filter(([, v]) => v > 0)
-        .reduce((acc, [k, v]) => acc.set(k, (acc.get(k) ?? 0) + v), new Map<string, number>()),
-    );
-
-    // A PR page with running checks for 2 minutes: fresh polls every 8 seconds.
-    const before = counted();
+  });
+  await phase("prPage2min", async () => {
     for (let t = 0; t < 15; t++) {
       advance(8_000);
       tick();
       service.invalidate({ kind: "pr", number: 1 });
       await service.detail({ kind: "pr", number: 1 });
-      await settle(counted);
+      await settle(both);
     }
-    const prPage = counted() - before;
-    // Quit and start again: everything unchanged comes back as free 304s.
-    process.emit("exit", 0);
-    const again = restart();
-    await again.warm(null);
-    await settle(() => again.usage()!.counted);
-    const restartCost = again.usage()!.counted;
-    console.log(JSON.stringify({ startup, idle10min: idle, prPage2min: prPage, restart: restartCost, idleRoutes }, null, 1));
+  });
+  process.emit("exit", 0);
+  const again = restart();
+  await again.warm(null);
+  await settle(() => again.usage()!.counted + again.usage()!.graphql.points);
+  out.restart = { rest: again.usage()!.counted, points: again.usage()!.graphql.points };
+  return out;
+}
+
+describe("GitHub request budget (60 open PRs)", () => {
+  it("GraphQL: a few points per refresh, REST only for diffs", async () => {
+    const m = await measure(true);
+    console.log("graphql", JSON.stringify(m));
+    expect(m.startup.rest).toBeLessThanOrEqual(30);
+    expect(m.idle10min.rest).toBeLessThanOrEqual(5);
+    expect(m.idle10min.points).toBeLessThanOrEqual(30);
+    expect(m.prPage2min.rest + m.prPage2min.points).toBeLessThanOrEqual(40);
+    expect(m.restart.rest).toBeLessThanOrEqual(5);
+  }, 120_000);
+
+  it("REST fallback (GraphQL blocked) stays within its budget too", async () => {
+    const m = await measure(false);
+    console.log("rest", JSON.stringify(m));
     // Before this budget existed: startup 487, idle 273, PR page 30, restart 487.
-    expect(startup).toBeLessThanOrEqual(200);
-    expect(idle).toBeLessThanOrEqual(120);
-    expect(prPage).toBeLessThanOrEqual(40);
-    expect(restartCost).toBeLessThanOrEqual(50);
+    expect(m.startup.rest).toBeLessThanOrEqual(200);
+    expect(m.idle10min.rest).toBeLessThanOrEqual(120);
+    expect(m.prPage2min.rest).toBeLessThanOrEqual(40);
+    expect(m.restart.rest).toBeLessThanOrEqual(50);
   }, 120_000);
 });

@@ -18,7 +18,8 @@ export interface FakePR {
   checks: Array<{ name: string; status: "completed" | "in_progress"; conclusion: string | null }>;
 }
 
-export function fakeGitHub(options: { prs: number; viewer?: string; trunk?: string }) {
+export function fakeGitHub(options: { prs: number; viewer?: string; trunk?: string; graphql?: boolean }) {
+  const graphqlEnabled = options.graphql ?? true;
   const viewer = options.viewer ?? "me";
   const trunk = options.trunk ?? "main";
   const prs: FakePR[] = Array.from({ length: options.prs }, (_, i) => {
@@ -77,9 +78,81 @@ export function fakeGitHub(options: { prs: number; viewer?: string; trunk?: stri
     [/^\/repos\/o\/r\/commits\/([^/]+)\/status$/, () => ({ state: "success", statuses: [] })],
   ];
 
+  // GraphQL: the two queries the review server sends, answered from the same repo.
+  let points = 5000;
+  const gqlUser = (login: string) => ({ login, avatarUrl: `https://avatars/${login}` });
+  const counts = (p: FakePR) => {
+    const by = new Map<string, number>();
+    for (const c of p.checks) {
+      const state = c.status === "completed" ? (c.conclusion ?? "success").toUpperCase() : "IN_PROGRESS";
+      by.set(state, (by.get(state) ?? 0) + 1);
+    }
+    return [...by].map(([state, count]) => ({ state, count }));
+  };
+  const node = (p: FakePR) => ({
+    number: p.number,
+    title: `PR ${p.number}`,
+    url: `https://github.com/o/r/pull/${p.number}`,
+    isDraft: false,
+    createdAt: p.updatedAt,
+    updatedAt: p.updatedAt,
+    additions: 10,
+    deletions: 2,
+    totalCommentsCount: 0,
+    headRefName: p.head,
+    headRefOid: p.sha,
+    baseRefName: p.base,
+    baseRefOid: "base".padEnd(40, "0"),
+    author: gqlUser(p.author),
+    reviewRequests: { nodes: p.requested.map((l) => ({ requestedReviewer: { __typename: "User", ...gqlUser(l) } })) },
+    latestReviews: { nodes: [] },
+    latestOpinionatedReviews: { nodes: [] },
+    commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { checkRunCountsByState: counts(p), statusContextCountsByState: [] } } } }] },
+  });
+  const graphql = (query: string, variables: Record<string, unknown>) => {
+    points--;
+    const rateLimit = { cost: 1, remaining: points, limit: 5000, resetAt: "2033-05-18T03:33:20Z" };
+    if (query.includes("query PileInbox")) {
+      return { data: { viewer: gqlUser(viewer), rateLimit, repository: { defaultBranchRef: { name: trunk }, pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: prs.map(node) } } } };
+    }
+    const p = prs[Number(variables.number) - 1];
+    if (!p) return { data: { rateLimit, repository: { defaultBranchRef: { name: trunk }, pullRequest: null } } };
+    return {
+      data: {
+        rateLimit,
+        repository: {
+          defaultBranchRef: { name: trunk },
+          pullRequest: {
+            ...node(p),
+            state: "OPEN",
+            merged: false,
+            mergedAt: null,
+            bodyHTML: "",
+            mergeable: "MERGEABLE",
+            mergeStateStatus: "CLEAN",
+            labels: { nodes: [] },
+            assignees: { nodes: [] },
+            reviews: { nodes: [] },
+            comments: { nodes: [] },
+            commits: { nodes: [] },
+            reviewThreads: { nodes: [] },
+            lastCommit: {
+              nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: p.checks.map((c, i) => ({ __typename: "CheckRun", databaseId: i + 1, name: c.name, status: c.status.toUpperCase(), conclusion: c.conclusion?.toUpperCase() ?? null, startedAt: null, completedAt: null, detailsUrl: null, url: null, title: null, checkSuite: { app: { slug: "github-actions" } } })) } } } }],
+            },
+          },
+        },
+      },
+    };
+  };
+
   let remaining = 5000;
   const fetch = async (input: string | URL, init?: RequestInit) => {
     const url = new URL(String(input));
+    if (url.pathname === "/graphql") {
+      if (!graphqlEnabled) return new Response(JSON.stringify({ message: "GraphQL is blocked here" }), { status: 403, headers: { "content-type": "application/json" } });
+      const { query, variables } = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify(graphql(query, variables)), { status: 200, headers: { "content-type": "application/json" } });
+    }
     const route = routes.find(([re]) => re.test(url.pathname));
     if (!route) return new Response(JSON.stringify({ message: `Not faked: ${url.pathname}` }), { status: 404 });
     const body = JSON.stringify(route[1](url.pathname.match(route[0])!, url));

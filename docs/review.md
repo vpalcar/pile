@@ -124,11 +124,19 @@ keeps the files you've marked as viewed and unsent comments in your browser betw
 
 ## GitHub's rate limit
 
-GitHub allows 5,000 API requests an hour per account, shared by everything signed in as you.
-`pile review` keeps well under it: it only follows your pull requests and the ones waiting on
-you, rereads only what changed, and caches GitHub's responses in `.git/pile/` so restarts are
-nearly free. If you get close to the limit, a banner says so and pile refreshes less often; if
-it runs out, the app keeps showing what it has until the limit resets.
+`pile review` reads GitHub through GraphQL: one query for the whole inbox (about 5 points)
+and one per pull request page (about 1 point), out of 5,000 points an hour. That budget is
+separate from GitHub's REST limit (5,000 requests an hour), which pile uses only for diffs
+and for changes you make (comments, reviews, edits, merges). Diffs are cached in
+`.git/pile/` and only downloaded again when they change.
+
+Where GraphQL isn't available, pile reads over REST instead, following only your pull
+requests and the ones waiting on you and rereading only what changed. Set
+`PILE_REVIEW_REST=1` to always use REST.
+
+If either budget runs low, a banner says so and pile refreshes less often. If one runs out,
+the app keeps showing what it has (a pull request still opens; only its files wait) until
+the limit resets.
 
 ## Privacy and security
 
