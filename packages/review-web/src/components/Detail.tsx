@@ -230,8 +230,9 @@ function Banner({ children }: { children: ReactNode }) {
 
 function Header({ detail, status }: { detail: DetailData; status: Readiness }) {
   const toast = useToast();
-  // Branch names are often long: they shrink (with an ellipsis) so the row never wraps.
-  const chip = "block h-[22px] min-w-[72px] max-w-[300px] shrink truncate rounded-md border border-line bg-panel-2 px-2 font-mono text-[11.5px] leading-5 text-fg-2";
+  // Branch names are often long: they shrink (with an ellipsis) so the row never wraps;
+  // short ones like main keep their own width.
+  const chip = "block h-[22px] min-w-0 max-w-[300px] shrink truncate rounded-md border border-line bg-panel-2 px-2 font-mono text-[11.5px] leading-5 text-fg-2";
   return (
     <header>
       <div className="flex h-[22px] items-center gap-2 text-xs leading-none text-fg-3">

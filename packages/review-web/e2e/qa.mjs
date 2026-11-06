@@ -618,10 +618,50 @@ await check("tree lists files folders-first, like the diff order", async () => {
   expect(diffs[0] === "assets/diagram.png" && diffs.at(-1) === "README.md", diffs.join(", "));
   await shot("files top");
 });
-await check("tree counts unresolved comment threads per file", async () => {
-  const badges = await page.locator("aside[aria-label='File tree'] [data-unresolved]").evaluateAll((els) => els.map((e) => [e.closest("button")?.title, e.textContent]));
-  // src/api/limit.ts has two threads, one of them resolved.
-  expect(JSON.stringify(badges) === JSON.stringify([["src/api/limit.ts", "1"]]), JSON.stringify(badges));
+await check("tree shows comment threads per file as resolved/total", async () => {
+  const badges = await page.locator("aside[aria-label='File tree'] [data-threads]").evaluateAll((els) => els.map((e) => [e.closest("button")?.title, e.dataset.threads]));
+  // limit.ts: three threads, one resolved; README.md: one, open.
+  expect(JSON.stringify(badges) === JSON.stringify([["src/api/limit.ts", "1/3"], ["README.md", "0/1"]]), JSON.stringify(badges));
+  const bar = (await page.locator("[data-conversations]").innerText()).replace(/\s+/g, " ");
+  expect(bar.includes("3 open comments"), bar);
+});
+await check("comments: n steps through the open threads across files, opening what it needs", async () => {
+  await page.locator("body").click({ position: { x: 5, y: 300 } });
+  const landed = async () => {
+    const el = page.locator(".thread-flash").last();
+    await el.waitFor({ timeout: 5000 });
+    await page.waitForTimeout(700);
+    const at = await el.evaluate((e) => ({ path: e.closest(".file")?.getAttribute("data-path"), key: e.getAttribute("data-thread"), top: e.getBoundingClientRect().top }));
+    await el.evaluate((e) => e.classList.remove("thread-flash"));
+    return at;
+  };
+  const seen = [];
+  for (let i = 0; i < 3; i++) {
+    await page.keyboard.press("n");
+    seen.push(await landed());
+  }
+  expect(JSON.stringify(seen.map((s) => `${s.path} ${s.key}`)) === JSON.stringify(["src/api/limit.ts RIGHT:23", "src/api/limit.ts RIGHT:400", "README.md RIGHT:3"]), JSON.stringify(seen));
+  expect(seen.every((s) => s.top > 0 && s.top < 1000), "each one scrolled into view");
+  await shot("jumped to a comment");
+  await page.keyboard.press("Shift+N");
+  const back = await landed();
+  expect(back.key === "RIGHT:400", JSON.stringify(back));
+});
+await check("comments: resolved threads fold to one line; outdated ones sit above the diff", async () => {
+  const file = page.locator('.file[data-path="src/api/limit.ts"]');
+  const folded = file.locator('[data-thread="LEFT:22"] [data-folded]');
+  expect((await folded.innerText()).includes("Resolved"), await folded.innerText());
+  await folded.click();
+  expect((await file.locator('[data-thread="LEFT:22"]').innerText()).includes("Nit: keep the old name"), "opens");
+  const outdated = file.locator("[data-outdated]");
+  const text = (await outdated.innerText()).replace(/\s+/g, " ");
+  expect(text.includes("line 400 · outdated") && text.includes("Should this log"), text);
+  expect((await outdated.getByRole("button", { name: "Reply…" }).count()) === 0, "no replies to outdated lines");
+});
+await check("comments: the tree badge jumps to that file's open thread", async () => {
+  await page.locator("aside[aria-label='File tree'] [data-threads='0/1']").click();
+  const el = page.locator('.file[data-path="README.md"] [data-thread="RIGHT:3"].thread-flash');
+  await el.waitFor({ timeout: 5000 });
 });
 await check("bar: count, size, viewed progress, layout toggles", async () => {
   const bar = (await filesSection.locator("> div").first().innerText()).replace(/\s+/g, " ");
@@ -806,6 +846,8 @@ await check("file header: copy path, collapse", async () => {
   await file.scrollIntoViewIfNeeded();
   await file.locator("button[data-tip='Copy path']").click();
   await toast("Copied");
+  // An earlier check may have marked it viewed (which folds it): start from open.
+  if (await file.getByRole("button", { name: "Expand file" }).count()) await file.getByRole("button", { name: "Expand file" }).click();
   await file.getByRole("button", { name: "Collapse file" }).click();
   expect((await file.locator("table").count()) === 0, "collapsed");
   await file.getByRole("button", { name: "Expand file" }).click();

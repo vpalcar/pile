@@ -370,6 +370,10 @@ function buildDetail(number) {
         { id: 9001, path: "src/api/limit.ts", line: 23, side: "RIGHT", author: person("erin"), createdAt: ago(240), bodyHtml: "<p>This refills on every request. Should be per window.</p>", inReplyTo: null, resolved: false, url: "https://github.com/acme/web/pull/101#d1" },
         { id: 9002, path: "src/api/limit.ts", line: 23, side: "RIGHT", author: person("alice"), createdAt: ago(200), bodyHtml: "<p>Fixed in e5f6a7b.</p>", inReplyTo: 9001, resolved: false, url: "https://github.com/acme/web/pull/101#d2" },
         { id: 9003, path: "src/api/limit.ts", line: 22, side: "LEFT", author: person("grace"), createdAt: ago(60), bodyHtml: "<p>Nit: keep the old name in a comment?</p>", inReplyTo: null, resolved: true, url: "https://github.com/acme/web/pull/101#d3" },
+        // On code that changed since: line 400 isn't in the diff any more.
+        { id: 9004, path: "src/api/limit.ts", line: 400, side: "RIGHT", author: person("dave"), createdAt: ago(500), bodyHtml: "<p>Should this log when a key is limited?</p>", inReplyTo: null, resolved: false, url: "https://github.com/acme/web/pull/101#d4" },
+        // In the last file, far down the page.
+        { id: 9005, path: "README.md", line: 3, side: "RIGHT", author: person("erin"), createdAt: ago(100), bodyHtml: "<p>Link the docs page here.</p>", inReplyTo: null, resolved: false, url: "https://github.com/acme/web/pull/101#d5" },
       ],
       checks: [
         { name: "typecheck", jobId: 7001, state: "failure", summary: "2 errors in src/api/limit.ts", url: "https://example.com/ci/1", durationSeconds: 42 },
