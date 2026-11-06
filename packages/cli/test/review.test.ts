@@ -197,3 +197,30 @@ describe("inbox freshness", () => {
     expect(builds).toBeGreaterThan(before);
   });
 });
+
+
+describe("detail cache", () => {
+  it("never lets a refresh that started before a change overwrite what came after", async () => {
+    const pile = await createPile(createCliRepo().dir);
+    const service = new ReviewService(pile, null);
+    let slow: (value: unknown) => void = () => {};
+    const answers: Array<() => Promise<unknown>> = [
+      async () => ({ v: "first" }),
+      () => new Promise((resolve) => (slow = resolve)), // a background refresh, still in flight
+      async () => ({ v: "after the review" }),
+    ];
+    Object.assign(service, { octokit: {}, repo: { owner: "o", repo: "r" }, prDetail: () => answers.shift()!() });
+    const ref = { kind: "pr" as const, number: 1 };
+    const memo = (service as unknown as { memo: Map<string, { at: number }> }).memo;
+
+    expect(await service.detail(ref)).toEqual({ v: "first" });
+    memo.get("pr/1")!.at -= 20_000; // stale: served while a refresh runs
+    expect(await service.detail(ref)).toEqual({ v: "first" });
+    service.invalidate(ref); // a review was posted
+    expect(await service.detail(ref)).toEqual({ v: "after the review" });
+    slow({ v: "before the review" });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(await service.detail(ref)).toEqual({ v: "after the review" });
+  });
+});
+

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, ArrowRight, Check, ChevronDown, CircleAlert, Copy, ExternalLink, Eye, GitMerge, Layers, MessageSquare, MoreHorizontal, Pencil, PencilLine, RotateCw, Tag, UploadCloud, UserPlus } from "lucide-react";
-import type { CheckRun, Detail as DetailData, InboxItem, ItemRef, PRUpdate, ReviewRequest, StackEntry, TimelineEntry } from "../api";
+import type { CheckRun, Session, Detail as DetailData, InboxItem, ItemRef, PRUpdate, ReviewRequest, StackEntry, TimelineEntry } from "../api";
 import { useMutation } from "@tanstack/react-query";
 import { api } from "../lib/client";
 import { keys, queryClient, refKey, useOptions } from "../lib/queries";
@@ -114,6 +114,18 @@ export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems }:
 
   const submitReview = async (request: ReviewRequest) => {
     await api.review(detail.number!, { ...request, comments: pending.map(({ path, line, side, body }) => ({ path, line, side, body })) });
+    // Show the verdict now; the refetch below confirms it (and the merge rules) from GitHub.
+    const viewer = queryClient.getQueryData<Session>(keys.session)?.viewer;
+    const verdict = request.event === "APPROVE" ? "approved" : request.event === "REQUEST_CHANGES" ? "changes_requested" : "commented";
+    queryClient.setQueryData<DetailData>(key, (d) =>
+      d && viewer
+        ? {
+            ...d,
+            reviewDecision: d.can.review && verdict !== "commented" ? verdict : d.reviewDecision,
+            reviewers: [...d.reviewers.filter((r) => r.person.login !== viewer.login), { person: viewer, state: verdict }],
+          }
+        : d,
+    );
     setPending([]);
     setReviewOpen(false);
     const verb = request.event === "APPROVE" ? "Approved" : request.event === "REQUEST_CHANGES" ? "Requested changes on" : "Reviewed";
