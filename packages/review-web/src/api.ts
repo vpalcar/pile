@@ -19,6 +19,36 @@ export interface Session {
   initial: ItemRef | null;
 }
 
+/**
+ * A review note for the agent working on a branch, kept locally in .pile/notes.json
+ * and read with `pile notes` (same shape as @pile/core's Note).
+ */
+export interface AgentNote {
+  id: string;
+  branch: string;
+  pr: number | null;
+  path: string | null;
+  line: number | null;
+  side: "LEFT" | "RIGHT" | null;
+  commit: string | null;
+  code: string[];
+  codeStart: number | null;
+  body: string;
+  createdAt: string;
+  done: boolean;
+  /** The agent's answers (`pile notes done/reply -m`) and the reviewer's follow-ups. */
+  replies?: Array<{ author: "agent" | "reviewer"; body: string; createdAt: string }>;
+}
+
+/** Where a new note goes; the server fills in the branch, commit and code. */
+export interface NewNoteRequest {
+  ref: ItemRef;
+  path?: string;
+  line?: number;
+  side?: "LEFT" | "RIGHT";
+  body: string;
+}
+
 /** Personal settings, kept in ~/.config/pile/review.json so they survive restarts. */
 export interface Preferences {
   theme?: "system" | "light" | "dark";

@@ -3,7 +3,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ItemRef, MergeRequest, Preferences, PRUpdate, RerunRequest, ReviewRequest } from "@pile/review-web/api";
+import type { ItemRef, MergeRequest, NewNoteRequest, Preferences, PRUpdate, RerunRequest, ReviewRequest } from "@pile/review-web/api";
 import { ReviewService } from "./service.js";
 import { readPreferences, writePreferences } from "./preferences.js";
 
@@ -123,6 +123,18 @@ export async function startReviewServer(options: {
     if (method === "POST" && (match = path.match(/^\/pr\/(\d+)\/reviews$/))) {
       await service.review(Number(match[1]), (await readBody(req)) as ReviewRequest);
       return send(res, 201, { ok: true });
+    }
+    if (method === "GET" && path === "/notes") return send(res, 200, service.notes(url.searchParams.get("branch")));
+    if (method === "POST" && path === "/notes") return send(res, 201, await service.addNote((await readBody(req)) as NewNoteRequest));
+    if (method === "POST" && (match = path.match(/^\/notes\/([0-9a-f]+)\/replies$/))) {
+      return send(res, 201, service.replyToNote(match[1], String(((await readBody(req)) as { body?: string }).body ?? "")));
+    }
+    if (method === "PATCH" && (match = path.match(/^\/notes\/([0-9a-f]+)$/))) {
+      return send(res, 200, service.updateNote(match[1], (await readBody(req)) as { done?: boolean; body?: string }));
+    }
+    if (method === "DELETE" && (match = path.match(/^\/notes\/([0-9a-f]+)$/))) {
+      service.removeNote(match[1]);
+      return send(res, 200, { ok: true });
     }
     if (method === "GET" && path === "/preferences") return send(res, 200, preferences.read());
     if (method === "PATCH" && path === "/preferences") return send(res, 200, preferences.write(await readBody(req)));

@@ -1,4 +1,4 @@
-import type { ApiError, Detail, FileContent, Inbox, ItemRef, MergeRequest, MergeResult, Preferences, PRUpdate, RepoOptions, RerunRequest, ReviewRequest, Session } from "../api";
+import type { AgentNote, ApiError, Detail, NewNoteRequest, FileContent, Inbox, ItemRef, MergeRequest, MergeResult, Preferences, PRUpdate, RepoOptions, RerunRequest, ReviewRequest, Session } from "../api";
 
 /**
  * The server prints a URL with `#token=…`. The token moves to sessionStorage and the
@@ -67,6 +67,11 @@ export const api = {
   comment: (number: number, body: string) => request<{ ok: true }>("POST", `/pr/${number}/comments`, { body }),
   review: (number: number, review: ReviewRequest) => request<{ ok: true }>("POST", `/pr/${number}/reviews`, review),
   options: () => request<RepoOptions>("GET", "/options"),
+  notes: (branch: string) => request<AgentNote[]>("GET", `/notes?branch=${encodeURIComponent(branch)}`),
+  addNote: (note: NewNoteRequest) => request<AgentNote>("POST", "/notes", note),
+  updateNote: (id: string, change: { done?: boolean; body?: string }) => request<AgentNote>("PATCH", `/notes/${id}`, change),
+  replyToNote: (id: string, body: string) => request<AgentNote>("POST", `/notes/${id}/replies`, { body }),
+  removeNote: (id: string) => request<{ ok: true }>("DELETE", `/notes/${id}`),
   preferences: () => request<Preferences>("GET", "/preferences"),
   setPreferences: (change: Preferences) => request<Preferences>("PATCH", "/preferences", change),
   update: (number: number, change: PRUpdate) => request<Detail>("PATCH", `/pr/${number}`, change),

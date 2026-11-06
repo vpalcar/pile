@@ -11,7 +11,7 @@ export const TOKEN = "test-token";
 const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".woff2": "font/woff2" };
 
 export function startMockServer(port = 0) {
-  const state = { calls: [], inboxRequests: 0, down: false, delayMs: 120, edits: {}, preferences: {} };
+  const state = { calls: [], inboxRequests: 0, down: false, delayMs: 120, edits: {}, preferences: {}, notes: [] };
   // Edits made through the app, layered over the fixtures.
   const withEdits = (detail) => (detail ? { ...detail, ...state.edits[detail.number] } : detail);
   const json = (res, status, body) => {
@@ -30,9 +30,16 @@ export function startMockServer(port = 0) {
     const path = url.pathname;
 
     if (path === "/__calls") return json(res, 200, state.calls);
+    // Plays the agent: what `pile notes done <id> -m "..."` writes.
+    if (path === "/__agent-reply") {
+      const note = state.notes.find((n) => n.id === url.searchParams.get("id")) ?? state.notes.at(-1);
+      (note.replies ??= []).push({ author: "agent", body: url.searchParams.get("body") ?? "Done.", createdAt: new Date().toISOString() });
+      if (url.searchParams.has("done")) note.done = true;
+      return json(res, 200, note);
+    }
     if (path === "/__state") {
       Object.assign(state, Object.fromEntries([...url.searchParams].map(([k, v]) => [k, v === "true" ? true : v === "false" ? false : Number.isNaN(Number(v)) ? v : Number(v)])));
-      if (url.searchParams.has("reset")) Object.assign(state, { calls: [], inboxRequests: 0, down: false, edits: {}, fileDown: false });
+      if (url.searchParams.has("reset")) Object.assign(state, { calls: [], inboxRequests: 0, down: false, edits: {}, fileDown: false, notes: [] });
       return json(res, 200, { ok: true });
     }
 
@@ -70,6 +77,47 @@ export function startMockServer(port = 0) {
         return detail ? json(res, 200, detail) : json(res, 404, { error: `Pull request #${m[1]} doesn't exist`, code: "PR_NOT_FOUND" });
       }
       if (api === "/options") return json(res, 200, options);
+      if (api === "/notes" && req.method === "GET") return json(res, 200, state.notes.filter((n) => n.branch === url.searchParams.get("branch")));
+      if (api === "/notes" && req.method === "POST") {
+        const body = await readBody(req);
+        state.calls.push({ type: "note", ...body });
+        if (!body.body?.trim()) return json(res, 400, { error: "A note needs some text", code: "EMPTY_NOTE" });
+        const detail = body.ref.kind === "pr" ? detailFor(body.ref.number) : branchDetail(body.ref.name);
+        const note = {
+          id: Math.random().toString(16).slice(2, 8),
+          branch: detail.branch,
+          pr: detail.number,
+          path: body.path ?? null,
+          line: body.line ?? null,
+          side: body.path ? (body.side ?? "RIGHT") : null,
+          commit: detail.headSha,
+          code: [],
+          codeStart: null,
+          body: body.body.trim(),
+          createdAt: new Date().toISOString(),
+          done: false,
+        };
+        state.notes.push(note);
+        return json(res, 201, note);
+      }
+      if (req.method === "POST" && (m = api.match(/^\/notes\/([0-9a-f]+)\/replies$/))) {
+        const note = state.notes.find((n) => n.id === m[1]);
+        const { body } = await readBody(req);
+        state.calls.push({ type: "note-reply", id: m[1], body });
+        (note.replies ??= []).push({ author: "reviewer", body, createdAt: new Date().toISOString() });
+        note.done = false; // a follow-up reopens the note
+        return json(res, 201, note);
+      }
+      if ((m = api.match(/^\/notes\/([0-9a-f]+)$/))) {
+        const note = state.notes.find((n) => n.id === m[1]);
+        if (!note) return json(res, 404, { error: `No note with id ${m[1]}`, code: "NOTE_NOT_FOUND" });
+        if (req.method === "DELETE") {
+          state.notes = state.notes.filter((n) => n !== note);
+          return json(res, 200, { ok: true });
+        }
+        Object.assign(note, await readBody(req));
+        return json(res, 200, note);
+      }
       if (api === "/preferences" && req.method === "PATCH") {
         Object.assign(state.preferences, await readBody(req));
         return json(res, 200, state.preferences);

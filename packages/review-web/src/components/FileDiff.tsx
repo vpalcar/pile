@@ -1,12 +1,13 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronsUpDown, Copy, ExternalLink, FileCode2, Plus } from "lucide-react";
-import type { DiffFile, InlineComment } from "../api";
+import type { AgentNote, DiffFile, InlineComment } from "../api";
 import { gapLines, gaps, languageFor, parsePatch, toSplitRows, wordDiff, type DiffLine, type Gap, type Hunk } from "../lib/diff";
 import { highlightLines, type Token } from "../lib/highlight";
 import { api } from "../lib/client";
 import { copy, timeAgo } from "../lib/util";
 import { Avatar, Button, buttonClass, cx, DiffStat, Pill, StatusLetter, useToast } from "./ui";
 import { Composer } from "./Composer";
+import { NoteCard, TargetSwitch, useNotes } from "./Notes";
 import { Markdown } from "./Markdown";
 
 export type Side = "LEFT" | "RIGHT";
@@ -261,18 +262,21 @@ function DiffBody(props: Props) {
     return map;
   }, [hunks]);
 
-  // Threads: existing comments plus pending ones, by side and line.
+  // Threads: GitHub comments, pending review comments and notes for the agent, by side and line.
+  const notesApi = useNotes();
+  const fileNotes = useMemo(() => notesApi?.notes.filter((n) => n.path === file.path && n.line) ?? [], [notesApi?.notes, file.path]);
   const threads = useMemo(() => {
-    const map = new Map<string, { comments: InlineComment[]; pending: PendingComment[] }>();
+    const map = new Map<string, { comments: InlineComment[]; pending: PendingComment[]; notes: AgentNote[] }>();
     const at = (side: Side, line: number) => {
       const key = `${side}:${line}`;
-      if (!map.has(key)) map.set(key, { comments: [], pending: [] });
+      if (!map.has(key)) map.set(key, { comments: [], pending: [], notes: [] });
       return map.get(key)!;
     };
     for (const c of comments) if (c.line) at(c.side, c.line).comments.push(c);
     for (const p of pending) at(p.side, p.line).pending.push(p);
+    for (const n of fileNotes) at(n.side ?? "RIGHT", n.line!).notes.push(n);
     return map;
-  }, [comments, pending]);
+  }, [comments, pending, fileNotes]);
   const [composerAt, setComposerAt] = useState<string | null>(null);
 
   // Rows in display order: gap, hunk header, lines (and threads), …, trailing gap.
@@ -322,7 +326,17 @@ function DiffBody(props: Props) {
       <td className={`ln ${cls}`}>
         {number}
         {commentable && (
-          <button className="add-comment" aria-label={`Comment on line ${number}`} onClick={() => setComposerAt(`${side}:${number}`)}>
+          <button
+            className="add-comment"
+            aria-label={`Comment on line ${number}`}
+            // Opens on press: a focused composer elsewhere would shrink when it blurs, moving
+            // the page under the pointer before a click could complete.
+            onMouseDown={(e) => {
+              e.preventDefault();
+              setComposerAt(`${side}:${number}`);
+            }}
+            onClick={(e) => e.detail === 0 && setComposerAt(`${side}:${number}`)}
+          >
             <Plus size={12} strokeWidth={2.75} />
           </button>
         )}
@@ -339,10 +353,12 @@ function DiffBody(props: Props) {
       <Thread
         comments={thread?.comments ?? []}
         pending={thread?.pending ?? []}
+        notes={thread?.notes ?? []}
         composing={composerAt === key}
         onCancel={() => setComposerAt(null)}
-        onSubmit={(body) => {
-          props.onAddPending({ path: file.path, line, side, body });
+        onSubmit={async (body) => {
+          if (notesApi?.target === "agent") await notesApi.add({ path: file.path, line, side, body });
+          else props.onAddPending({ path: file.path, line, side, body });
           setComposerAt(null);
         }}
         onRemovePending={props.onRemovePending}
@@ -537,13 +553,16 @@ function Seg({ text, color, light }: { text: string; color?: string; light?: str
 function Thread(props: {
   comments: InlineComment[];
   pending: PendingComment[];
+  notes: AgentNote[];
   composing: boolean;
   onCancel: () => void;
-  onSubmit: (body: string) => void;
+  onSubmit: (body: string) => Promise<void> | void;
   onRemovePending: (id: string) => void;
 }) {
   const [replying, setReplying] = useState(false);
-  const hasComments = props.comments.length + props.pending.length > 0;
+  const notesApi = useNotes();
+  const hasComments = props.comments.length + props.pending.length + props.notes.length > 0;
+  const toAgent = notesApi?.target === "agent";
   return (
     <div className="max-w-[780px] animate-pop-in overflow-hidden rounded-[14px] border border-line-2 bg-bg">
       {props.comments.map((c) => (
@@ -569,19 +588,23 @@ function Thread(props: {
           <div className="whitespace-pre-wrap">{p.body}</div>
         </div>
       ))}
+      {props.notes.map((n) => (
+        <NoteCard key={n.id} note={n} />
+      ))}
       {props.composing || replying ? (
         <div className={cx("p-1.5", hasComments && "border-t border-line")}>
           <Composer
             autoFocus
             inset
-            placeholder="Leave a comment"
-            submitLabel="Add to review"
+            placeholder={toAgent ? "Tell your agent what to change" : "Leave a comment"}
+            submitLabel={toAgent ? "Save note" : "Add to review"}
+            footerStart={notesApi ? <TargetSwitch /> : undefined}
             onCancel={() => {
               setReplying(false);
               props.onCancel();
             }}
             onSubmit={async (body) => {
-              props.onSubmit(body);
+              await props.onSubmit(body);
               setReplying(false);
             }}
           />

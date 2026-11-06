@@ -12,6 +12,7 @@ import { FilesPanel } from "./FilesPanel";
 import type { PendingComment } from "./FileDiff";
 import { Markdown } from "./Markdown";
 import { Picker, type PickerItem } from "./Picker";
+import { NotesProvider, NotesSection } from "./Notes";
 import { RailCell, railWidth } from "./StackRail";
 import { layoutTree, type TreeNode } from "../lib/stack-tree";
 import { Avatar, Button, buttonClass, CheckIcon, cx, DiffStat, Kbd, Label, Pill, RichText, Spinner, StatusBadge, useDismiss, useToast } from "./ui";
@@ -22,10 +23,12 @@ interface Props {
   inboxItems: InboxItem[];
   scrollEl: HTMLElement | null;
   initialFile: string | null;
+  /** The branch checked out locally, so the notes command can leave out --branch. */
+  currentBranch: string | null;
   trunk: string;
 }
 
-export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems }: Props) {
+export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems, currentBranch }: Props) {
   useNow();
   const key = keys.detail(detail.ref);
   const toast = useToast();
@@ -140,7 +143,7 @@ export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems }:
   };
 
   return (
-    <>
+    <NotesProvider detail={detail} currentBranch={currentBranch}>
       {detail.number !== null && (
         <TopbarSlot>
           <div className="relative">
@@ -170,6 +173,7 @@ export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems }:
           {detail.stack.length > 1 && <StackSection stack={detail.stack} trunk={trunk} items={inboxItems} current={status} />}
           {detail.number !== null && <DescriptionSection detail={detail} />}
           <DiscussionSection detail={detail} inputRef={discussionInput} onCommented={refresh} />
+          <NotesSection local={detail.state === "local"} />
         </div>
         <Rail detail={detail} status={status} actions={railActions} />
       </div>
@@ -195,7 +199,7 @@ export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems }:
         initialFile={initialFile}
         onFileChange={onFileChange}
       />
-    </>
+    </NotesProvider>
   );
 }
 
