@@ -238,7 +238,9 @@ const BODY = `<p>Adds a token-bucket rate limiter in front of the public API.</p
 <table><thead><tr><th>Plan</th><th>Requests / min</th></tr></thead><tbody><tr><td>Free</td><td>60</td></tr><tr><td>Pro</td><td>600</td></tr></tbody></table>
 <ul class="contains-task-list"><li class="task-list-item"><input type="checkbox" checked disabled> Unit tests</li><li class="task-list-item"><input type="checkbox" disabled> Load test in staging</li></ul>
 <blockquote><p>Rolling out behind a flag first.</p></blockquote>
-<details><summary>Benchmark</summary><pre><code>p50 1.2ms  p99 4.8ms</code></pre></details>`;
+<details><summary>Benchmark</summary><pre><code>p50 1.2ms  p99 4.8ms</code></pre></details>
+<details open class="details-reset border rounded-2"><summary class="px-3 py-2"><svg aria-hidden="true" height="16" viewBox="0 0 16 16" width="16" class="octicon octicon-device-camera-video"><path d="M2 3h8a2 2 0 0 1 2 2v1l3-2v8l-3-2v1a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"></path></svg><span aria-label="Video description rate-limit.mp4" class="m-1">rate-limit.mp4</span><span class="dropdown-caret"></span></summary><video src="https://example.com/rate-limit.mp4" controls="controls" muted="muted" class="d-block rounded-bottom-2 border-top width-fit" style="max-height:640px; min-height: 200px"></video></details>`;
+const BODY_MD = "Adds a token-bucket rate limiter in front of the public API.\n\n## What changes\n\n- `limit()` builds a rule from a window and a maximum\n";
 
 const commit = (sha, message, minutes) => ({ id: `commit-${sha}`, kind: "commit", author: person("alice"), createdAt: ago(minutes), bodyHtml: null, sha: sha.padEnd(40, "0"), message, url: `https://github.com/acme/web/commit/${sha}` });
 
@@ -309,6 +311,7 @@ function buildDetail(number) {
     createdAt: ago(600),
     updatedAt: item.updatedAt,
     bodyHtml: null,
+    body: null,
     additions: item.additions ?? 0,
     deletions: item.deletions ?? 0,
     stack: [],
@@ -324,7 +327,7 @@ function buildDetail(number) {
     reviewDecision: item.reviewDecision,
     files: [files[1]],
     local: item.local,
-    can: { review: item.author?.login !== VIEWER.login, comment: true, merge: true, draft: item.author?.login === VIEWER.login },
+    can: { review: item.author?.login !== VIEWER.login, comment: true, merge: true, draft: item.author?.login === VIEWER.login, edit: true },
     merge: null,
   };
   const stack = [longStack, searchTree].find((s) => s.some((p) => p.ref.number === number));
@@ -346,6 +349,7 @@ function buildDetail(number) {
     return {
       ...base,
       bodyHtml: BODY,
+      body: BODY_MD,
       stack: [
         { ref: { kind: "pr", number: 101 }, title: "Rate limit the public API", branch: "api/rate-limit", base: "main", state: "open", reviewDecision: "review_required", isCurrent: true },
         { ref: { kind: "pr", number: 102 }, title: "Expose rate-limit headers to clients", branch: "api/rate-limit-headers", base: "api/rate-limit", state: "open", reviewDecision: "review_required", isCurrent: false },
@@ -444,7 +448,7 @@ export function branchDetail(name) {
     reviewDecision: null,
     files: name === "wip" ? [] : [files[1], files[6]],
     local: item.local,
-    can: { review: false, comment: false, merge: false },
+    can: { review: false, comment: false, merge: false, draft: false, edit: false },
   };
 }
 

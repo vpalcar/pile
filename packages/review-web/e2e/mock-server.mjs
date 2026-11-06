@@ -50,6 +50,15 @@ export function startMockServer(port = 0) {
       if (url.searchParams.has("done")) note.done = true;
       return json(res, 200, note);
     }
+    // Puts a PR's description back as the fixtures have it.
+    if (path === "/__undo-description") {
+      const edit = state.edits[Number(url.searchParams.get("pr"))];
+      if (edit) {
+        delete edit.body;
+        delete edit.bodyHtml;
+      }
+      return json(res, 200, { ok: true });
+    }
     if (path === "/__state") {
       Object.assign(state, Object.fromEntries([...url.searchParams].map(([k, v]) => [k, v === "true" ? true : v === "false" ? false : Number.isNaN(Number(v)) ? v : Number(v)])));
       if (url.searchParams.has("reset")) Object.assign(state, { calls: [], inboxRequests: 0, down: false, edits: {}, fileDown: false, notes: [], reviewed: new Set() });
@@ -85,6 +94,10 @@ export function startMockServer(port = 0) {
           }
           if (change.labels) edit.labels = change.labels.map((name) => options.labels.find((l) => l.name === name) ?? { name, color: "ededed", description: null });
           if (change.draft !== undefined) edit.state = change.draft ? "draft" : "open";
+          if (change.body !== undefined) {
+            edit.body = change.body;
+            edit.bodyHtml = change.body.trim() ? change.body.split(/\n{2,}/).map((p) => `<p>${p.replace(/[&<>]/g, (c) => `&#${c.charCodeAt(0)};`)}</p>`).join("") : null;
+          }
           return json(res, 200, withEdits(detailFor(detail.number)));
         }
         return detail ? json(res, 200, detail) : json(res, 404, { error: `Pull request #${m[1]} doesn't exist`, code: "PR_NOT_FOUND" });

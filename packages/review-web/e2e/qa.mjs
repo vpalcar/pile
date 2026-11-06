@@ -389,7 +389,7 @@ await check("header: status, number, title, branches, size", async () => {
   await shot("top");
 });
 await check("branch chip copies the checkout command", async () => {
-  await page.click("header button[data-tip='Copy checkout command']");
+  await page.click("header button[data-tip^='Copy checkout command']");
   await toast("Copied");
   const copied = await page.evaluate(() => navigator.clipboard.readText());
   expect(copied === "pile checkout api/rate-limit", copied);
@@ -416,10 +416,55 @@ await check("description renders markdown: headings, lists, table, tasks, quote,
   for (const selector of [".markdown h2", ".markdown ul li code", ".markdown table td", ".markdown input[type=checkbox]:checked", ".markdown blockquote", ".markdown details summary"]) {
     expect((await count(selector)) > 0, `missing ${selector}`);
   }
-  await page.locator(".markdown details summary").click();
+  await page.locator(".markdown details summary").first().click();
   expect(await page.locator(".markdown details pre").isVisible(), "details opens");
   expect((await page.locator(".markdown a").first().getAttribute("target")) === "_blank", "links open in a new tab");
   await page.locator("section", { hasText: "Description" }).first().screenshot({ path: join(OUT, `${String(++shots).padStart(3, "0")} detail - description.png`) });
+});
+await check("description shows GitHub's attached videos", async () => {
+  const video = page.locator(".markdown details.details-reset video");
+  expect(await video.isVisible(), "video visible");
+  const box = await video.boundingBox();
+  expect(box && box.width > 300 && box.height >= 150, JSON.stringify(box));
+  const summary = page.locator(".markdown details.details-reset > summary");
+  expect((await summary.evaluate((el) => getComputedStyle(el).display)) === "flex", "file name and icon on one line");
+  expect((await summary.boundingBox()).height < 48, "summary is one short row");
+});
+await check("description: edit as markdown, ⌘Enter saves to GitHub", async () => {
+  const section = page.locator("section", { hasText: "Description" }).first();
+  await section.locator("[data-edit-description]").click();
+  const input = section.locator("[data-description-editor] textarea");
+  expect((await input.inputValue()).startsWith("Adds a token-bucket rate limiter"), await input.inputValue());
+  await shot("description editing");
+  // Escape leaves without saving.
+  await page.keyboard.press("Escape");
+  expect((await section.locator("[data-description-editor]").count()) === 0, "escape cancels");
+  await section.locator("[data-edit-description]").click();
+  await input.fill("Rewritten in pile.\n\nSecond paragraph.");
+  await page.keyboard.press("Meta+Enter");
+  await toast("Description saved");
+  const call = (await calls()).filter((c) => c.type === "update" && c.body !== undefined).at(-1);
+  expect(call?.body === "Rewritten in pile.\n\nSecond paragraph.", JSON.stringify(call));
+  expect((await section.locator(".markdown").innerText()).includes("Second paragraph."), "shows the new description");
+  await fetch(`${server.url}/__undo-description?pr=101`);
+  await page.reload();
+  await detailReady();
+});
+await check("header: long branch names shrink, the row never wraps", async () => {
+  const meta = page.locator("[data-header-meta]");
+  const before = (await meta.boundingBox()).height;
+  await meta.evaluate((row) => {
+    for (const chip of row.querySelectorAll("[data-branch-chip]")) chip.textContent = "11-06-filter-the-attached-to-tab-by-attachment-context-and-more";
+  });
+  const after = await meta.evaluate((row) => ({ height: row.getBoundingClientRect().height, clipped: [...row.querySelectorAll("[data-branch-chip]")].every((c) => c.scrollWidth > c.clientWidth) }));
+  expect(Math.abs(after.height - before) < 1 && after.clipped, JSON.stringify({ before, ...after }));
+  await shot("header long branches");
+  await page.reload();
+  await detailReady();
+});
+await check("checks bar: rounded parts, all the same height", async () => {
+  const parts = await page.locator("[data-checks-bar] i").evaluateAll((els) => els.map((e) => ({ h: e.getBoundingClientRect().height, r: getComputedStyle(e).borderRadius })));
+  expect(parts.length >= 2 && parts.every((p) => p.h === parts[0].h && p.r !== "0px"), JSON.stringify(parts));
 });
 await check("discussion: comments, reviews and grouped commits", async () => {
   const discussion = page.locator("section", { hasText: "Discussion" }).first();
@@ -1086,6 +1131,14 @@ await check("notes: on your own PR, comments go to your agent by default", async
   expect(!text.includes("--branch"), "settings/schema is checked out, so no --branch");
   await section.scrollIntoViewIfNeeded();
   await shot("notes section");
+  // A long path gives up its folders; label, file name, time and buttons stay on one line.
+  const header = section.locator("[data-note] > div").first();
+  const fits = await header.evaluate((row) => {
+    const path = row.querySelector("button.font-mono");
+    path.firstChild.textContent = "typescript/apps/registry/src/app/account/(dashboard)/certify/project/[projectId]/evidence/components/";
+    return { height: row.getBoundingClientRect().height, file: path.lastChild.scrollWidth <= path.lastChild.clientWidth + 1, wrapped: [...row.children].some((c) => c.getBoundingClientRect().height > 28) };
+  });
+  expect(fits.height <= 26 && fits.file && !fits.wrapped, JSON.stringify(fits));
 });
 await check("notes: the agent's reply shows up live, and a follow-up reopens the note", async () => {
   const section = page.locator("[data-notes-section]");

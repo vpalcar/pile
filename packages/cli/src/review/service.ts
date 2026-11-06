@@ -46,6 +46,8 @@ import { checksFromNode, fetchInboxGraphQL, fetchPRGraphQL, listedFromNode, revi
 type ListedPR = Awaited<ReturnType<Octokit["pulls"]["list"]>>["data"][number];
 type FullPR = Awaited<ReturnType<Octokit["pulls"]["get"]>>["data"] & {
   body_html?: string;
+  /** From GraphQL: whether the viewer may edit the title and description. */
+  viewer_can_update?: boolean;
   stack?: { number: number; position: number; size: number } | null;
 };
 
@@ -733,6 +735,7 @@ export class ReviewService {
       createdAt: pr.created_at,
       updatedAt: pr.updated_at,
       bodyHtml: pr.body_html || null,
+      body: pr.body ?? null,
       additions: pr.additions,
       deletions: pr.deletions,
       stack,
@@ -754,6 +757,8 @@ export class ReviewService {
         merge: state === "open",
         // Only the author moves their own PR between draft and ready.
         draft: !!viewer && viewer.login === pr.user?.login && (state === "open" || state === "draft"),
+        // GitHub says over GraphQL; over REST, assume only the author.
+        edit: pr.viewer_can_update ?? (!!viewer && viewer.login === pr.user?.login),
       },
       merge: state === "open" || state === "draft" ? this.mergeInfo(pr, reviews, checks, stack) : null,
     };
@@ -942,6 +947,7 @@ export class ReviewService {
       createdAt: timeline[0]?.createdAt ?? null,
       updatedAt: last?.createdAt ?? null,
       bodyHtml: null,
+      body: null,
       additions: stats.additions,
       deletions: stats.deletions,
       stack,
@@ -957,7 +963,7 @@ export class ReviewService {
       reviewDecision: null,
       files,
       local,
-      can: { review: false, comment: false, merge: false, draft: false },
+      can: { review: false, comment: false, merge: false, draft: false, edit: false },
       merge: null,
     };
   }
@@ -1184,19 +1190,20 @@ export class ReviewService {
     });
   }
 
-  /** Changes reviewers, assignees, labels or draft state, then returns the fresh PR. */
+  /** Changes reviewers, assignees, labels, draft state or description, then returns the fresh PR. */
   async update(number: number, change: PRUpdate): Promise<Detail> {
     this.requireGitHub();
     const repo = this.repo!;
     const api = this.octokit!;
     const tasks: Array<Promise<unknown>> = [];
-    const { reviewers, assignees, labels, draft } = change;
+    const { reviewers, assignees, labels, draft, body } = change;
     if (reviewers?.add?.length) tasks.push(api.pulls.requestReviewers({ ...repo, pull_number: number, reviewers: reviewers.add }));
     if (reviewers?.remove?.length) tasks.push(api.pulls.removeRequestedReviewers({ ...repo, pull_number: number, reviewers: reviewers.remove }));
     if (assignees?.add?.length) tasks.push(api.issues.addAssignees({ ...repo, issue_number: number, assignees: assignees.add }));
     if (assignees?.remove?.length) tasks.push(api.issues.removeAssignees({ ...repo, issue_number: number, assignees: assignees.remove }));
     // Setting labels creates any that don't exist yet.
     if (labels) tasks.push(api.issues.setLabels({ ...repo, issue_number: number, labels }));
+    if (body !== undefined) tasks.push(api.pulls.update({ ...repo, pull_number: number, body }));
     if (draft !== undefined) tasks.push(draft ? this.github!.prs.convertToDraft(number) : this.github!.prs.markReadyForReview(number));
     try {
       await Promise.all(tasks);

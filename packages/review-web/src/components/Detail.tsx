@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, ArrowRight, Check, ChevronDown, CircleAlert, Copy, ExternalLink, Eye, GitMerge, Layers, MessageSquare, MoreHorizontal, Pencil, PencilLine, RotateCw, Tag, UploadCloud, UserPlus } from "lucide-react";
 import type { CheckRun, Inbox, Session, Detail as DetailData, InboxItem, ItemRef, PRUpdate, ReviewRequest, StackEntry, TimelineEntry } from "../api";
@@ -176,7 +176,7 @@ export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems, c
             </Banner>
           )}
           {detail.stack.length > 1 && <StackSection stack={detail.stack} trunk={trunk} items={inboxItems} current={status} />}
-          {detail.number !== null && <DescriptionSection detail={detail} />}
+          {detail.number !== null && <DescriptionSection detail={detail} onSave={(body) => update.mutateAsync({ change: { body }, optimistic: (d) => d, done: "Description saved" })} />}
           <DiscussionSection detail={detail} inputRef={discussionInput} onCommented={refresh} />
           <NotesSection local={detail.state === "local"} />
         </div>
@@ -230,7 +230,8 @@ function Banner({ children }: { children: ReactNode }) {
 
 function Header({ detail, status }: { detail: DetailData; status: Readiness }) {
   const toast = useToast();
-  const chip = "inline-flex h-[22px] max-w-[300px] items-center truncate rounded-md border border-line bg-panel-2 px-2 font-mono text-[11.5px] leading-none text-fg-2";
+  // Branch names are often long: they shrink (with an ellipsis) so the row never wraps.
+  const chip = "block h-[22px] min-w-[72px] max-w-[300px] shrink truncate rounded-md border border-line bg-panel-2 px-2 font-mono text-[11.5px] leading-5 text-fg-2";
   return (
     <header>
       <div className="flex h-[22px] items-center gap-2 text-xs leading-none text-fg-3">
@@ -244,12 +245,13 @@ function Header({ detail, status }: { detail: DetailData; status: Readiness }) {
         )}
       </div>
       <h1 className="mb-3.5 mt-3 text-[27px] font-semibold leading-[34px] tracking-[-0.028em] text-balance">{detail.title}</h1>
-      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-2 text-fg-2">
+      <div className="flex min-w-0 items-center gap-x-2.5 text-fg-2" data-header-meta>
         <Avatar person={detail.author} />
-        <b className="font-medium leading-none text-fg">{detail.author?.login ?? "unknown"}</b>
+        <b className="shrink-0 whitespace-nowrap font-medium leading-none text-fg">{detail.author?.login ?? "unknown"}</b>
         <button
-          className={cx(chip, "transition-colors hover:border-line-2 hover:text-fg")}
-          data-tip="Copy checkout command"
+          className={cx(chip, "text-left transition-colors hover:border-line-2 hover:text-fg")}
+          data-branch-chip
+          data-tip={`Copy checkout command for ${detail.branch}`}
           onClick={() =>
             copy(`pile checkout ${detail.branch}`).then(
               (ok) =>
@@ -266,10 +268,14 @@ function Header({ detail, status }: { detail: DetailData; status: Readiness }) {
           {detail.branch}
         </button>
         <ArrowRight size={13} className="shrink-0 text-fg-4" />
-        <span className={chip}>{detail.base}</span>
-        <span className="flex-1" />
-        <span className="text-xs leading-none text-fg-3 tabular">{plural(detail.files.length, "file")}</span>
-        <DiffStat additions={detail.additions} deletions={detail.deletions} bar />
+        <span className={chip} title={detail.base} data-branch-chip>
+          {detail.base}
+        </span>
+        <span className="min-w-2 flex-1" />
+        <span className="shrink-0 whitespace-nowrap text-xs leading-none text-fg-3 tabular">{plural(detail.files.length, "file")}</span>
+        <span className="shrink-0">
+          <DiffStat additions={detail.additions} deletions={detail.deletions} bar />
+        </span>
       </div>
     </header>
   );
@@ -495,21 +501,95 @@ function StackSection({ stack, trunk, items, current }: { stack: StackEntry[]; t
   );
 }
 
-function DescriptionSection({ detail }: { detail: DetailData }) {
+function DescriptionSection({ detail, onSave }: { detail: DetailData; onSave: (body: string) => Promise<unknown> }) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState("");
+  const [saving, setSaving] = useState(false);
+  const input = useRef<HTMLTextAreaElement>(null);
+  const start = () => {
+    setText(detail.body ?? "");
+    setEditing(true);
+  };
+  const save = async () => {
+    setSaving(true);
+    try {
+      await onSave(text);
+      setEditing(false);
+    } catch {
+      // The toast says why; keep the text to try again.
+    } finally {
+      setSaving(false);
+    }
+  };
+  useEffect(() => {
+    if (!editing) return;
+    input.current?.focus({ preventScroll: true });
+    input.current?.setSelectionRange(input.current.value.length, input.current.value.length);
+  }, [editing]);
+  useLayoutEffect(() => {
+    const el = input.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight + 2, window.innerHeight * 0.7)}px`;
+  }, [text, editing]);
+
   return (
     <Section
       title="Description"
       right={
-        detail.url && (
-          <a className={cx(buttonClass({ variant: "ghost", size: "sm" }), "no-underline")} href={detail.url} target="_blank" rel="noreferrer">
-            <Pencil size={12} /> Edit on GitHub
-          </a>
-        )
+        !editing &&
+        (detail.can.edit ? (
+          <Button variant="ghost" size="sm" onClick={start} data-edit-description>
+            <Pencil size={12} /> Edit
+          </Button>
+        ) : (
+          detail.url && (
+            <a className={cx(buttonClass({ variant: "ghost", size: "sm" }), "no-underline")} href={detail.url} target="_blank" rel="noreferrer">
+              <ExternalLink size={12} /> On GitHub
+            </a>
+          )
+        ))
       }
     >
-      <div className="rounded-xl border border-line bg-panel px-4 py-3.5">
-        {detail.bodyHtml ? <Markdown html={detail.bodyHtml} /> : <span className="text-fg-3">No description provided.</span>}
-      </div>
+      {editing ? (
+        <div className="rounded-xl border border-line-2 bg-panel focus-within:border-accent" data-description-editor>
+          <textarea
+            ref={input}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                void save();
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                setEditing(false);
+              }
+            }}
+            spellCheck
+            placeholder="Describe the change, in markdown"
+            aria-label="Description, in markdown"
+            className="block min-h-40 w-full resize-none rounded-t-xl bg-transparent px-4 py-3.5 font-mono text-[12.5px] leading-relaxed text-fg outline-none placeholder:text-fg-4"
+          />
+          <div className="flex items-center gap-2 border-t border-line px-3 py-2">
+            <span className="text-[12px] text-fg-3">Markdown</span>
+            <span className="flex-1" />
+            <Button variant="ghost" size="sm" onClick={() => setEditing(false)} disabled={saving}>
+              Cancel
+            </Button>
+            <Button variant="primary" size="sm" onClick={() => void save()} disabled={saving || text === (detail.body ?? "")}>
+              {saving ? <Spinner size={12} /> : null}
+              Save <Kbd>{modKey}↵</Kbd>
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="rounded-xl border border-line bg-panel px-4 py-3.5">
+          {detail.bodyHtml ? <Markdown html={detail.bodyHtml} /> : <span className="text-fg-3">No description provided.</span>}
+        </div>
+      )}
     </Section>
   );
 }
@@ -784,12 +864,23 @@ function Rail({ detail, status, actions }: { detail: DetailData; status: Readine
             )}
           </Label>
           {summary && (
-            <div className="mb-2.5 flex h-[3px] overflow-hidden rounded-full bg-panel-3" aria-hidden>
-              <i className="h-full bg-ok transition-[width] duration-500" style={{ width: `${(summary.passed / summary.total) * 100}%` }} />
-              <i className="h-full bg-warn transition-[width] duration-500" style={{ width: `${(summary.pending / summary.total) * 100}%` }} />
-              <i className="h-full bg-bad transition-[width] duration-500" style={{ width: `${(summary.failed / summary.total) * 100}%` }} />
-              {/* Skipped checks didn't fail: grey, not empty track. */}
-              <i className="h-full bg-line-3 transition-[width] duration-500" style={{ width: `${(summary.skipped / summary.total) * 100}%` }} />
+            // Each part its own rounded pill with a hairline gap, so every colour reads as
+            // the same thickness (square joins made the middle ones look thinner).
+            <div className="mb-2.5 flex h-[3px] gap-[2px]" aria-hidden data-checks-bar>
+              {(
+                [
+                  [summary.passed, "bg-ok"],
+                  [summary.pending, "bg-warn"],
+                  [summary.failed, "bg-bad"],
+                  // Skipped checks didn't fail: grey, like the empty track.
+                  [summary.skipped, "bg-line-3"],
+                  [summary.total - summary.passed - summary.pending - summary.failed - summary.skipped, "bg-panel-3"],
+                ] as const
+              )
+                .filter(([n]) => n > 0)
+                .map(([n, color]) => (
+                  <i key={color} className={cx("h-full min-w-[3px] rounded-full transition-[flex-grow] duration-500", color)} style={{ flexGrow: n, flexBasis: 0 }} />
+                ))}
             </div>
           )}
           <ChecksList checks={detail.checks} row={row} busy={busy} onRerun={(check) => run(`check-${check.name}`, () => actions.rerun(check))} />

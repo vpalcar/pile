@@ -219,6 +219,8 @@ export interface Detail {
   createdAt: string | null;
   updatedAt: string | null;
   bodyHtml: string | null;
+  /** The description's markdown, for editing it. */
+  body: string | null;
   additions: number;
   deletions: number;
   stack: StackEntry[];
@@ -236,7 +238,7 @@ export interface Detail {
   files: DiffFile[];
   local: LocalState | null;
   /** Things the viewer can do. */
-  can: { review: boolean; comment: boolean; merge: boolean; draft: boolean };
+  can: { review: boolean; comment: boolean; merge: boolean; draft: boolean; edit: boolean };
   /** Why the files couldn't be loaded (GitHub's REST limit), when they couldn't. */
   filesUnavailable?: string;
   /** What merging from here would do; null for local branches and finished PRs. */
@@ -281,6 +283,8 @@ export interface PRUpdate {
   /** The full set of labels the PR should have. */
   labels?: string[];
   draft?: boolean;
+  /** The new description, in markdown. */
+  body?: string;
 }
 
 /** Re-runs one check (by its Actions job) or, without `jobId`, every failed one. */

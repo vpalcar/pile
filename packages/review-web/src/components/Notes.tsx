@@ -151,16 +151,16 @@ export function NoteCard({ note, location }: { note: AgentNote; location?: React
     <div className={cx("border-b border-line bg-merged-soft/40 px-3.5 py-3 last:border-b-0", note.done && "opacity-60")} data-note={note.id}>
       <div className="mb-1.5 flex h-6 items-center gap-2 leading-none text-fg-3">
         <Bot size={14} className="shrink-0 text-merged" />
-        <b className="font-medium text-fg">Note for agent</b>
+        <b className="shrink-0 whitespace-nowrap font-medium text-fg">Note for agent</b>
         {location}
-        <span>{timeAgo(note.createdAt)}</span>
+        <span className="shrink-0 whitespace-nowrap">{timeAgo(note.createdAt)}</span>
         {note.done && <Pill tone="green">Done</Pill>}
         <span className="flex-1" />
-        <Button variant="ghost" size="sm" onClick={() => notes.setDone(note.id, !note.done)} aria-label={note.done ? "Reopen note" : "Mark note done"}>
+        <Button variant="ghost" size="sm" className="shrink-0" onClick={() => notes.setDone(note.id, !note.done)} aria-label={note.done ? "Reopen note" : "Mark note done"}>
           {note.done ? <RotateCcw size={12} /> : <Check size={12} />}
           {note.done ? "Reopen" : "Done"}
         </Button>
-        <Button variant="ghost" size="sm" icon onClick={() => notes.remove(note.id)} aria-label="Delete note" data-tip="Delete">
+        <Button variant="ghost" size="sm" icon className="shrink-0" onClick={() => notes.remove(note.id)} aria-label="Delete note" data-tip="Delete">
           <Trash2 size={12} />
         </Button>
       </div>
@@ -255,9 +255,13 @@ export function NotesSection({ local }: { local: boolean }) {
             note={note}
             location={
               note.path ? (
-                <button className="truncate font-mono text-[11.5px] text-fg-2 hover:text-accent" onClick={() => jump(note)}>
-                  {note.path}:{note.line}
-                  {note.side === "LEFT" && " (old)"}
+                // Long paths give up their folders first; the file name and line stay.
+                <button className="flex min-w-0 items-baseline font-mono text-[11.5px] text-fg-2 hover:text-accent" onClick={() => jump(note)} title={`${note.path}:${note.line}`}>
+                  {note.path.includes("/") && <span className="truncate">{note.path.slice(0, note.path.lastIndexOf("/") + 1)}</span>}
+                  <span className="shrink-0 whitespace-nowrap">
+                    {note.path.slice(note.path.lastIndexOf("/") + 1)}:{note.line}
+                    {note.side === "LEFT" && " (old)"}
+                  </span>
                 </button>
               ) : (
                 <span className="text-[11.5px]">whole branch</span>

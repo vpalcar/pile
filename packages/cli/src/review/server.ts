@@ -169,7 +169,7 @@ export async function startReviewServer(options: {
       ...(file.endsWith("index.html")
         ? {
             "content-security-policy":
-              "default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
+              "default-src 'self'; img-src 'self' https: data:; media-src 'self' https:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
           }
         : {}),
     });

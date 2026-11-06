@@ -50,7 +50,7 @@ const PR = `query PilePR($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     defaultBranchRef { name }
     pullRequest(number: $number) {
-      number title url state isDraft merged mergedAt createdAt updatedAt bodyHTML additions deletions
+      number title url state isDraft merged mergedAt createdAt updatedAt body bodyHTML additions deletions viewerCanUpdate
       headRefName headRefOid baseRefName baseRefOid mergeable mergeStateStatus reviewDecision
       author { ${USER} }
       labels(first: 30) { nodes { name color description } }
@@ -247,7 +247,9 @@ type PRData = {
       mergedAt: string | null;
       createdAt: string;
       updatedAt: string;
+      body: string;
       bodyHTML: string;
+      viewerCanUpdate: boolean;
       additions: number;
       deletions: number;
       headRefName: string;
@@ -311,7 +313,9 @@ export async function fetchPRGraphQL(octokit: Octokit, repo: Repo, number: numbe
     user: restUser(p.author),
     head: { ref: p.headRefName, sha: p.headRefOid },
     base: { ref: p.baseRefName, sha: p.baseRefOid, repo: { default_branch: defaultBranch } },
+    body: p.body,
     body_html: p.bodyHTML,
+    viewer_can_update: p.viewerCanUpdate,
     additions: p.additions,
     deletions: p.deletions,
     created_at: p.createdAt,
