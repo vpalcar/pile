@@ -137,8 +137,10 @@ export class ReviewService {
       if (this.memo.get(key) === entry) this.memo.delete(key);
     });
     if (hit && age < staleMs) {
-      // Stale but recent: answer now, swap in the new value when it lands.
-      next.then(() => this.memo.set(key, entry)).catch(() => {});
+      // Stale but recent: answer now, swap in the new value when it lands, unless the
+      // entry was invalidated meanwhile (a review was just posted, say): then this
+      // result predates the change and must not replace the fresh one.
+      next.then(() => this.memo.get(key) === hit && this.memo.set(key, entry)).catch(() => {});
       return hit.value as Promise<T>;
     }
     this.memo.set(key, entry);
