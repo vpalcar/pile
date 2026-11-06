@@ -312,6 +312,7 @@ function buildDetail(number) {
     updatedAt: item.updatedAt,
     bodyHtml: null,
     body: null,
+    nativeStack: item.stack?.nativeStack ?? null,
     additions: item.additions ?? 0,
     deletions: item.deletions ?? 0,
     stack: [],
@@ -427,6 +428,7 @@ export function branchDetail(name) {
     createdAt: ago(60),
     updatedAt: item.updatedAt,
     bodyHtml: null,
+    nativeStack: null,
     additions: item.additions,
     deletions: item.deletions,
     stack:

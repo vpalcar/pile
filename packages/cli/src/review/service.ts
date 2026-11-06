@@ -738,6 +738,8 @@ export class ReviewService {
       updatedAt: pr.updated_at,
       bodyHtml: pr.body_html || null,
       body: pr.body ?? null,
+      // Known once the stack is: prStack looks the native stack up.
+      nativeStack: pr.stack?.number ?? null,
       additions: pr.additions,
       deletions: pr.deletions,
       stack,
@@ -824,10 +826,25 @@ export class ReviewService {
     });
   }
 
+  /** The open native GitHub stack a PR is in, if any; null too where stacks aren't available. */
+  private nativeStackFor(number: number): Promise<{ number: number; position: number; size: number } | null> {
+    return this.cached(`native-stack/${number}`, STACK_LINKS_MS, async () => {
+      const { data } = await this.octokit!.request("GET /repos/{owner}/{repo}/stacks", { ...this.repo!, pull_request: number }).catch(() => ({ data: [] }));
+      const stack = (data as Array<{ number: number; open: boolean; pull_requests: Array<{ number: number }> }>).find((s) => s.open);
+      if (!stack) return null;
+      return { number: stack.number, position: stack.pull_requests.findIndex((p) => p.number === number) + 1, size: stack.pull_requests.length };
+    });
+  }
+
   private async stackEntries(pr: FullPR): Promise<StackEntry[]> {
     const octokit = this.octokit!;
     const repo = this.repo!;
-    // Native GitHub stack: the stack itself is the source of truth.
+    // Native GitHub stack: the stack itself is the source of truth. GraphQL doesn't say
+    // whether a PR is in one, so ask (cached; a 304 costs nothing).
+    if (!pr.stack && pr.state === "open") {
+      const found = await this.nativeStackFor(pr.number);
+      if (found) pr.stack = found;
+    }
     if (pr.stack) {
       const { data } = await octokit.request("GET /repos/{owner}/{repo}/stacks/{stack_number}", {
         ...repo,
@@ -958,6 +975,7 @@ export class ReviewService {
       updatedAt: last?.createdAt ?? null,
       bodyHtml: null,
       body: null,
+      nativeStack: null,
       additions: stats.additions,
       deletions: stats.deletions,
       stack,

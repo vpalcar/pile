@@ -83,6 +83,8 @@ export function fakeGitHub(options: { prs: number; viewer?: string; trunk?: stri
       return { total_count: p?.checks.length ?? 0, check_runs: (p?.checks ?? []).map((c, i) => ({ id: i + 1, name: c.name, status: c.status, conclusion: c.conclusion, started_at: null, completed_at: null, output: { title: null }, html_url: null, details_url: null, app: { slug: "github-actions" } })) };
     }],
     [/^\/repos\/o\/r\/commits\/([^/]+)\/status$/, () => ({ state: "success", statuses: [] })],
+    // Native GitHub stacks: none in this repo.
+    [/^\/repos\/o\/r\/stacks$/, () => []],
   ];
 
   // GraphQL: the two queries the review server sends, answered from the same repo.

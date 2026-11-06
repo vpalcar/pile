@@ -223,6 +223,8 @@ export interface Detail {
   bodyHtml: string | null;
   /** The description's markdown, for editing it. */
   body: string | null;
+  /** The native GitHub stack the PR is in; null: the stack shown is inferred from branches. */
+  nativeStack: number | null;
   additions: number;
   deletions: number;
   stack: StackEntry[];

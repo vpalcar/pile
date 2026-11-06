@@ -4,6 +4,7 @@ import { createGitHubClient, parseGitRemote } from "../src/client.js";
 import { PROperations } from "../src/pr.js";
 import { PileGitHubError, isGraphQLUnavailable, parsePRNumber } from "../src/errors.js";
 import { blockingReasons } from "../src/merge-rules.js";
+import { syncStack } from "../src/stacks.js";
 
 type Handler = (url: URL, init: RequestInit) => { status?: number; body: unknown } | undefined;
 
@@ -298,6 +299,64 @@ describe("blockingReasons", () => {
     expect(blockingReasons({ ...clean, mergeableState: "blocked" }).map((r) => r.message)).toEqual(["Blocked by branch protection rules"]);
     expect(blockingReasons({ ...clean, mergeableState: "blocked", reviewRequired: true }).map((r) => r.message)).toEqual(["Needs an approving review"]);
     expect(blockingReasons(clean)).toEqual([]);
+  });
+});
+
+describe("syncStack (GitHub's native stacks)", () => {
+  /** A GitHub with native stacks: stack 21 holds `holds` (bottom first, open), unless null. */
+  const github = (holds: number[] | null, status?: number) => {
+    const writes: Array<[string, unknown]> = [];
+    const stackBody = (prs: number[]) => ({ number: 21, pull_requests: prs.map((n) => ({ number: n, merged_at: null, head: { ref: `b${n}` } })) });
+    const fake = fakeGitHub((url, init) => {
+      if (status) return { status, body: { message: "Not Found" } };
+      const body = init.body ? JSON.parse(String(init.body)) : null;
+      if (init.method === "POST") writes.push([url.pathname, body?.pull_requests ?? null]);
+      if (url.pathname === "/repos/o/r/stacks/21" && holds) return { body: stackBody(holds) };
+      if (url.pathname === "/repos/o/r/stacks" && init.method === "POST") return { status: 201, body: { ...stackBody(body.pull_requests), number: 22 } };
+      if (url.pathname === "/repos/o/r/stacks/21/add") return { body: stackBody([...holds!, ...body.pull_requests]) };
+      if (url.pathname === "/repos/o/r/stacks/21/unstack") return { body: stackBody([]) };
+      return undefined;
+    });
+    return { ...fake, writes };
+  };
+  const link = (n: number, inStack = false) => ({ number: n, branch: `b${n}`, stack: inStack ? { number: 21, position: 1, size: 2, base: "main" } : null });
+
+  it("creates a stack of the chain, bottom first", async () => {
+    const { prs, writes } = github(null);
+    expect(await syncStack(prs, [link(1), link(2), link(3)])).toEqual({ action: "created", stackNumber: 22, prs: [1, 2, 3] });
+    expect(writes).toEqual([["/repos/o/r/stacks", [1, 2, 3]]]);
+  });
+
+  it("puts new PRs on top of the existing stack", async () => {
+    const { prs, writes } = github([1, 2]);
+    expect((await syncStack(prs, [link(1, true), link(2, true), link(3)])).action).toBe("extended");
+    expect(writes).toEqual([["/repos/o/r/stacks/21/add", [3]]]);
+  });
+
+  it("leaves the stack alone when the chain is it, or its lower part", async () => {
+    for (const chain of [[link(1, true), link(2, true), link(3, true)], [link(1, true), link(2, true)]]) {
+      const { prs, writes } = github([1, 2, 3]);
+      expect((await syncStack(prs, chain)).action).toBe("unchanged");
+      expect(writes).toEqual([]);
+    }
+  });
+
+  it("keeps the stack when a sibling branch holds it (GitHub stacks can't branch)", async () => {
+    const { prs, writes } = github([1, 2]);
+    const result = await syncStack(prs, [link(1, true), link(3)], { isSibling: (branch, parent) => branch === "b2" && parent === "b1" });
+    expect(result).toEqual({ action: "diverged", stackNumber: 21, outside: [3] });
+    expect(writes).toEqual([]);
+  });
+
+  it("rebuilds the stack when pile's order changed", async () => {
+    const { prs, writes } = github([1, 3]);
+    expect((await syncStack(prs, [link(1, true), link(2), link(3, true)])).action).toBe("rebuilt");
+    expect(writes).toEqual([["/repos/o/r/stacks/21/unstack", null], ["/repos/o/r/stacks", [1, 2, 3]]]);
+  });
+
+  it("skips one PR, and says so when GitHub has no stacks here", async () => {
+    expect((await syncStack(github(null).prs, [link(1)])).action).toBe("skipped");
+    expect(await syncStack(github(null, 404).prs, [link(1), link(2)])).toEqual({ action: "skipped", reason: "GitHub stacks aren't available for this repository" });
   });
 });
 

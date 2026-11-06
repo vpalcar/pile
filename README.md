@@ -192,6 +192,12 @@ pile submit --draft
 pile submit --open
 ```
 
+GitHub's [stacked pull requests](https://docs.github.com/en/pull-requests/get-started/about-stacked-prs)
+are the source of truth: `pile submit` registers the chain from the trunk up to your branch as a
+GitHub stack, adds new PRs on top of it, and rebuilds it if branches moved. GitHub stacks can't
+branch, so when a stack diverges the branch that got there first keeps the GitHub stack and pile
+says which PRs stay outside it.
+
 ### Syncing Your Stack
 
 ```bash

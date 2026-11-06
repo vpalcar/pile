@@ -175,7 +175,7 @@ export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems, c
               {plural(detail.local.ahead, "local commit")} not pushed. Run <code>pile submit</code> to update this PR.
             </Banner>
           )}
-          {detail.stack.length > 1 && <StackSection stack={detail.stack} trunk={trunk} items={inboxItems} current={status} />}
+          {detail.stack.length > 1 && <StackSection stack={detail.stack} native={detail.nativeStack} trunk={trunk} items={inboxItems} current={status} />}
           {detail.number !== null && <DescriptionSection detail={detail} onSave={(body) => update.mutateAsync({ change: { body }, optimistic: (d) => d, done: "Description saved" })} />}
           <DiscussionSection detail={detail} inputRef={discussionInput} onCommented={refresh} />
           <NotesSection local={detail.state === "local"} />
@@ -416,7 +416,7 @@ export function stackTree(stack: StackEntry[]): TreeNode[] {
   return stack.map((e) => ({ id: refKey(e.ref), parent: byBranch.has(e.base) ? refKey(byBranch.get(e.base)!.ref) : null }));
 }
 
-function StackSection({ stack, trunk, items, current }: { stack: StackEntry[]; trunk: string; items: InboxItem[]; current: Readiness }) {
+function StackSection({ stack, native, trunk, items, current }: { stack: StackEntry[]; native: number | null; trunk: string; items: InboxItem[]; current: Readiness }) {
   const [expanded, setExpanded] = useState(false);
   const { rows, lanes } = useMemo(() => layoutTree(stackTree(stack)), [stack]);
   const byId = new Map(stack.map((e) => [refKey(e.ref), e]));
@@ -456,6 +456,12 @@ function StackSection({ stack, trunk, items, current }: { stack: StackEntry[]; t
             {lanes > 1 ? `${stack.length} PRs · ${lanes} branches` : me ? `${depth(me)} of ${stack.length}` : stack.length}
           </span>
         </>
+      }
+      right={
+        // GitHub's stack is the source of truth; say when this one is only pile's reading of the branches.
+        <span className="text-xs font-normal text-fg-3" data-stack-kind={native ? "github" : "branches"} data-tip={native ? undefined : "Not a GitHub stack: pile submit registers it"}>
+          {native ? `GitHub stack #${native}` : "Linked by branches"}
+        </span>
       }
     >
       <div className="flex flex-col" data-stack-lanes={lanes}>

@@ -33,7 +33,10 @@ export {
 } from "./client.js";
 
 // PR operations
-export { PROperations, createPROperations, type AsyncMergeOptions } from "./pr.js";
+export { PROperations, createPROperations, type AsyncMergeOptions, type NativeStack } from "./pr.js";
+
+// Native GitHub stacks
+export { syncStack, type StackLink, type StackSyncResult } from "./stacks.js";
 
 // Cache
 export { PRCacheManager, createPRCacheManager, type CachedPR } from "./cache.js";

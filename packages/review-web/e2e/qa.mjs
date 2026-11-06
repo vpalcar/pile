@@ -397,6 +397,8 @@ await check("branch chip copies the checkout command", async () => {
 await check("stack lists both PRs with their status and marks the current one", async () => {
   const stack = (await page.locator("section", { hasText: "Stack" }).first().innerText()).replace(/\s+/g, " ");
   expect(stack.includes("1 of 2") && stack.includes("#102") && stack.includes("#101") && stack.includes("main"), stack);
+  // Not registered on GitHub in the fixtures: the section says it's inferred.
+  expect((await page.locator("[data-stack-kind]").getAttribute("data-stack-kind")) === "branches", "linked by branches");
 });
 await check("stack entry navigates", async () => {
   await page.getByRole("link", { name: /#102/ }).click();

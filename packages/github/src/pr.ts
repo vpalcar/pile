@@ -408,6 +408,46 @@ export class PROperations {
       .map((pr) => ({ number: pr.number, branch: pr.head.ref }));
   }
 
+  /** A native GitHub stack's pull requests, bottom first. */
+  async getStack(stackNumber: number): Promise<NativeStack> {
+    const { data } = await this.client.api.request("GET /repos/{owner}/{repo}/stacks/{stack_number}", {
+      owner: this.client.repoOwner,
+      repo: this.client.repoName,
+      stack_number: stackNumber,
+    });
+    return toNativeStack(data);
+  }
+
+  /** Makes a native GitHub stack of these PRs, bottom first; each must be based on the one before. */
+  async createStack(prNumbers: number[]): Promise<NativeStack> {
+    const { data } = await this.client.api.request("POST /repos/{owner}/{repo}/stacks", {
+      owner: this.client.repoOwner,
+      repo: this.client.repoName,
+      pull_requests: prNumbers,
+    });
+    return toNativeStack(data);
+  }
+
+  /** Puts these PRs on top of a native stack; the first must be based on its top PR. */
+  async addToStack(stackNumber: number, prNumbers: number[]): Promise<NativeStack> {
+    const { data } = await this.client.api.request("POST /repos/{owner}/{repo}/stacks/{stack_number}/add", {
+      owner: this.client.repoOwner,
+      repo: this.client.repoName,
+      stack_number: stackNumber,
+      pull_requests: prNumbers,
+    });
+    return toNativeStack(data);
+  }
+
+  /** Takes the unmerged PRs out of a native stack (dissolving it when none are merged). */
+  async unstack(stackNumber: number): Promise<void> {
+    await this.client.api.request("POST /repos/{owner}/{repo}/stacks/{stack_number}/unstack", {
+      owner: this.client.repoOwner,
+      repo: this.client.repoName,
+      stack_number: stackNumber,
+    });
+  }
+
   /**
    * Request reviewers for a PR
    */
@@ -577,3 +617,19 @@ export class PROperations {
 export function createPROperations(client: GitHubClient): PROperations {
   return new PROperations(client);
 }
+
+/** A native GitHub stack, as pile uses it. */
+export interface NativeStack {
+  number: number;
+  /** Bottom first. */
+  pullRequests: Array<{ number: number; branch: string; merged: boolean }>;
+}
+
+function toNativeStack(data: unknown): NativeStack {
+  const stack = data as { number: number; pull_requests?: Array<{ number: number; merged_at: string | null; head: { ref: string } }> };
+  return {
+    number: stack.number,
+    pullRequests: (stack.pull_requests ?? []).map((pr) => ({ number: pr.number, branch: pr.head.ref, merged: !!pr.merged_at })),
+  };
+}
+
