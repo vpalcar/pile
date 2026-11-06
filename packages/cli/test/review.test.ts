@@ -197,3 +197,32 @@ describe("inbox freshness", () => {
     expect(builds).toBeGreaterThan(before);
   });
 });
+
+describe("notes for the agent", () => {
+  it("saves notes on a branch's lines with the code around them, old side included", async () => {
+    const repo = createCliRepo();
+    repo.commitFile("shared.txt", "the old way\n", "on main");
+    repo.chain(["feature"]);
+    repo.commitFile("feature.txt", "one\ntwo\nthree\nfour\nfive\n", "five lines");
+    repo.commitFile("shared.txt", "the new way\n", "change shared");
+    const pile = await createPile(repo.dir);
+    const service = new ReviewService(pile, null);
+    const ref = { kind: "branch" as const, name: "feature" };
+
+    const note = await service.addNote({ ref, path: "feature.txt", line: 3, side: "RIGHT", body: "Why three?" });
+    expect(note).toMatchObject({ branch: "feature", pr: null, path: "feature.txt", line: 3, side: "RIGHT", codeStart: 1, code: ["one", "two", "three", "four", "five"] });
+    const general = await service.addNote({ ref, body: "Add a test." });
+    expect(general).toMatchObject({ path: null, line: null, side: null, code: [] });
+    // The old side reads the file as it was before the branch's change.
+    const old = await service.addNote({ ref, path: "shared.txt", line: 1, side: "LEFT", body: "This was better." });
+    expect(old.code).toEqual(["the old way"]);
+
+    expect(service.notes("feature").map((n) => n.body)).toEqual(["Why three?", "Add a test.", "This was better."]);
+    expect(service.updateNote(note.id, { done: true }).done).toBe(true);
+    service.removeNote(general.id);
+    expect(service.notes("feature")).toHaveLength(2);
+    await expect(service.addNote({ ref, body: "  " })).rejects.toMatchObject({ code: "EMPTY_NOTE" });
+    expect(() => service.removeNote("ffffff")).toThrow(expect.objectContaining({ code: "NOTE_NOT_FOUND" }));
+  });
+});
+
