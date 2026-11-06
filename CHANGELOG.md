@@ -38,6 +38,8 @@
 - PR commands take a target: a branch, a PR number or a PR URL.
 - New: `pile up`, `down`, `top`, `bottom`, `track`, `untrack`.
 - Fixes to `move`, `rename` and `delete`; failures exit non-zero.
+- `pile log` draws stacks that branch like `git log --graph`, joining each branch where it
+  forks (it used to draw every join at the trunk).
 
 ### Performance and robustness
 
