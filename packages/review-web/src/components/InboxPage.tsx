@@ -110,8 +110,8 @@ export function InboxPage({ inbox, session, loading }: { inbox: Inbox | undefine
   return (
     <div data-page="inbox" data-partial={inbox?.partial ? "" : undefined} className="mx-auto max-w-[1100px] px-8 pb-20 pt-11">
       <header>
-        <div className="font-mono text-[11.5px] leading-none text-fg-3">{session?.repo ? `${session.repo.owner} / ${session.repo.name}` : "Local repository"}</div>
-        <h1 className="mb-2 mt-3 text-[30px] font-semibold leading-tight tracking-[-0.03em]">
+        <div className="font-mono text-[11.5px] leading-3 text-fg-3">{session?.repo ? `${session.repo.owner} / ${session.repo.name}` : "Local repository"}</div>
+        <h1 className="mb-2 mt-3 text-[30px] font-semibold leading-[38px] tracking-[-0.03em]">
           {greeting()}
           {viewer ? `, ${viewer}` : ""}
         </h1>

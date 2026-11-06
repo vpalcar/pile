@@ -943,7 +943,7 @@ await check("diverging stack in the inbox: one card, every branch on its own lan
   expect(header.includes("Stack of 6 on main · 3 branches"), header.slice(0, 80));
   const order = await card.locator("[data-row]").evaluateAll((rows) => rows.map((r) => r.dataset.row));
   expect(order.join(",") === "pr-145,pr-144,pr-142,pr-143,pr-141,pr-140", order.join(","));
-  expect((await card.locator(".rail-join").count()) === 2, "two branch points");
+  expect((await card.locator(".rail-corner").count()) === 2, "two branch points");
   await card.scrollIntoViewIfNeeded();
   await card.screenshot({ path: join(OUT, `${String(++shots).padStart(3, "0")} editing - diverging inbox.png`) });
 });

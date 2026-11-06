@@ -234,7 +234,7 @@ function Header({ detail, status }: { detail: DetailData; status: Readiness }) {
           </>
         )}
       </div>
-      <h1 className="mb-3.5 mt-3 text-[27px] font-semibold leading-tight tracking-[-0.028em] text-balance">{detail.title}</h1>
+      <h1 className="mb-3.5 mt-3 text-[27px] font-semibold leading-[34px] tracking-[-0.028em] text-balance">{detail.title}</h1>
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-2 text-fg-2">
         <Avatar person={detail.author} />
         <b className="font-medium leading-none text-fg">{detail.author?.login ?? "unknown"}</b>
