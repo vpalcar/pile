@@ -235,12 +235,39 @@ function checkRunsFor(summary) {
   return runs.map((run, i) => ({ ...run, jobId: 5000 + i }));
 }
 
+/** The same reasons pile's merge rules give (see @pile/github merge-rules). */
+function blockersFor(item) {
+  const reasons = [];
+  if (item.state === "draft") reasons.push("PR is still a draft");
+  if (item.checks?.state === "failure") reasons.push(`CI checks failing (${item.checks.failed}/${item.checks.total} failed)`);
+  else if (item.checks?.state === "pending") reasons.push(`CI checks in progress (${item.checks.pending}/${item.checks.total} pending)`);
+  if (item.reviewDecision === "changes_requested") reasons.push("Changes requested by reviewer");
+  return reasons;
+}
+
+function mergeInfo(item, stack) {
+  if (item.state !== "open" && item.state !== "draft") return null;
+  const own = blockersFor(item);
+  const index = stack.findIndex((e) => e.isCurrent);
+  const below = index > 0 ? stack.slice(0, index) : [];
+  return {
+    method: "squash",
+    single: { possible: item.base === "main", blockers: own },
+    stack: below.length
+      ? { count: below.length + 1, blockers: [...below.flatMap((e) => e.blockers.map((b) => `#${e.ref.number}: ${b}`)), ...own.map((b) => `#${item.ref.number}: ${b}`)] }
+      : null,
+  };
+}
+
 /** Header totals always match the files the detail actually carries. */
 export function detailFor(number) {
   const detail = buildDetail(number);
   if (!detail) return null;
   const sum = (key) => detail.files.reduce((n, f) => n + f[key], 0);
-  return { ...detail, additions: sum("additions"), deletions: sum("deletions") };
+  // Like the server: anyone's latest review asking for changes blocks a merge.
+  const changes = detail.reviewDecision === "changes_requested" || detail.reviewers.some((r) => r.state === "changes_requested");
+  const merge = mergeInfo({ ...detail, checks: detail.checksSummary, reviewDecision: changes ? "changes_requested" : detail.reviewDecision, ref: detail.ref }, detail.stack);
+  return { ...detail, additions: sum("additions"), deletions: sum("deletions"), merge };
 }
 
 function buildDetail(number) {
@@ -275,8 +302,22 @@ function buildDetail(number) {
     reviewDecision: item.reviewDecision,
     files: [files[1]],
     local: item.local,
-    can: { review: item.author?.login !== VIEWER.login, comment: true, merge: true },
+    can: { review: item.author?.login !== VIEWER.login, comment: true, merge: true, draft: item.author?.login === VIEWER.login },
+    merge: null,
   };
+  const billing = longStack.findIndex((p) => p.ref.number === number);
+  if (billing >= 0) {
+    base.stack = longStack.map((p, i) => ({
+      ref: p.ref,
+      title: p.title,
+      branch: p.branch,
+      state: p.state,
+      reviewDecision: p.reviewDecision,
+      checks: p.checks,
+      blockers: blockersFor(p),
+      isCurrent: i === billing,
+    }));
+  }
 
   if (number === 101) {
     return {

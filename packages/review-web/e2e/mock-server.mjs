@@ -70,6 +70,19 @@ export function startMockServer(port = 0) {
         return detail ? json(res, 200, detail) : json(res, 404, { error: `Pull request #${m[1]} doesn't exist`, code: "PR_NOT_FOUND" });
       }
       if (api === "/options") return json(res, 200, options);
+      if (req.method === "POST" && (m = api.match(/^\/pr\/(\d+)\/merge$/))) {
+        const body = await readBody(req);
+        state.calls.push({ type: "merge", pr: Number(m[1]), ...body });
+        const detail = withEdits(detailFor(Number(m[1])));
+        const plan = body.stack ? detail.merge?.stack : detail.merge?.single.possible ? detail.merge.single : null;
+        if (!plan) return json(res, 400, { error: `#${detail.number} is based on ${detail.base}`, code: "NOT_ON_TRUNK" });
+        if (plan.blockers.length) return json(res, 409, { error: plan.blockers.join("; "), code: "MERGE_BLOCKED" });
+        const index = detail.stack.findIndex((e) => e.isCurrent);
+        const merged = body.stack ? detail.stack.slice(0, index + 1).map((e) => e.ref.number) : [detail.number];
+        for (const n of merged) (state.edits[n] ??= {}).state = "merged";
+        for (const n of merged) state.edits[n].merge = null;
+        return json(res, 200, { merged, queued: false });
+      }
       if (req.method === "POST" && (m = api.match(/^\/pr\/(\d+)\/checks\/rerun$/))) {
         const body = await readBody(req);
         state.calls.push({ type: "rerun", pr: Number(m[1]), ...body });

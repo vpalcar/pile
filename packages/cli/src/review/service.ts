@@ -1,6 +1,6 @@
 import type { Octokit } from "@octokit/rest";
 import { mapLimit, type PileInstance } from "@pile/core";
-import { PileGitHubError, type GitHubInstance } from "@pile/github";
+import { blockingReasons, PileGitHubError, type GitHubInstance } from "@pile/github";
 import type {
   Detail,
   FileContent,
@@ -8,6 +8,9 @@ import type {
   InboxGroup,
   InboxItem,
   ItemRef,
+  MergeInfo,
+  MergeRequest,
+  MergeResult,
   PRState,
   PRUpdate,
   RepoOptions,
@@ -34,6 +37,7 @@ import {
   type Repo,
 } from "./github-data.js";
 import { diffStats, localCommits, localFiles, localState } from "./local-data.js";
+import { cleanupMergedBranch } from "../utils/merge-cleanup.js";
 
 type ListedPR = Awaited<ReturnType<Octokit["pulls"]["list"]>>["data"][number];
 type FullPR = Awaited<ReturnType<Octokit["pulls"]["get"]>>["data"] & {
@@ -104,6 +108,7 @@ export class ReviewService {
             owner: this.repo.owner,
             name: this.repo.repo,
             url: `https://github.com/${this.repo.owner}/${this.repo.repo}`,
+            avatarUrl: `https://github.com/${this.repo.owner}.png?size=64`,
           }
         : null,
       viewer: person(viewer),
@@ -438,7 +443,10 @@ export class ReviewService {
         review: !!viewer && viewer.login !== pr.user?.login && (state === "open" || state === "draft"),
         comment: !!viewer,
         merge: state === "open",
+        // Only the author moves their own PR between draft and ready.
+        draft: !!viewer && viewer.login === pr.user?.login && (state === "open" || state === "draft"),
       },
+      merge: state === "open" || state === "draft" ? this.mergeInfo(pr, reviews, checks, stack) : null,
     };
   }
 
@@ -461,10 +469,18 @@ export class ReviewService {
         fetchChecks(octokit, repo, listed.head.sha).catch(() => null),
         fetchReviews(octokit, repo, listed.number).catch(() => null),
       ]);
+      const summary = checks ? summarizeChecks(checks) : null;
       return {
         ...entry,
-        checks: checks ? summarizeChecks(checks) : null,
+        checks: summary,
         reviewDecision: reviews ? decisionFor(reviews, listed, viewer?.login ?? null) : entry.reviewDecision,
+        blockers: blockingReasons({
+          draft: !!listed.draft,
+          checks: summary ?? { state: "pending", total: 0, failed: 0, pending: 0 },
+          changesRequested: !!reviews && changesRequested(reviews),
+          mergeable: null, // only known per PR; GitHub refuses at merge time if it can't
+          mergeableState: null,
+        }).map((r) => r.message),
       };
     });
   }
@@ -585,7 +601,8 @@ export class ReviewService {
       reviewDecision: null,
       files,
       local,
-      can: { review: false, comment: false, merge: false },
+      can: { review: false, comment: false, merge: false, draft: false },
+      merge: null,
     };
   }
 
@@ -630,6 +647,95 @@ export class ReviewService {
         throw new ReviewError(422, "REVIEW_REJECTED", (error as Error).message.replace(/ - https:.*$/, ""));
       }
       throw error;
+    }
+  }
+
+  /** What merging this PR alone, or its stack up to it, would take. */
+  private mergeInfo(pr: FullPR, reviews: Awaited<ReturnType<typeof fetchReviews>>, checks: Awaited<ReturnType<typeof fetchChecks>>, stack: StackEntry[]): MergeInfo {
+    const own = blockingReasons({
+      draft: !!pr.draft,
+      checks: summarizeChecks(checks),
+      changesRequested: changesRequested(reviews),
+      mergeable: pr.mergeable,
+      mergeableState: pr.mergeable_state,
+    }).map((r) => r.message);
+    const trunk = pr.base.repo.default_branch;
+    const index = stack.findIndex((e) => e.isCurrent);
+    // Open PRs below this one, bottom first.
+    const below = index > 0 ? stack.slice(0, index).filter((e) => e.state === "open" || e.state === "draft") : [];
+    return {
+      method: this.pile.state.getConfig()?.mergeMethod ?? "squash",
+      single: { possible: pr.base.ref === trunk, blockers: own },
+      stack:
+        below.length > 0
+          ? {
+              count: below.length + 1,
+              blockers: [
+                ...below.flatMap((e) => (e.blockers ?? []).map((b) => `#${e.ref.kind === "pr" ? e.ref.number : e.branch}: ${b}`)),
+                ...own.map((b) => `#${pr.number}: ${b}`),
+              ],
+            }
+          : null,
+    };
+  }
+
+  /**
+   * Merges this PR, or every open PR from the bottom of its stack up to it, with the
+   * same rules as `pile merge`: nothing blocked is merged, PRs above are moved onto
+   * the merged PR's base, and branches pile tracks locally are cleaned up.
+   */
+  async merge(number: number, request: MergeRequest): Promise<MergeResult> {
+    this.requireGitHub();
+    this.invalidate({ kind: "pr", number });
+    this.openPRs = null;
+    const detail = await this.detail({ kind: "pr", number });
+    const info = detail.merge;
+    if (!info) throw new ReviewError(400, "NOT_OPEN", `#${number} isn't open`);
+    const plan = request.stack ? info.stack : info.single.possible ? { count: 1, blockers: info.single.blockers } : null;
+    if (!plan) {
+      throw new ReviewError(400, "NOT_ON_TRUNK", `#${number} is based on ${detail.base}`, "Merge the stack up to it instead, or merge the PRs below first.");
+    }
+    if (plan.blockers.length > 0) throw new ReviewError(409, "MERGE_BLOCKED", plan.blockers.join("; "));
+
+    const github = this.github!;
+    const index = detail.stack.findIndex((e) => e.isCurrent);
+    const chain = request.stack
+      ? detail.stack.slice(0, index + 1).filter((e) => e.ref.kind === "pr" && (e.state === "open" || e.state === "draft"))
+      : [{ ref: detail.ref, branch: detail.branch }];
+    const numbers = chain.map((e) => (e.ref as { number: number }).number);
+    const trunk = this.pile.stack.getTrunk();
+    const tracked = (branch: string) => !!this.pile.state.getBranchRelationship(branch);
+
+    try {
+      const { data: full } = await this.octokit!.pulls.get({ ...this.repo!, pull_number: number });
+      const native = (full as FullPR).stack;
+      if (native) {
+        // One atomic merge of everything below and including this PR.
+        const result = await github.prs.mergeAsyncAndWait(number, info.method, { sha: detail.headSha });
+        if (result.status === "enqueued") return { merged: [], queued: true };
+        const merged = new Set((await github.prs.getMergedInStack(native.number)).map((m) => m.number));
+        for (const entry of chain) if (tracked(entry.branch)) await cleanupMergedBranch(this.pile, github, entry.branch, trunk, false);
+        return { merged: numbers.filter((n) => merged.has(n)), queued: false };
+      }
+
+      const merged: number[] = [];
+      for (const [i, entry] of chain.entries()) {
+        const n = numbers[i];
+        const { data: pr } = await this.octokit!.pulls.get({ ...this.repo!, pull_number: n });
+        await github.prs.merge(n, info.method);
+        merged.push(n);
+        // PRs that were based on the merged branch move onto its base.
+        const children = (await this.octokit!.paginate(this.octokit!.pulls.list, { ...this.repo!, state: "open", base: entry.branch, per_page: 100 })) as ListedPR[];
+        await Promise.all(children.map((child) => github.prs.update({ number: child.number, base: pr.base.ref })));
+        if (tracked(entry.branch)) await cleanupMergedBranch(this.pile, github, entry.branch, trunk, false);
+      }
+      return { merged, queued: false };
+    } catch (error) {
+      throw cleanGitHubError(error);
+    } finally {
+      this.openPRs = null;
+      this.memo.clear();
+      this.inboxVersion++;
     }
   }
 
@@ -785,4 +891,9 @@ function cleanGitHubError(error: unknown): unknown {
   const detail = data?.errors?.map((e) => (typeof e === "string" ? e : e.message)).filter(Boolean).join("; ");
   const message = (detail || data?.message || (error as Error).message).replace(/ - https:.*$/, "");
   return new ReviewError(status >= 400 && status < 500 ? status : 502, `GITHUB_${status}`, message);
+}
+
+/** Someone's latest review asks for changes. */
+function changesRequested(reviews: Array<{ user: { login: string } | null; state: string; submitted_at?: string | null }>): boolean {
+  return [...latestReviews(reviews as Parameters<typeof latestReviews>[0]).values()].some((r) => r.state === "CHANGES_REQUESTED");
 }

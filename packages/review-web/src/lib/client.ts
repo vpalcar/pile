@@ -1,4 +1,4 @@
-import type { ApiError, Detail, FileContent, Inbox, ItemRef, PRUpdate, RepoOptions, RerunRequest, ReviewRequest, Session } from "../api";
+import type { ApiError, Detail, FileContent, Inbox, ItemRef, MergeRequest, MergeResult, PRUpdate, RepoOptions, RerunRequest, ReviewRequest, Session } from "../api";
 
 /**
  * The server prints a URL with `#token=…`. The token moves to sessionStorage and the
@@ -68,5 +68,6 @@ export const api = {
   review: (number: number, review: ReviewRequest) => request<{ ok: true }>("POST", `/pr/${number}/reviews`, review),
   options: () => request<RepoOptions>("GET", "/options"),
   update: (number: number, change: PRUpdate) => request<Detail>("PATCH", `/pr/${number}`, change),
+  merge: (number: number, merge: MergeRequest) => request<MergeResult>("POST", `/pr/${number}/merge`, merge),
   rerun: (number: number, rerun: RerunRequest) => request<Detail>("POST", `/pr/${number}/checks/rerun`, rerun),
 };

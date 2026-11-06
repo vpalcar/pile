@@ -296,8 +296,9 @@
   .diff-table .split-divider { background: var(--border); }
   .diff-table tr.hunk td { background: var(--hunk-bg); color: var(--hunk-text); }
   /* Threads start where the code does: after both gutters (unified) or one (split). */
-  .diff-table tr.thread > td { padding: 8px 16px 12px 138px; font: 13px/1.55 var(--font-sans); white-space: normal; }
-  .diff-table tr.split-thread > td { padding: 8px 12px 12px 68px; }
+  /* Threads start where the code does: right after the line-number column(s). */
+  .diff-table tr.thread > td { padding: 8px 16px 12px var(--gutter, 120px); font: 13px/1.55 var(--font-sans); white-space: normal; }
+  .diff-table tr.split-thread > td { padding: 8px 12px 12px 60px; }
   .diff-table tr.split-thread > td:empty, .diff-table tr.split-thread > td.split-divider { padding: 0; }
 
   /* The "+" shown on hover over a line number: a centred square inside the gutter. */

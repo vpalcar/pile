@@ -316,7 +316,8 @@ function DiffBody(props: Props) {
   const lineNumberCell = (line: DiffLine | null, side: Side, cls = "") => {
     if ((side === "LEFT" && hideOld) || (side === "RIGHT" && hideNew)) return null;
     const number = line ? (side === "LEFT" ? line.oldNumber : line.newNumber) : null;
-    const commentable = props.canComment && line && number !== null && (side === "RIGHT" ? line.kind !== "del" : line.kind === "del" || mode === "split");
+    const commentable =
+      props.canComment && line && !line.expanded && number !== null && (side === "RIGHT" ? line.kind !== "del" : line.kind === "del" || mode === "split");
     return (
       <td className={`ln ${cls}`}>
         {number}
@@ -359,7 +360,9 @@ function DiffBody(props: Props) {
     }
     return (
       <tr key={`thread-${key}`} className="thread">
-        <td colSpan={colSpan}>{content}</td>
+        <td colSpan={colSpan} style={{ "--gutter": hideOld || hideNew ? "60px" : "120px" } as React.CSSProperties}>
+          {content}
+        </td>
       </tr>
     );
   };
@@ -457,7 +460,8 @@ function DiffBody(props: Props) {
         const t = threadRow("RIGHT", right.newNumber!);
         if (t) body.push(t);
       }
-      if (left && left.kind === "del") {
+      // The old side takes comments on removed and unchanged lines alike.
+      if (left && left.kind !== "add") {
         const t = threadRow("LEFT", left.oldNumber!);
         if (t) body.push(t);
       }

@@ -237,11 +237,23 @@ log("\nNavigation bar");
 await check("inbox badge counts what waits for you", async () => {
   expect((await page.locator("nav button", { hasText: "Inbox" }).innerText()).includes("3"), "badge 3");
 });
-await check("opening a PR shows a breadcrumb and position", async () => {
+await check("navbar: Inbox › branch on the left, repo in the middle, actions and tools on the right", async () => {
   await page.click('[data-row="pr-101"]');
   await detailReady();
-  const nav = (await text("nav")).replace(/\s+/g, " ");
-  expect(nav.includes("#101") && nav.includes("Rate limit the public API") && nav.includes("1 of 20"), nav);
+  expect((await text("nav [data-breadcrumb]")) === "api/rate-limit", await text("nav [data-breadcrumb]"));
+  expect((await text("nav [data-repo]")).replace(/\s+/g, "") === "acme/web", "repo name");
+  const nav = await page.locator("nav").boundingBox();
+  const repo = await page.locator("nav [data-repo]").boundingBox();
+  expect(Math.abs(repo.x + repo.width / 2 - (nav.x + nav.width / 2)) < 2, "repo name centred");
+  // Right side, in order: pager, Review, search, refresh, account.
+  const xs = await Promise.all(
+    ["nav button[aria-label=Next]", "nav button[data-tip='Submit a review']", "nav button[aria-label=Search]", "nav button[aria-label=Refresh]", "nav button[aria-label='Account and settings']"].map(
+      async (s) => (await page.locator(s).boundingBox()).x,
+    ),
+  );
+  expect(xs.every((x, i) => i === 0 || x > xs[i - 1]), `order ${xs.map(Math.round)}`);
+  expect((await count("nav a")) === 0, "no GitHub links in the navbar");
+  expect((await text("nav")).includes("1 of 20"), "position");
   expect(await page.locator("nav button[data-tip=Previous]").isDisabled(), "previous disabled on the first item");
   await shot("breadcrumb");
 });
@@ -251,17 +263,29 @@ await check("] and [ step through items", async () => {
   await page.keyboard.press("[");
   await page.waitForFunction(() => location.hash.includes("/pr/101"));
 });
-await check("GitHub link points at the PR", async () => {
-  expect((await page.locator("nav a", { hasText: "GitHub" }).getAttribute("href")) === "https://github.com/acme/web/pull/101", "href");
+await check("Open on GitHub lives in the status card's menu", async () => {
+  await page.locator("[data-status-card]").getByRole("button", { name: "More actions" }).click();
+  const link = page.getByRole("menuitem", { name: /Open on GitHub/ });
+  expect((await link.getAttribute("href")) === "https://github.com/acme/web/pull/101", "href");
+  await shot("status menu");
+  await page.keyboard.press("Escape");
 });
-await check("theme toggle cycles system → dark → light → system", async () => {
-  const button = page.locator("nav button[data-tip^='Theme']");
+await check("search opens the palette; the account menu holds the theme", async () => {
+  await page.click("nav button[aria-label=Search]");
+  await page.locator(".palette input").waitFor();
+  await page.keyboard.press("Escape");
+  await page.click("nav button[aria-label='Account and settings']");
+  const menu = page.getByRole("menu");
+  expect((await menu.innerText()).includes("you"), "shows who you are");
+  await shot("account menu");
   const themes = [];
-  for (let i = 0; i < 3; i++) {
-    await button.click();
+  for (const name of ["Dark", "Light", "System"]) {
+    await menu.getByRole("radio", { name }).click();
     themes.push(await page.evaluate(() => document.documentElement.dataset.theme ?? "system"));
   }
   expect(themes.join(",") === "dark,light,system", themes.join(","));
+  await page.keyboard.press("Escape");
+  expect((await count("[role=menu]")) === 0, "closes with Escape");
 });
 await check("refresh re-requests data", async () => {
   await page.click("nav button[data-tip=Refresh]");
@@ -538,6 +562,33 @@ await check("pending comments can be removed, and are sent with the review", asy
   const last = (await calls()).at(-1);
   expect(last.comments?.length === 1 && last.comments[0].path === "src/api/limit.ts" && last.comments[0].side === "RIGHT", JSON.stringify(last));
 });
+await check("old code takes comments too: unchanged and removed lines, in split view", async () => {
+  const file = page.locator('.file[data-path="src/api/limit.ts"]');
+  for (const [text, body] of [
+    ["rule25 = limit", "The old name read better."],
+    ["removed = true", "Why drop this?"],
+  ]) {
+    const row = file.locator("tr", { hasText: text }).first();
+    await row.locator("td.code").first().hover();
+    const plus = row.locator("button.add-comment:visible");
+    expect((await plus.count()) === 1, `one + on the old side of "${text}"`);
+    await plus.click();
+    await page.keyboard.type(body);
+    await page.keyboard.press("Meta+Enter");
+    await file.locator("tr.split-thread", { hasText: body }).waitFor();
+  }
+  // Revealed context is outside the diff: GitHub would reject comments there.
+  const revealed = file.locator("tr", { hasText: "rule3 = limit" }).first();
+  await revealed.locator("td.code").last().hover();
+  expect((await revealed.locator("button.add-comment:visible").count()) === 0, "no + on expanded lines");
+  await page.click("nav button[data-tip='Submit a review']");
+  await page.getByRole("radio", { name: /Comment/ }).click();
+  await page.getByText("Includes 2 inline comments").waitFor();
+  await page.keyboard.press("Meta+Enter");
+  await toast("Reviewed #101");
+  const last = (await calls()).at(-1);
+  expect(last.comments?.length === 2 && last.comments.every((c) => c.side === "LEFT"), JSON.stringify(last.comments));
+});
 await check("j / k move between files; v marks viewed and advances", async () => {
   await page.locator("body").click({ position: { x: 5, y: 500 } });
   const first = await page.locator(".file.border-line-3").getAttribute("data-path");
@@ -806,12 +857,60 @@ await check("draft → ready for review, and back", async () => {
   await rail().getByRole("button", { name: "Ready for review" }).click();
   await toast("#112 is ready for review");
   expect((await lastCall("update")).draft === false, "draft false sent");
-  await rail().getByRole("button", { name: "To draft" }).waitFor();
-  expect(!(await rail().getByRole("button", { name: "Ready for review" }).isVisible()), "ready button gone");
-  await rail().getByRole("button", { name: "To draft" }).click();
+  await rail().getByRole("button", { name: "Ready for review" }).waitFor({ state: "detached" });
+  await rail().getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Convert to draft" }).click();
   await toast("#112 is a draft again");
   expect((await lastCall("update")).draft === true, "draft true sent");
   await rail().getByRole("button", { name: "Ready for review" }).waitFor();
+});
+await check("someone else's PR can't be turned into a draft", async () => {
+  await open("#/pr/101");
+  await detailReady();
+  await rail().getByRole("button", { name: "More actions" }).click();
+  expect((await page.getByRole("menuitem", { name: "Convert to draft" }).count()) === 0, "no draft option on alice's PR");
+  await page.keyboard.press("Escape");
+});
+await check("merge: blocked PRs say why and can't be merged", async () => {
+  const card = page.locator("[data-status-card]");
+  const button = card.getByRole("button", { name: /^Merge #101/ });
+  expect(await button.isDisabled(), "disabled");
+  const why = await card.getByRole("list", { name: "What blocks merging" }).innerText();
+  expect(why.includes("CI checks failing (1/5 failed)") && why.includes("Changes requested"), why);
+  await shot("merge blocked");
+});
+await check("merge: one PR, after confirming", async () => {
+  await open("#/pr/120");
+  await detailReady();
+  const card = page.locator("[data-status-card]");
+  await card.getByRole("button", { name: "Merge #120" }).click();
+  expect((await card.innerText()).includes("Squash and merge #120 into main?"), await card.innerText());
+  await shot("merge confirm");
+  await card.getByRole("button", { name: "Cancel" }).click();
+  expect((await calls()).every((c) => c.type !== "merge"), "cancel sends nothing");
+  await card.getByRole("button", { name: "Merge #120" }).click();
+  await card.getByRole("group", { name: "Confirm merge" }).getByRole("button", { name: "Merge" }).click();
+  await toast("Merged #120");
+  expect(JSON.stringify(await lastCall("merge")) === JSON.stringify({ type: "merge", pr: 120, stack: false }), JSON.stringify(await lastCall("merge")));
+  await setState("reset=1");
+});
+await check("merge: the stack up to a PR, offered when the PR isn't on main", async () => {
+  await open("#/pr/122");
+  await detailReady();
+  const card = page.locator("[data-status-card]");
+  expect((await card.getByRole("button", { name: "Merge options" }).count()) === 0, "only one option: it's based on step 2");
+  await card.getByRole("button", { name: "Merge stack (3)" }).click();
+  await card.getByRole("group", { name: "Confirm merge" }).getByRole("button", { name: "Merge" }).click();
+  await toast("Merged #120, #121, #122");
+  expect((await lastCall("merge")).stack === true, "stack sent");
+  await page.locator("[data-status-card]", { hasText: "Merged" }).waitFor();
+  await setState("reset=1");
+});
+await check("merge: higher up, the stack is blocked by the PRs below", async () => {
+  await open("#/pr/125");
+  await detailReady();
+  const why = await page.locator("[data-status-card]").getByRole("list", { name: "What blocks merging" }).innerText();
+  expect(why.includes("#123: Changes requested by reviewer"), why);
 });
 await check("local branches have nothing to edit", async () => {
   await open("#/branch/spike%2Fparser-errors");

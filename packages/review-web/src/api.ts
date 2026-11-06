@@ -9,7 +9,8 @@ export interface Person {
 }
 
 export interface Session {
-  repo: { owner: string; name: string; url: string } | null;
+  /** `avatarUrl` is the owner's picture, shown as the app's mark. */
+  repo: { owner: string; name: string; url: string; avatarUrl: string | null } | null;
   viewer: Person | null;
   trunk: string;
   currentBranch: string;
@@ -92,6 +93,8 @@ export interface StackEntry {
   reviewDecision: InboxItem["reviewDecision"];
   /** The entry's own checks, so the stack shows real statuses without the inbox. */
   checks?: ChecksSummary | null;
+  /** Why pile wouldn't merge this entry now (empty when nothing blocks it). */
+  blockers?: string[];
   isCurrent: boolean;
 }
 
@@ -185,7 +188,28 @@ export interface Detail {
   files: DiffFile[];
   local: LocalState | null;
   /** Things the viewer can do. */
-  can: { review: boolean; comment: boolean; merge: boolean };
+  can: { review: boolean; comment: boolean; merge: boolean; draft: boolean };
+  /** What merging from here would do; null for local branches and finished PRs. */
+  merge: MergeInfo | null;
+}
+
+export interface MergeInfo {
+  method: "merge" | "squash" | "rebase";
+  /** Merging only this PR: possible when it's based on the trunk. */
+  single: { possible: boolean; blockers: string[] };
+  /** Merging every open PR from the bottom of the stack up to this one. */
+  stack: { count: number; blockers: string[] } | null;
+}
+
+export interface MergeRequest {
+  /** Merge the whole stack up to this PR instead of only this PR. */
+  stack?: boolean;
+}
+
+export interface MergeResult {
+  merged: number[];
+  /** GitHub accepted the merge but finishes it later (native stacks). */
+  queued: boolean;
 }
 
 export interface Label {

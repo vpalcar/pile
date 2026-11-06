@@ -3,7 +3,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ItemRef, PRUpdate, RerunRequest, ReviewRequest } from "@pile/review-web/api";
+import type { ItemRef, MergeRequest, PRUpdate, RerunRequest, ReviewRequest } from "@pile/review-web/api";
 import { ReviewService } from "./service.js";
 
 const MIME: Record<string, string> = {
@@ -121,6 +121,9 @@ export async function startReviewServer(options: {
     if (method === "GET" && path === "/options") return send(res, 200, await service.options());
     if (method === "PATCH" && (match = path.match(/^\/pr\/(\d+)$/))) {
       return send(res, 200, await service.update(Number(match[1]), (await readBody(req)) as PRUpdate));
+    }
+    if (method === "POST" && (match = path.match(/^\/pr\/(\d+)\/merge$/))) {
+      return send(res, 200, await service.merge(Number(match[1]), (await readBody(req)) as MergeRequest));
     }
     if (method === "POST" && (match = path.match(/^\/pr\/(\d+)\/checks\/rerun$/))) {
       return send(res, 200, await service.rerun(Number(match[1]), (await readBody(req)) as RerunRequest));
