@@ -30,6 +30,13 @@ export function startMockServer(port = 0) {
     const path = url.pathname;
 
     if (path === "/__calls") return json(res, 200, state.calls);
+    // Plays the agent: what `pile notes done <id> -m "..."` writes.
+    if (path === "/__agent-reply") {
+      const note = state.notes.find((n) => n.id === url.searchParams.get("id")) ?? state.notes.at(-1);
+      (note.replies ??= []).push({ author: "agent", body: url.searchParams.get("body") ?? "Done.", createdAt: new Date().toISOString() });
+      if (url.searchParams.has("done")) note.done = true;
+      return json(res, 200, note);
+    }
     if (path === "/__state") {
       Object.assign(state, Object.fromEntries([...url.searchParams].map(([k, v]) => [k, v === "true" ? true : v === "false" ? false : Number.isNaN(Number(v)) ? v : Number(v)])));
       if (url.searchParams.has("reset")) Object.assign(state, { calls: [], inboxRequests: 0, down: false, edits: {}, fileDown: false, notes: [] });
@@ -91,6 +98,14 @@ export function startMockServer(port = 0) {
           done: false,
         };
         state.notes.push(note);
+        return json(res, 201, note);
+      }
+      if (req.method === "POST" && (m = api.match(/^\/notes\/([0-9a-f]+)\/replies$/))) {
+        const note = state.notes.find((n) => n.id === m[1]);
+        const { body } = await readBody(req);
+        state.calls.push({ type: "note-reply", id: m[1], body });
+        (note.replies ??= []).push({ author: "reviewer", body, createdAt: new Date().toISOString() });
+        note.done = false; // a follow-up reopens the note
         return json(res, 201, note);
       }
       if ((m = api.match(/^\/notes\/([0-9a-f]+)$/))) {

@@ -992,6 +992,21 @@ await check("notes: on your own PR, comments go to your agent by default", async
   await section.scrollIntoViewIfNeeded();
   await shot("notes section");
 });
+await check("notes: the agent's reply shows up live, and a follow-up reopens the note", async () => {
+  const section = page.locator("[data-notes-section]");
+  await fetch(`${server.url}/__agent-reply?done&body=${encodeURIComponent("Switched to validateSettings() from src/settings/schema.ts.")}`);
+  await toast("Your agent resolved 1 note");
+  await section.locator("[data-reply=agent]", { hasText: "validateSettings()" }).first().waitFor();
+  expect((await section.innerText()).includes("all done"), "resolved by the agent");
+  await section.scrollIntoViewIfNeeded();
+  await shot("agent replied");
+  await section.getByRole("button", { name: "Reply…" }).first().click();
+  await page.keyboard.type("Also handle the empty object.");
+  await page.keyboard.press("Meta+Enter");
+  await section.locator("[data-reply=reviewer]", { hasText: "empty object" }).first().waitFor();
+  await section.getByText("1 open").waitFor();
+  expect((await calls()).some((c) => c.type === "note-reply" && c.body === "Also handle the empty object."), "reply sent");
+});
 await check("notes: done, reopen and delete", async () => {
   const section = page.locator("[data-notes-section]");
   await section.getByRole("button", { name: "Mark note done" }).click();
