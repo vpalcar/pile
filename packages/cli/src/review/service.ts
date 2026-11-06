@@ -41,7 +41,7 @@ import {
 } from "./github-data.js";
 import { diffStats, localCommits, localFiles, localState } from "./local-data.js";
 import { cleanupMergedBranch } from "../utils/merge-cleanup.js";
-import { checksFromNode, fetchInboxGraphQL, fetchPRGraphQL, listedFromNode, reviewsFromNode, searchPRsGraphQL, type InboxNode } from "./github-graphql.js";
+import { checksFromNode, fetchInboxGraphQL, fetchPRGraphQL, listedFromNode, reviewsFromNode, searchPRsGraphQL, stackNeighboursGraphQL, type InboxNode } from "./github-graphql.js";
 
 type ListedPR = Awaited<ReturnType<Octokit["pulls"]["list"]>>["data"][number];
 type FullPR = Awaited<ReturnType<Octokit["pulls"]["get"]>>["data"] & {
@@ -66,6 +66,8 @@ const WARM_LIMIT = 8;
 const LOW_QUOTA = 300;
 const GRAPHQL_RETRY_MS = 10 * 60_000;
 /** How long the list of open PRs (one GraphQL query) is shared by the inbox and PR pages. */
+/** How long a branch's stack neighbours are trusted before GitHub is asked again. */
+const STACK_LINKS_MS = 60_000;
 const OPEN_PRS_MS = 15_000;
 const PENDING_CHECKS_MS = 60_000;
 /** How often the inbox is rebuilt from GitHub; much less often when the quota runs low. */
@@ -102,6 +104,12 @@ export class ReviewService {
   private searchUnreliable = false;
   private teamsPromise: Promise<Set<string>> | null = null;
   private openPRs: { at: number; prs: Promise<ListedPR[]> } | null = null;
+  /** Others' PRs found around a PR page's stack, outside the inbox's searches. */
+  private stackExtras = new Map<number, ListedPR>();
+  /** Open PRs based on a branch (`c:branch`) or with it as head (`p:branch`), as last asked. */
+  private stackLinks = new Map<string, { at: number; prs: ListedPR[] }>();
+  /** The nodes behind those: reviews and check counts for others' stack entries. */
+  private stackNodes = new Map<number, InboxNode>();
   private memo = new Map<string, { at: number; value: Promise<unknown> }>();
 
   constructor(
@@ -761,12 +769,12 @@ export class ReviewService {
     const octokit = this.octokit!;
     const repo = this.repo!;
     const [open, viewer] = await Promise.all([this.listOpenPRs(), this.viewer()]);
-    const byNumber = new Map(open.map((p) => [p.number, p as ListedPR | FullPR]));
+    const byNumber = new Map([...this.stackExtras, ...open.map((p) => [p.number, p] as const)] as Array<[number, ListedPR | FullPR]>);
     byNumber.set(pr.number, pr);
     return mapLimit(entries, 4, async (entry) => {
       const listed = entry.ref.kind === "pr" ? byNumber.get(entry.ref.number) : undefined;
       if (!listed || entry.state === "merged" || entry.state === "closed") return entry;
-      const node = this.inboxNodes.get(listed.number);
+      const node = this.inboxNodes.get(listed.number) ?? this.stackNodes.get(listed.number);
       if (node) {
         // From the inbox query: no requests.
         const reviews = reviewsFromNode(node);
@@ -826,24 +834,53 @@ export class ReviewService {
 
     // Otherwise follow base -> head links between open PRs: down to the bottom of the
     // stack, then every PR built on it. Stacks can diverge, so this is a tree.
-    const open = (await this.listOpenPRs()).filter((p) => p.number !== pr.number);
-    const all: Array<ListedPR | FullPR> = [pr, ...open];
-    const byHead = new Map(all.map((p) => [p.head.ref, p]));
-    let root: ListedPR | FullPR = pr;
-    const seen = new Set<string>([pr.head.ref]);
-    while (byHead.has(root.base.ref) && !seen.has(root.base.ref)) {
-      seen.add(root.base.ref);
-      root = byHead.get(root.base.ref)!;
-    }
-    const tree: Array<ListedPR | FullPR> = [];
-    const queue = [root];
-    const visited = new Set<string>();
-    while (queue.length) {
-      const next = queue.shift()!;
-      if (visited.has(next.head.ref)) continue;
-      visited.add(next.head.ref);
-      tree.push(next);
-      queue.push(...all.filter((p) => p.base.ref === next.head.ref).sort((a, b) => a.number - b.number));
+    const all = new Map<number, ListedPR | FullPR>((await this.listOpenPRs()).map((p) => [p.number, p]));
+    all.set(pr.number, pr);
+    const known = new Set(all.keys());
+    let tree = stackTree(pr, [...all.values()]);
+    // The inbox's searches only bring your PRs and your review requests; over GraphQL
+    // ask GitHub for the rest of this stack (others' PRs above or below), level by level.
+    if (this.graphql() && !this.searchUnreliable) {
+      const trunk = pr.base.repo.default_branch;
+      // What's built on each PR, and what the bottom one is built on. Each branch's
+      // answer is kept for a minute, and the whole known stack is re-asked in one query.
+      const keysOf = () => [...tree.map((p) => `c:${p.head.ref}`), ...(tree[0].base.ref !== trunk ? [`p:${tree[0].base.ref}`] : [])];
+      const grow = () => {
+        for (let added = true; added; ) {
+          added = false;
+          for (const key of keysOf()) {
+            for (const p of this.stackLinks.get(key)?.prs ?? []) {
+              if (all.has(p.number)) continue;
+              all.set(p.number, p);
+              added = true;
+            }
+          }
+          if (added) tree = stackTree(pr, [...all.values()]);
+        }
+      };
+      for (let round = 0; round < 8; round++) {
+        grow();
+        const stale = keysOf().filter((k) => !(Date.now() - (this.stackLinks.get(k)?.at ?? -Infinity) < STACK_LINKS_MS)).slice(0, 30);
+        if (stale.length === 0) break;
+        const heads = stale.filter((k) => k.startsWith("c:")).map((k) => k.slice(2));
+        const bases = stale.filter((k) => k.startsWith("p:")).map((k) => k.slice(2));
+        const found = await stackNeighboursGraphQL(this.octokit!, this.repo!, { heads, bases }).catch(() => null);
+        if (!found) break;
+        const at = Date.now();
+        const listed = (nodes: InboxNode[]) =>
+          nodes.map((n) => {
+            this.stackNodes.set(n.number, n);
+            return listedFromNode(n, found.defaultBranch ?? trunk) as unknown as ListedPR;
+          });
+        for (const [head, nodes] of found.children) this.stackLinks.set(`c:${head}`, { at, prs: listed(nodes) });
+        for (const [base, nodes] of found.parents) this.stackLinks.set(`p:${base}`, { at, prs: listed(nodes) });
+      }
+      // Start again from fresh answers, so PRs that left the stack since are dropped.
+      for (const n of [...all.keys()]) if (!known.has(n)) all.delete(n);
+      tree = stackTree(pr, [...all.values()]);
+      grow();
+      // Stack entries look PRs up by number: remember the ones found here.
+      for (const p of tree) if (p.number !== pr.number && !this.inboxNodes.has(p.number)) this.stackExtras.set(p.number, p as ListedPR);
     }
     if (tree.length < 2) return [];
     return tree.map((p) => ({
@@ -977,6 +1014,7 @@ export class ReviewService {
       changesRequested: changesRequested(reviews),
       mergeable: pr.mergeable,
       mergeableState: pr.mergeable_state,
+      reviewRequired: (pr as { review_decision?: string | null }).review_decision === "REVIEW_REQUIRED",
     }).map((r) => r.message);
     const trunk = pr.base.repo.default_branch;
     // Open PRs this one is built on, bottom first (never a sibling branch).
@@ -1052,6 +1090,7 @@ export class ReviewService {
       throw cleanGitHubError(error);
     } finally {
       this.openPRs = null;
+      this.stackLinks.clear();
       this.memo.clear();
       this.inboxVersion++;
     }
@@ -1238,6 +1277,28 @@ function decisionFor(
   const requested = (pr.requested_reviewers?.length ?? 0) + (pr.requested_teams?.length ?? 0);
   const mine = viewer ? latestReviews(reviews).get(viewer) : undefined;
   return mine && pr.user?.login !== viewer ? reviewStateOf(mine.state) : reviewDecision(reviews, requested);
+}
+
+/** The stack around `pr`: its bottom, then every PR built on it, breadth first. */
+function stackTree<T extends { number: number; head: { ref: string }; base: { ref: string } }>(pr: T, all: T[]): T[] {
+  const byHead = new Map(all.map((p) => [p.head.ref, p]));
+  let root = pr;
+  const seen = new Set<string>([pr.head.ref]);
+  while (byHead.has(root.base.ref) && !seen.has(root.base.ref)) {
+    seen.add(root.base.ref);
+    root = byHead.get(root.base.ref)!;
+  }
+  const tree: T[] = [];
+  const queue = [root];
+  const visited = new Set<string>();
+  while (queue.length) {
+    const next = queue.shift()!;
+    if (visited.has(next.head.ref)) continue;
+    visited.add(next.head.ref);
+    tree.push(next);
+    queue.push(...all.filter((p) => p.base.ref === next.head.ref).sort((a, b) => a.number - b.number));
+  }
+  return tree;
 }
 
 function reviewStateOf(state: string): InboxItem["reviewDecision"] {

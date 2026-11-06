@@ -87,7 +87,8 @@ describe("GitHub request budget (60 open PRs)", () => {
     expect(m.startup.rest).toBeLessThanOrEqual(30);
     expect(m.idle10min.rest).toBeLessThanOrEqual(5);
     expect(m.idle10min.points).toBeLessThanOrEqual(30);
-    expect(m.prPage2min.rest + m.prPage2min.points).toBeLessThanOrEqual(40);
+    // The PR page also asks GitHub for the rest of its stack, once a minute.
+    expect(m.prPage2min.rest + m.prPage2min.points).toBeLessThanOrEqual(45);
     expect(m.restart.rest).toBeLessThanOrEqual(5);
   }, 120_000);
 

@@ -17,6 +17,8 @@ export interface FakePR {
   requested: string[];
   /** Team slugs whose review is requested. */
   teams?: string[];
+  /** Branch protection still wants an approving review (no conflicts, though). */
+  reviewRequired?: boolean;
   checks: Array<{ name: string; status: "completed" | "in_progress"; conclusion: string | null }>;
 }
 
@@ -142,6 +144,15 @@ export function fakeGitHub(options: { prs: number; viewer?: string; trunk?: stri
         },
       };
     }
+    if (query.includes("query PileStack")) {
+      // Aliases c0.. ask for PRs based on a branch, p0.. for the PR with that head.
+      const repository: Record<string, unknown> = { defaultBranchRef: { name: trunk } };
+      for (const [key, branch] of Object.entries(variables)) {
+        if (/^c\d+$/.test(key)) repository[key] = { nodes: prs.filter((p) => p.base === branch).map(node) };
+        if (/^p\d+$/.test(key)) repository[key] = { nodes: prs.filter((p) => p.head === branch).map(node) };
+      }
+      return { data: { rateLimit, repository } };
+    }
     if (query.includes("query PileSearch")) {
       return { data: { rateLimit, search: { nodes: prs.filter((p) => String(variables.q).includes(String(p.number))).map(node) } } };
     }
@@ -159,7 +170,8 @@ export function fakeGitHub(options: { prs: number; viewer?: string; trunk?: stri
             mergedAt: null,
             bodyHTML: "",
             mergeable: "MERGEABLE",
-            mergeStateStatus: "CLEAN",
+            mergeStateStatus: p.reviewRequired ? "BLOCKED" : "CLEAN",
+            reviewDecision: p.reviewRequired ? "REVIEW_REQUIRED" : null,
             labels: { nodes: [] },
             assignees: { nodes: [] },
             reviews: { nodes: [] },

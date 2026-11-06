@@ -13,6 +13,8 @@ export interface MergeSignals {
   changesRequested: boolean;
   mergeable: boolean | null;
   mergeableState: string | null;
+  /** GitHub's review decision says an approving review is still required. */
+  reviewRequired?: boolean;
 }
 
 /**
@@ -31,11 +33,15 @@ export function blockingReasons(pr: MergeSignals): BlockingReason[] {
   }
 
   if (pr.changesRequested) reasons.push({ type: "reviews", message: "Changes requested by reviewer" });
+  else if (pr.reviewRequired) reasons.push({ type: "reviews", message: "Needs an approving review" });
 
-  if (pr.mergeable === false) {
-    const state = pr.mergeableState;
+  const state = pr.mergeableState;
+  if (state === "blocked") {
+    // GitHub says "blocked" for PRs without conflicts too (a required review or check
+    // missing): say so unless a reason above already explains it.
+    if (reasons.length === 0) reasons.push({ type: "blocked", message: "Blocked by branch protection rules" });
+  } else if (pr.mergeable === false) {
     if (state === "dirty") reasons.push({ type: "conflicts", message: "Has merge conflicts" });
-    else if (state === "blocked") reasons.push({ type: "blocked", message: "Blocked by branch protection rules" });
     else if (state === "behind") reasons.push({ type: "blocked", message: "Branch is behind base branch" });
     else reasons.push({ type: "blocked", message: `Cannot merge: ${state}` });
   }
@@ -50,4 +56,5 @@ export const getBlockingReasons = (pr: PullRequest): BlockingReason[] =>
     changesRequested: getPRStatus(pr) === "changes_requested",
     mergeable: pr.mergeable,
     mergeableState: pr.mergeable_state,
+    reviewRequired: pr.reviewDecision === "REVIEW_REQUIRED",
   });

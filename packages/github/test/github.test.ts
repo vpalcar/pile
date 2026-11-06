@@ -3,6 +3,7 @@ import { Octokit } from "@octokit/rest";
 import { createGitHubClient, parseGitRemote } from "../src/client.js";
 import { PROperations } from "../src/pr.js";
 import { PileGitHubError, isGraphQLUnavailable, parsePRNumber } from "../src/errors.js";
+import { blockingReasons } from "../src/merge-rules.js";
 
 type Handler = (url: URL, init: RequestInit) => { status?: number; body: unknown } | undefined;
 
@@ -289,3 +290,14 @@ describe("createOctokit logging", () => {
     expect(errors).toEqual(["Something else broke"]);
   });
 });
+
+describe("blockingReasons", () => {
+  const clean = { draft: false, checks: { state: "success", total: 1, failed: 0, pending: 0 }, changesRequested: false, mergeable: true, mergeableState: "clean" };
+
+  it("treats GitHub's blocked as blocking even without conflicts", () => {
+    expect(blockingReasons({ ...clean, mergeableState: "blocked" }).map((r) => r.message)).toEqual(["Blocked by branch protection rules"]);
+    expect(blockingReasons({ ...clean, mergeableState: "blocked", reviewRequired: true }).map((r) => r.message)).toEqual(["Needs an approving review"]);
+    expect(blockingReasons(clean)).toEqual([]);
+  });
+});
+

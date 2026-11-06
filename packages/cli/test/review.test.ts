@@ -283,3 +283,24 @@ describe("inbox membership", () => {
     expect(service.usage()!.mode).toMatch(/PR list/);
   });
 });
+
+describe("PR pages over GraphQL", () => {
+  it("find the whole stack, including others' PRs outside your inbox", async () => {
+    // #1 is yours; #2 and #3 (built on it) are by others and don't ask for your review.
+    const fake = fakeGitHub({ prs: 12 });
+    const service = new ReviewService(await createPile(createCliRepo().dir), fake.github);
+    const stackOf = async (number: number) =>
+      (await service.detail({ kind: "pr", number })).stack.map((e) => (e.ref as { number: number }).number);
+    expect(await stackOf(1)).toEqual([1, 2, 3]);
+    expect(await stackOf(3)).toEqual([1, 2, 3]);
+  });
+
+  it("won't offer to merge a PR that still needs an approving review", async () => {
+    const fake = fakeGitHub({ prs: 12 });
+    fake.prs[3].reviewRequired = true;
+    const service = new ReviewService(await createPile(createCliRepo().dir), fake.github);
+    const detail = await service.detail({ kind: "pr", number: 4 });
+    expect(detail.merge!.single.blockers).toContain("Needs an approving review");
+  });
+});
+

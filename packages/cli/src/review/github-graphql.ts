@@ -26,11 +26,11 @@ const PR_FAST = `number title url isDraft createdAt updatedAt totalCommentsCount
   ${REQUESTED}
   latestReviews(first: 30) { nodes { author { ${USER} } state submittedAt } }
   latestOpinionatedReviews(first: 30) { nodes { author { ${USER} } state submittedAt } }`;
-const PR_SLOW = `number additions deletions
-  commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 1) {
+const CHECK_COUNTS = `commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 1) {
     checkRunCountsByState { state count }
     statusContextCountsByState { state count }
   } } } } }`;
+const PR_SLOW = `number additions deletions ${CHECK_COUNTS}`;
 
 const inboxQuery = (fields: string) => `query PileInbox($owner: String!, $name: String!, $mine: String!, $review: String!) {
   viewer { ${USER} }
@@ -51,7 +51,7 @@ const PR = `query PilePR($owner: String!, $name: String!, $number: Int!) {
     defaultBranchRef { name }
     pullRequest(number: $number) {
       number title url state isDraft merged mergedAt createdAt updatedAt bodyHTML additions deletions
-      headRefName headRefOid baseRefName baseRefOid mergeable mergeStateStatus
+      headRefName headRefOid baseRefName baseRefOid mergeable mergeStateStatus reviewDecision
       author { ${USER} }
       labels(first: 30) { nodes { name color description } }
       assignees(first: 20) { nodes { ${USER} } }
@@ -148,6 +148,38 @@ export async function searchPRsGraphQL(octokit: Octokit, repo: Repo, text: strin
   return data.search.nodes.filter((n) => n?.number);
 }
 
+/**
+ * Open PRs next to some branches: those based on `heads` (built on them) and those
+ * whose head is one of `bases` (what they're built on). The inbox only knows your PRs
+ * and your review requests, so a PR page asks for the rest of its stack this way.
+ */
+export async function stackNeighboursGraphQL(octokit: Octokit, repo: Repo, { heads, bases }: { heads: string[]; bases: string[] }) {
+  const vars: Record<string, unknown> = { owner: repo.owner, name: repo.repo };
+  const fields: string[] = [];
+  heads.forEach((head, i) => {
+    vars[`c${i}`] = head;
+    fields.push(`c${i}: pullRequests(states: OPEN, baseRefName: $c${i}, first: 20) { nodes { ${PR_FAST} ${CHECK_COUNTS} } }`);
+  });
+  bases.forEach((base, i) => {
+    vars[`p${i}`] = base;
+    fields.push(`p${i}: pullRequests(states: OPEN, headRefName: $p${i}, first: 5) { nodes { ${PR_FAST} ${CHECK_COUNTS} } }`);
+  });
+  const params = Object.keys(vars).filter((k) => k !== "owner" && k !== "name").map((k) => `$${k}: String!`).join(", ");
+  const text = `query PileStack($owner: String!, $name: String!, ${params}) {
+  ${RATE}
+  repository(owner: $owner, name: $name) { defaultBranchRef { name } ${fields.join("\n    ")} }
+}`;
+  const data: { repository: Record<string, { nodes: InboxNode[] }> & { defaultBranchRef: { name: string } | null } } = await query(octokit, text, vars);
+  const pick = (key: string) => (data.repository[key]?.nodes ?? []).filter((n) => n?.number);
+  return {
+    defaultBranch: data.repository.defaultBranchRef?.name ?? null,
+    /** PRs based on each of `heads`. */
+    children: new Map(heads.map((head, i) => [head, pick(`c${i}`)])),
+    /** The PR whose head is each of `bases`. */
+    parents: new Map(bases.map((base, i) => [base, pick(`p${i}`)])),
+  };
+}
+
 const requestedUsers = (r: Requested) =>
   r.nodes.flatMap((n) => (n.requestedReviewer?.__typename === "User" ? [restUser(n.requestedReviewer)!] : []));
 const requestedTeams = (r: Requested) =>
@@ -224,6 +256,7 @@ type PRData = {
       baseRefOid: string;
       mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
       mergeStateStatus: string;
+      reviewDecision: string | null;
       author: User;
       labels: { nodes: Array<{ name: string; color: string; description: string | null }> };
       assignees: { nodes: NonNullable<User>[] };
@@ -285,6 +318,7 @@ export async function fetchPRGraphQL(octokit: Octokit, repo: Repo, number: numbe
     updated_at: p.updatedAt,
     mergeable: p.mergeable === "UNKNOWN" ? null : p.mergeable === "MERGEABLE",
     mergeable_state: p.mergeStateStatus.toLowerCase(),
+    review_decision: p.reviewDecision,
     labels: p.labels.nodes.map((l) => ({ name: l.name, color: l.color, description: l.description })),
     assignees: p.assignees.nodes.map((a) => restUser(a)!),
     requested_reviewers: requestedUsers(p.reviewRequests),
