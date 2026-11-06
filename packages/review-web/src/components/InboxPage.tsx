@@ -124,7 +124,6 @@ export function InboxPage({ inbox, session, loading, onSearch }: { inbox: Inbox 
       ArrowUp: () => move(-1),
       Enter: () => visible[index] && navigate(visible[index].ref),
       o: () => visible[index] && navigate(visible[index].ref),
-      "/": () => onSearch(),
       ...Object.fromEntries(FILTERS.map(([id], i) => [String(i + 1), () => setFilter(id)])),
     },
     [visible, index],
@@ -195,10 +194,7 @@ export function InboxPage({ inbox, session, loading, onSearch }: { inbox: Inbox 
         >
           <Search size={13} />
           Search all PRs
-          <span className="flex gap-0.5">
-            <Kbd>{modKey}</Kbd>
-            <Kbd>K</Kbd>
-          </span>
+          <Kbd>/</Kbd>
         </button>
       </div>
 
@@ -256,7 +252,7 @@ export function InboxPage({ inbox, session, loading, onSearch }: { inbox: Inbox 
           [["j", "k"], "move"],
           [["↵"], "open"],
           [["1–4"], "filter"],
-          [[modKey, "K"], "jump anywhere"],
+          [["/"], "search"],
         ].map(([keys, label]) => (
           <span key={label as string} className="inline-flex items-center gap-1">
             {(keys as string[]).map((k) => (
@@ -527,10 +523,7 @@ function EmptyTab({ filter, onSearch }: { filter: string; onSearch: () => void }
       <div className="mt-1 text-[13px] text-fg-3 [&_code]:rounded [&_code]:bg-panel-3 [&_code]:px-1 [&_code]:py-px [&_code]:font-mono [&_code]:text-[12px] [&_code]:text-fg-2">{hint}</div>
       <button className="mt-4 inline-flex h-8 items-center gap-2 rounded-lg px-2.5 text-[12.5px] text-fg-2 transition-colors hover:bg-hover hover:text-fg" onClick={onSearch}>
         <Search size={13} /> Search all PRs
-        <span className="flex gap-0.5">
-          <Kbd>{modKey}</Kbd>
-          <Kbd>K</Kbd>
-        </span>
+        <Kbd>/</Kbd>
       </button>
     </div>
   );

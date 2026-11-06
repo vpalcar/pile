@@ -856,6 +856,15 @@ await check("file header: copy path, collapse", async () => {
 // =============================================================================
 section = "palette";
 log("\nCommand palette and shortcuts");
+await check("/ opens search on the PR page too, without typing the slash", async () => {
+  await page.locator("body").click({ position: { x: 5, y: 300 } });
+  await page.keyboard.press("/");
+  const input = page.locator(".palette input");
+  await input.waitFor();
+  expect((await input.inputValue()) === "", `typed: "${await input.inputValue()}"`);
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".palette", { state: "detached" });
+});
 await check("⌘K opens; files of this PR are listed first", async () => {
   await page.keyboard.press("Meta+k");
   await page.waitForSelector(".palette");

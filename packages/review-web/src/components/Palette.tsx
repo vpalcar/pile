@@ -153,7 +153,8 @@ export function Palette({ inbox, detail, onClose, onRefresh, onInbox, onShortcut
 }
 
 const SHORTCUTS: Array<[string, string[]]> = [
-  ["Command palette", [modKey, "K"]],
+  ["Search and commands", ["/"]],
+  ["Search and commands (anywhere, even while typing)", [modKey, "K"]],
   ["Next / previous file", ["j", "k"]],
   ["Next / previous pull request", ["]", "["]],
   ["Mark file viewed, go to next", ["v"]],
@@ -164,7 +165,7 @@ const SHORTCUTS: Array<[string, string[]]> = [
   ["Go to the inbox", ["g"]],
   ["Move through the inbox", ["j", "k"]],
   ["Filter the inbox", ["1–4"]],
-  ["Filter files", ["/"]],
+  ["Next / previous open comment", ["n", "⇧N"]],
   ["Comment on the pull request", ["c"]],
   ["Submit a review", ["r"]],
   ["Open on GitHub", ["o"]],

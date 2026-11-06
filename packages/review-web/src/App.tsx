@@ -89,6 +89,8 @@ function Shell() {
   useShortcuts(
     {
       "mod+k": () => setPalette((p) => !p),
+      // The quicker key for the same search.
+      "/": () => setPalette(true),
       "]": () => step(1),
       "[": () => step(-1),
       R: () => refresh(),
@@ -189,7 +191,7 @@ function Shell() {
           )}
           <span id="topbar-actions" className="contents" />
           {route.ref && <span className="mx-1.5 h-[18px] w-px shrink-0 bg-line-2" />}
-          <Button variant="ghost" icon onClick={() => setPalette(true)} aria-label="Search" data-tip="Search" data-kbd={`${modKey} K`}>
+          <Button variant="ghost" icon onClick={() => setPalette(true)} aria-label="Search" data-tip="Search" data-kbd="/">
             <Search size={15} />
           </Button>
           <Button variant="ghost" icon aria-label="Refresh" data-tip="Refresh" data-kbd="⇧ R" onClick={refresh} className={refreshing ? "[&_svg]:animate-spin" : ""}>
