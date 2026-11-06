@@ -214,7 +214,8 @@ await check("search filters by title, branch, author and number", async () => {
   await page.getByText("No pull requests or branches match").waitFor();
   await shot("search no match");
   await page.locator("input[placeholder^='Filter by']").press("Escape");
-  expect((await count("[data-row]")) === before, "cleared");
+  // Clearing brings every row back (a long stack may come back unfolded if the cursor is in it).
+  expect((await count("[data-row]")) >= before && (await page.getByText("No pull requests or branches match").count()) === 0, "cleared");
 });
 await check("j / k move the selection, Enter opens it", async () => {
   await page.locator("body").click({ position: { x: 5, y: 300 } });
