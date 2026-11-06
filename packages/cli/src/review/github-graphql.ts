@@ -14,27 +14,35 @@ const USER = "login avatarUrl";
 const REQUESTED = `reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { ${USER} } ... on Team { slug name } } } }`;
 const RATE = "rateLimit { cost remaining limit resetAt }";
 
-const INBOX = `query PileInbox($owner: String!, $name: String!, $after: String) {
+/**
+ * The inbox is two searches, not a list of every open PR: yours and those asking for
+ * your review. In two passes: the fast one (titles, branches, review requests and
+ * reviews: about a second even on very large repos), then the same PRs with sizes and
+ * check counts, which GitHub computes on the fly and are several times slower.
+ */
+const PR_FAST = `number title url isDraft createdAt updatedAt totalCommentsCount
+  headRefName headRefOid baseRefName baseRefOid
+  author { ${USER} }
+  ${REQUESTED}
+  latestReviews(first: 30) { nodes { author { ${USER} } state submittedAt } }
+  latestOpinionatedReviews(first: 30) { nodes { author { ${USER} } state submittedAt } }`;
+const PR_SLOW = `number additions deletions
+  commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 1) {
+    checkRunCountsByState { state count }
+    statusContextCountsByState { state count }
+  } } } } }`;
+
+const inboxQuery = (fields: string) => `query PileInbox($owner: String!, $name: String!, $mine: String!, $review: String!) {
   viewer { ${USER} }
   ${RATE}
-  repository(owner: $owner, name: $name) {
-    defaultBranchRef { name }
-    pullRequests(states: OPEN, first: 100, after: $after, orderBy: { field: UPDATED_AT, direction: DESC }) {
-      pageInfo { hasNextPage endCursor }
-      nodes {
-        number title url isDraft createdAt updatedAt additions deletions totalCommentsCount
-        headRefName headRefOid baseRefName baseRefOid
-        author { ${USER} }
-        ${REQUESTED}
-        latestReviews(first: 30) { nodes { author { ${USER} } state submittedAt } }
-        latestOpinionatedReviews(first: 30) { nodes { author { ${USER} } state submittedAt } }
-        commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 1) {
-          checkRunCountsByState { state count }
-          statusContextCountsByState { state count }
-        } } } } }
-      }
-    }
-  }
+  repository(owner: $owner, name: $name) { defaultBranchRef { name } }
+  mine: search(query: $mine, type: ISSUE, first: 100) { nodes { ... on PullRequest { ${fields} } } }
+  review: search(query: $review, type: ISSUE, first: 100) { nodes { ... on PullRequest { ${fields} } } }
+}`;
+
+const SEARCH = `query PileSearch($q: String!) {
+  ${RATE}
+  search(query: $q, type: ISSUE, first: 25) { nodes { ... on PullRequest { ${PR_FAST} } } }
 }`;
 
 const PR = `query PilePR($owner: String!, $name: String!, $number: Int!) {
@@ -75,8 +83,8 @@ export interface InboxNode {
   isDraft: boolean;
   createdAt: string;
   updatedAt: string;
-  additions: number;
-  deletions: number;
+  additions?: number;
+  deletions?: number;
   totalCommentsCount: number | null;
   headRefName: string;
   headRefOid: string;
@@ -86,7 +94,8 @@ export interface InboxNode {
   reviewRequests: Requested;
   latestReviews: { nodes: Review[] };
   latestOpinionatedReviews: { nodes: Review[] };
-  commits: { nodes: Array<{ commit: { statusCheckRollup: { contexts: { checkRunCountsByState: Counts | null; statusContextCountsByState: Counts | null } } | null } }> };
+  /** Only in the second, slower pass. */
+  commits?: { nodes: Array<{ commit: { statusCheckRollup: { contexts: { checkRunCountsByState: Counts | null; statusContextCountsByState: Counts | null } } | null } }> };
 }
 
 const restUser = (u: User) => (u ? { login: u.login, avatar_url: u.avatarUrl ?? undefined } : null);
@@ -98,24 +107,36 @@ async function query<T>(octokit: Octokit, text: string, variables: Record<string
   return data;
 }
 
-/** Every open PR with what an inbox row needs: up to 500, newest first. */
-export async function fetchInboxGraphQL(octokit: Octokit, repo: Repo) {
-  const nodes: InboxNode[] = [];
-  let after: string | null = null;
-  let viewer: User = null;
-  let defaultBranch = "main";
-  for (let page = 0; page < 5; page++) {
-    const data: {
-      viewer: User;
-      repository: { defaultBranchRef: { name: string } | null; pullRequests: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: InboxNode[] } };
-    } = await query(octokit, INBOX, { owner: repo.owner, name: repo.repo, after });
-    viewer = data.viewer;
-    defaultBranch = data.repository.defaultBranchRef?.name ?? defaultBranch;
-    nodes.push(...data.repository.pullRequests.nodes);
-    if (!data.repository.pullRequests.pageInfo.hasNextPage) break;
-    after = data.repository.pullRequests.pageInfo.endCursor;
-  }
-  return { viewer: restUser(viewer), defaultBranch, nodes };
+/**
+ * Your open PRs and those requesting your review, from GitHub's search (`@me` is
+ * the token's user). `full` adds sizes and check counts: the slow fields.
+ */
+export async function fetchInboxGraphQL(octokit: Octokit, repo: Repo, { full = false } = {}) {
+  const scope = `repo:${repo.owner}/${repo.repo} is:pr is:open`;
+  const data: {
+    viewer: User;
+    repository: { defaultBranchRef: { name: string } | null };
+    mine: { nodes: InboxNode[] };
+    review: { nodes: InboxNode[] };
+  } = await query(octokit, inboxQuery(full ? `${PR_FAST} ${PR_SLOW}` : PR_FAST), {
+    owner: repo.owner,
+    name: repo.repo,
+    mine: `${scope} author:@me`,
+    review: `${scope} review-requested:@me`,
+  });
+  const nodes = new Map<number, InboxNode>();
+  for (const node of [...data.mine.nodes, ...data.review.nodes]) if (node?.number) nodes.set(node.number, node);
+  return { viewer: restUser(data.viewer), defaultBranch: data.repository.defaultBranchRef?.name ?? "main", nodes: [...nodes.values()] };
+}
+
+/** Open PRs matching `text` (title, body, number, branch or author), across the repo. */
+export async function searchPRsGraphQL(octokit: Octokit, repo: Repo, text: string) {
+  const scope = `repo:${repo.owner}/${repo.repo} is:pr is:open`;
+  const term = text.trim();
+  // An author or number search, or words matched in titles and descriptions.
+  const q = /^#?\d+$/.test(term) ? `${scope} ${term.replace("#", "")}` : /^@\S+$/.test(term) ? `${scope} author:${term.slice(1)}` : `${scope} ${term}`;
+  const data: { search: { nodes: InboxNode[] } } = await query(octokit, SEARCH, { q });
+  return data.search.nodes.filter((n) => n?.number);
 }
 
 const requestedUsers = (r: Requested) =>
@@ -156,7 +177,8 @@ const FAILED = new Set(["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", 
 const PASSED = new Set(["SUCCESS", "NEUTRAL", "SKIPPED", "COMPLETED"]);
 
 /** The check summary from the rollup's counts, without listing the checks. */
-export function checksFromNode(node: InboxNode): ChecksSummary {
+export function checksFromNode(node: InboxNode): ChecksSummary | null {
+  if (!node.commits) return null; // the fast pass doesn't have them yet
   const contexts = node.commits.nodes[0]?.commit.statusCheckRollup?.contexts;
   const counts = [...(contexts?.checkRunCountsByState ?? []), ...(contexts?.statusContextCountsByState ?? [])];
   let passed = 0;

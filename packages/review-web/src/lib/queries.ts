@@ -1,6 +1,6 @@
 import { QueryClient, useQuery } from "@tanstack/react-query";
-import { useCallback } from "react";
-import type { Detail, ItemRef, Preferences } from "../api";
+import { useCallback, useEffect, useState } from "react";
+import type { Detail, InboxItem, ItemRef, Preferences } from "../api";
 import { api, RequestError } from "./client";
 import { keepKnownSignals } from "./inbox";
 
@@ -100,4 +100,18 @@ export function usePreference<K extends keyof Preferences>(key: K, fallback: Pre
     [key, fallback],
   );
   return [value, set];
+}
+
+// -----------------------------------------------------------------------------
+// Search across every open PR in the repo (everyone else's aren't in the inbox)
+
+/** Asks GitHub once typing pauses; results are kept a minute per query. */
+export function useRepoSearch(text: string): InboxItem[] {
+  const [q, setQ] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setQ(text.trim()), 250);
+    return () => clearTimeout(timer);
+  }, [text]);
+  const { data } = useQuery({ queryKey: ["search", q], queryFn: () => api.search(q), enabled: q.length >= 2, staleTime: 60_000 });
+  return q.length >= 2 && q === text.trim() ? (data ?? []) : [];
 }

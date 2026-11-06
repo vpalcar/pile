@@ -207,6 +207,17 @@ await check("other people's PRs aren't in the inbox, only in search", async () =
   }
   await page.locator("body").click({ position: { x: 5, y: 400 } });
 });
+await check("search reaches every open PR in the repo, through GitHub", async () => {
+  const search = page.locator("input[placeholder^='Filter by']");
+  try {
+    await search.fill("safari");
+    await page.locator('[data-row="pr-150"]').waitFor({ timeout: 5000 });
+    expect((await page.locator('[data-row="pr-150"]').innerText()).includes("Flaky e2e on Safari"), "found by the server");
+    expect((await calls()).some((c) => c.type === "search" && c.q === "safari"), "asked once typing paused");
+  } finally {
+    await search.press("Escape");
+  }
+});
 await check("filters with 1–4 and shows only that group", async () => {
   await page.keyboard.press("2");
   expect((await page.locator("section h2").allInnerTexts()).every((t) => t.startsWith("Waiting for your review")), "only needs-review");

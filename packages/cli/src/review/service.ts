@@ -41,7 +41,7 @@ import {
 } from "./github-data.js";
 import { diffStats, localCommits, localFiles, localState } from "./local-data.js";
 import { cleanupMergedBranch } from "../utils/merge-cleanup.js";
-import { checksFromNode, fetchInboxGraphQL, fetchPRGraphQL, listedFromNode, reviewsFromNode, type InboxNode } from "./github-graphql.js";
+import { checksFromNode, fetchInboxGraphQL, fetchPRGraphQL, listedFromNode, reviewsFromNode, searchPRsGraphQL, type InboxNode } from "./github-graphql.js";
 
 type ListedPR = Awaited<ReturnType<Octokit["pulls"]["list"]>>["data"][number];
 type FullPR = Awaited<ReturnType<Octokit["pulls"]["get"]>>["data"] & {
@@ -114,6 +114,7 @@ export class ReviewService {
   /** Who you are: from the inbox query when GraphQL is in use, otherwise REST. */
   private viewer(): Promise<{ login: string; avatar_url: string } | null> {
     if (!this.octokit) return Promise.resolve(null);
+    if (this.graphqlViewer) return Promise.resolve(this.graphqlViewer);
     if (this.graphql()) return this.listOpenPRs().then(() => this.graphqlViewer ?? this.restViewer());
     return this.restViewer();
   }
@@ -136,7 +137,13 @@ export class ReviewService {
       const prs = this.graphql()
         ? fetchInboxGraphQL(this.octokit, this.repo).then(
             ({ viewer, defaultBranch, nodes }) => {
-              this.inboxNodes = new Map(nodes.map((n) => [n.number, n]));
+              // Keep what the slow pass knew (sizes, checks) for PRs that haven't changed.
+              this.inboxNodes = new Map(
+                nodes.map((n) => {
+                  const known = this.inboxNodes.get(n.number);
+                  return [n.number, known?.updatedAt === n.updatedAt && known.headRefOid === n.headRefOid ? { ...n, additions: known.additions, deletions: known.deletions, commits: known.commits } : n];
+                }),
+              );
               if (viewer) this.graphqlViewer = viewer as { login: string; avatar_url: string };
               return nodes.map((n) => listedFromNode(n, defaultBranch) as unknown as ListedPR);
             },
@@ -149,6 +156,43 @@ export class ReviewService {
       this.openPRs = { at: Date.now(), prs };
     }
     return this.openPRs.prs;
+  }
+
+  /** The slow pass: the same PRs with sizes and check counts. */
+  private async fullInboxGraphQL(): Promise<ListedPR[]> {
+    try {
+      const { viewer, defaultBranch, nodes } = await fetchInboxGraphQL(this.octokit!, this.repo!, { full: true });
+      if (viewer) this.graphqlViewer = viewer as { login: string; avatar_url: string };
+      this.inboxNodes = new Map(nodes.map((n) => [n.number, n]));
+      const listed = nodes.map((n) => listedFromNode(n, defaultBranch) as unknown as ListedPR);
+      // PR pages share this list (their stacks) instead of asking again.
+      this.openPRs = { at: Date.now(), prs: Promise.resolve(listed) };
+      return listed;
+    } catch (error) {
+      this.graphqlFailed(error);
+      throw error;
+    }
+  }
+
+  /** Open PRs matching `text`, across the repo: how other people's PRs are found. */
+  async search(text: string): Promise<InboxItem[]> {
+    if (!this.octokit || !this.repo || text.trim().length < 2) return [];
+    if (this.graphql()) {
+      try {
+        const [nodes, viewer] = await Promise.all([searchPRsGraphQL(this.octokit, this.repo, text), this.viewer()]);
+        return nodes.map((n) => {
+          const pr = listedFromNode(n, "main") as unknown as ListedPR;
+          return { ...this.basicPRItem(pr), comments: n.totalCommentsCount ?? 0, reviewDecision: decisionFor(reviewsFromNode(n), pr, viewer?.login ?? null) };
+        });
+      } catch (error) {
+        this.graphqlFailed(error);
+      }
+    }
+    const q = text.trim().toLowerCase();
+    return (await this.listOpenPRs())
+      .filter((pr) => [pr.title, pr.head.ref, pr.user?.login ?? "", `#${pr.number}`].some((s) => s.toLowerCase().includes(q)))
+      .slice(0, 25)
+      .map((pr) => this.basicPRItem(pr));
   }
 
   /** Whether reads go over GraphQL right now. */
@@ -336,20 +380,22 @@ export class ReviewService {
   }
 
   private async loadInbox(enrich: boolean): Promise<Inbox> {
-    const [viewer, prs, refs, currentBranch] = await Promise.all([
-      this.viewer(),
-      this.listOpenPRs(),
-      this.pile.git.getRefs(),
-      this.pile.git.getCurrentBranch(),
-    ]);
+    // Over GraphQL the full inbox is the slower second pass (sizes and checks); the
+    // quick one is the shared list of your PRs and review requests.
+    // The full pass already has everything the quick list has, so it replaces it.
+    const prsP = enrich && this.graphql() ? this.fullInboxGraphQL().catch(() => this.listOpenPRs()) : this.listOpenPRs();
+    const [prs, refs, currentBranch] = await Promise.all([prsP, this.pile.git.getRefs(), this.pile.git.getCurrentBranch()]);
+    const viewer = await this.viewer();
+    const fromGraphQL = this.graphql() && this.inboxNodes.size + prs.length > 0 && prs.every((p) => this.inboxNodes.has(p.number));
 
     // Only PRs that are yours or wait on your review are enriched (checks, reviews,
     // size); everyone else's come from the list alone and only show up in search.
     const yours = (pr: ListedPR) =>
       !!viewer && (pr.user?.login === viewer.login || (pr.requested_reviewers ?? []).some((u) => u?.login === viewer.login));
-    const prItems = enrich
-      ? await mapPRs(prs, (pr) => (yours(pr) ? this.inboxItem(pr, viewer?.login ?? null, refs, currentBranch) : Promise.resolve(this.basicPRItem(pr))))
-      : prs.map((pr) => this.basicPRItem(pr));
+    const prItems =
+      enrich || fromGraphQL
+        ? await mapPRs(prs, (pr) => (yours(pr) ? this.inboxItem(pr, viewer?.login ?? null, refs, currentBranch) : Promise.resolve(this.basicPRItem(pr))))
+        : prs.map((pr) => this.basicPRItem(pr));
     const positions = chainPositions(prs.map((pr) => ({ head: pr.head.ref, base: pr.base.ref })));
     for (const item of prItems) {
       item.stack ??= positions.get(item.branch) ?? null;
@@ -422,8 +468,8 @@ export class ReviewService {
       // Everything came with the inbox query.
       return {
         ...this.basicPRItem(pr),
-        additions: node.additions,
-        deletions: node.deletions,
+        additions: node.additions ?? null,
+        deletions: node.deletions ?? null,
         comments: node.totalCommentsCount ?? 0,
         reviewDecision: decisionFor(reviewsFromNode(node), pr, viewer),
         checks: checksFromNode(node),
@@ -687,10 +733,13 @@ export class ReviewService {
         // From the inbox query: no requests.
         const reviews = reviewsFromNode(node);
         const summary = checksFromNode(node);
+        const decision = decisionFor(reviews, listed, viewer?.login ?? null);
+        // The quick pass has no checks yet: leave them to the inbox rather than guess.
+        if (!summary) return { ...entry, reviewDecision: decision };
         return {
           ...entry,
           checks: summary,
-          reviewDecision: decisionFor(reviews, listed, viewer?.login ?? null),
+          reviewDecision: decision,
           blockers: blockingReasons({ draft: !!listed.draft, checks: summary, changesRequested: changesRequested(reviews), mergeable: null, mergeableState: null }).map((r) => r.message),
         };
       }

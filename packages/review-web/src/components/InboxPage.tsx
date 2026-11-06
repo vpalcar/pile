@@ -1,7 +1,7 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUpRight, GitBranch, Layers, MessageSquare, Search, Sparkles } from "lucide-react";
 import type { Inbox, InboxGroup, InboxItem, Session } from "../api";
-import { prefetchDetail } from "../lib/queries";
+import { prefetchDetail, useRepoSearch } from "../lib/queries";
 import { itemReadiness } from "../lib/status";
 import { modKey, navigate, plural, timeAgo, useNow, useShortcuts, usePersisted } from "../lib/util";
 import { ChecksDot, cx, Kbd, Pill, PRStateIcon, StatusBadge } from "./ui";
@@ -49,22 +49,29 @@ export function InboxPage({ inbox, session, loading }: { inbox: Inbox | undefine
     return () => observer.disconnect();
   }, []);
 
+  const found = useRepoSearch(query);
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase();
+    // Matches from across the repo join "Other open pull requests" (not repeating yours).
+    const known = new Set((inbox?.groups ?? []).flatMap((g) => g.items.map((i) => i.id)));
+    const fromRepo = found.filter((i) => !known.has(i.id));
+    const all = (inbox?.groups ?? []).some((g) => g.id === "others")
+      ? (inbox?.groups ?? [])
+      : [...(inbox?.groups ?? []), { id: "others" as const, title: "", items: [], searchOnly: true }];
     // Other people's PRs aren't part of the inbox; they show up when you search.
     const shown = FILTERS.some(([id]) => id === filter) ? filter : "all";
-    return (inbox?.groups ?? [])
+    return all
       .filter((g) => (g.searchOnly ? !!q && shown === "all" : shown === "all" || g.id === shown))
-      .map((g) => ({
-        ...g,
-        items: q
+      .map((g) => {
+        const local = q
           ? g.items.filter((i) =>
               [i.title, i.branch, i.author?.login ?? "", i.ref.kind === "pr" ? `#${i.ref.number}` : ""].some((s) => s.toLowerCase().includes(q)),
             )
-          : g.items,
-      }))
+          : g.items;
+        return { ...g, items: g.id === "others" ? [...local, ...fromRepo.filter((i) => !local.some((l) => l.id === i.id))] : local };
+      })
       .filter((g) => g.items.length > 0 || (g.id === "needs_review" && !q));
-  }, [inbox, filter, query]);
+  }, [inbox, filter, query, found]);
 
   // Display order: stacks top first, as drawn, so j / k move the way the rows read.
   const visible = useMemo(() => groups.flatMap((g) => clusters(g.items).flatMap((c) => c.items)), [groups]);

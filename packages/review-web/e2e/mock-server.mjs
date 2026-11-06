@@ -90,6 +90,13 @@ export function startMockServer(port = 0) {
         return detail ? json(res, 200, detail) : json(res, 404, { error: `Pull request #${m[1]} doesn't exist`, code: "PR_NOT_FOUND" });
       }
       if (api === "/options") return json(res, 200, options);
+      // GitHub's search across the repo: here, one PR that isn't in the inbox at all.
+      if (api === "/search") {
+        const q = (url.searchParams.get("q") ?? "").toLowerCase();
+        state.calls.push({ type: "search", q });
+        const flaky = { ref: { kind: "pr", number: 150 }, id: "pr-150", title: "Flaky e2e on Safari", branch: "ci/safari-flake", base: "main", author: { login: "zoe", avatarUrl: null }, state: "open", updatedAt: new Date().toISOString(), additions: null, deletions: null, reviewDecision: null, checks: null, stack: null, local: null, url: "https://github.com/acme/web/pull/150", comments: 0 };
+        return json(res, 200, "safari".includes(q) || q.includes("safari") ? [flaky] : []);
+      }
       if (api === "/notes" && req.method === "GET") return json(res, 200, state.notes.filter((n) => n.branch === url.searchParams.get("branch")));
       if (api === "/notes" && req.method === "POST") {
         const body = await readBody(req);

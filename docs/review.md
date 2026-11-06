@@ -124,8 +124,10 @@ keeps the files you've marked as viewed and unsent comments in your browser betw
 
 ## GitHub's rate limit
 
-`pile review` reads GitHub through GraphQL: one query for the whole inbox (about 5 points)
-and one per pull request page (about 1 point), out of 5,000 points an hour. That budget is
+`pile review` reads GitHub through GraphQL: the inbox is two searches (your open pull requests,
+and those requesting your review) in one query, so it stays fast on repos with thousands of
+open PRs, and each pull request page is one more query (about 1 point), out of 5,000 points
+an hour. Searching the inbox or ⌘K looks through every open pull request on GitHub. That budget is
 separate from GitHub's REST limit (5,000 requests an hour), which pile uses only for diffs
 and for changes you make (comments, reviews, edits, merges). Diffs are cached in
 `.git/pile/` and only downloaded again when they change.

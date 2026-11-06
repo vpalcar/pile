@@ -113,7 +113,29 @@ export function fakeGitHub(options: { prs: number; viewer?: string; trunk?: stri
     points--;
     const rateLimit = { cost: 1, remaining: points, limit: 5000, resetAt: "2033-05-18T03:33:20Z" };
     if (query.includes("query PileInbox")) {
-      return { data: { viewer: gqlUser(viewer), rateLimit, repository: { defaultBranchRef: { name: trunk }, pullRequests: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: prs.map(node) } } } };
+      // Two searches (yours, and review requests); the full pass adds sizes and checks.
+      const full = query.includes("additions");
+      const pick = (p: FakePR) => {
+        const n = node(p) as Record<string, unknown>;
+        if (!full) {
+          delete n.additions;
+          delete n.deletions;
+          delete n.commits;
+        }
+        return n;
+      };
+      return {
+        data: {
+          viewer: gqlUser(viewer),
+          rateLimit,
+          repository: { defaultBranchRef: { name: trunk } },
+          mine: { nodes: prs.filter((p) => p.author === viewer).map(pick) },
+          review: { nodes: prs.filter((p) => p.requested.includes(viewer) && p.author !== viewer).map(pick) },
+        },
+      };
+    }
+    if (query.includes("query PileSearch")) {
+      return { data: { rateLimit, search: { nodes: prs.filter((p) => String(variables.q).includes(String(p.number))).map(node) } } };
     }
     const p = prs[Number(variables.number) - 1];
     if (!p) return { data: { rateLimit, repository: { defaultBranchRef: { name: trunk }, pullRequest: null } } };

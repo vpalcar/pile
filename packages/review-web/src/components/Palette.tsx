@@ -1,9 +1,11 @@
+import { useState } from "react";
 import { Command } from "cmdk";
 import { FileCode2, GitBranch, Inbox as InboxIcon, Keyboard, Moon, RefreshCw, Sun, Monitor } from "lucide-react";
 import type { Detail, Inbox } from "../api";
 import { flatItems } from "./Inbox";
 import { Avatar, Kbd, PRStateIcon, useDismiss } from "./ui";
 import { modKey, navigate } from "../lib/util";
+import { useRepoSearch } from "../lib/queries";
 import { fileAnchor } from "./FileDiff";
 
 interface Props {
@@ -18,7 +20,12 @@ interface Props {
 
 export function Palette({ inbox, detail, onClose, onRefresh, onInbox, onShortcuts, onTheme }: Props) {
   const ref = useDismiss(true, onClose);
-  const items = flatItems(inbox, { search: true });
+  const [search, setSearch] = useState("");
+  const local = flatItems(inbox, { search: true });
+  // Everyone else's PRs come from GitHub's search; they carry the query as a keyword
+  // since they may match on something cmdk can't see (the description).
+  const found = useRepoSearch(search).filter((i) => !local.some((l) => l.id === i.id));
+  const items = [...local, ...found];
   const run = (fn: () => void) => () => {
     onClose();
     fn();
@@ -27,7 +34,7 @@ export function Palette({ inbox, detail, onClose, onRefresh, onInbox, onShortcut
     <div className="fixed inset-0 z-[80] flex animate-fade-in items-start justify-center bg-scrim px-4 pt-[14vh]">
       <div ref={ref} className="palette w-full max-w-[640px] animate-pop-in overflow-hidden rounded-2xl bg-panel shadow-pop [&_svg]:shrink-0">
         <Command label="Command palette" loop>
-          <Command.Input autoFocus placeholder="Jump to a pull request, branch or file…" />
+          <Command.Input autoFocus placeholder="Jump to a pull request, branch or file…" value={search} onValueChange={setSearch} />
           <Command.List>
             <Command.Empty>No results</Command.Empty>
             {detail && detail.files.length > 0 && (
@@ -55,6 +62,7 @@ export function Palette({ inbox, detail, onClose, onRefresh, onInbox, onShortcut
                 <Command.Item
                   key={item.id}
                   value={`${item.ref.kind === "pr" ? `#${item.ref.number}` : ""} ${item.title} ${item.branch} ${item.author?.login ?? ""}`}
+                  keywords={found.includes(item) ? [search] : undefined}
                   onSelect={run(() => navigate(item.ref))}
                 >
                   {item.state === "local" ? <GitBranch size={14} /> : <PRStateIcon state={item.state} size={14} />}

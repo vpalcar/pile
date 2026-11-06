@@ -138,6 +138,7 @@ export async function startReviewServer(options: {
     }
     if (method === "GET" && path === "/preferences") return send(res, 200, preferences.read());
     if (method === "PATCH" && path === "/preferences") return send(res, 200, preferences.write(await readBody(req)));
+    if (method === "GET" && path === "/search") return send(res, 200, await service.search(url.searchParams.get("q") ?? ""));
     if (method === "GET" && path === "/usage") return send(res, 200, service.usage());
     if (method === "GET" && path === "/options") return send(res, 200, await service.options());
     if (method === "PATCH" && (match = path.match(/^\/pr\/(\d+)$/))) {
