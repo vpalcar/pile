@@ -55,10 +55,16 @@ export const itemReadiness = (item: InboxItem): Readiness =>
 export const detailReadiness = (detail: Detail): Readiness =>
   readiness({ state: detail.state, decision: detail.reviewDecision, checks: detail.checksSummary, unpushed: !!detail.local && detail.local.ahead > 0 });
 
-/** Stack entries use what the inbox knows about them, falling back to their state. */
+/**
+ * Stack entries carry their own checks and review state (fetched with the PR page);
+ * the inbox only fills in for entries without them, such as local branches.
+ */
 export function entryReadiness(entry: StackEntry, items: InboxItem[]): Readiness {
   const item = items.find((i) =>
     entry.ref.kind === "pr" ? i.ref.kind === "pr" && i.ref.number === entry.ref.number : i.ref.kind === "branch" && i.ref.name === entry.ref.name,
   );
+  if (entry.checks !== undefined) {
+    return readiness({ state: entry.state, decision: entry.reviewDecision, checks: entry.checks, unpushed: item?.local?.unpushed });
+  }
   return item ? itemReadiness(item) : readiness({ state: entry.state, decision: entry.reviewDecision, checks: null });
 }

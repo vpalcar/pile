@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, ArrowRight, Check, ChevronDown, CircleAlert, Copy, ExternalLink, Eye, Layers, MessageSquare, Pencil, PencilLine, RotateCw, Tag, UploadCloud, UserPlus } from "lucide-react";
-import type { CheckRun, Detail as DetailData, InboxItem, ItemRef, PRUpdate, RepoOptions, ReviewRequest, StackEntry, TimelineEntry } from "../api";
-import { api, load, mutateCache, refKey, useResource } from "../lib/client";
+import type { CheckRun, Detail as DetailData, InboxItem, ItemRef, PRUpdate, ReviewRequest, StackEntry, TimelineEntry } from "../api";
+import { useMutation } from "@tanstack/react-query";
+import { api } from "../lib/client";
+import { keys, queryClient, refKey, useOptions } from "../lib/queries";
 import { detailReadiness, entryReadiness, type Readiness } from "../lib/status";
 import { absoluteTime, copy, modKey, navigate, plural, timeAgo, useNow, useShortcuts } from "../lib/util";
 import { Composer } from "./Composer";
@@ -23,16 +25,19 @@ interface Props {
 
 export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems }: Props) {
   useNow();
-  const key = refKey(detail.ref);
+  const key = keys.detail(detail.ref);
   const toast = useToast();
   const [pending, setPending] = useState<PendingComment[]>([]);
   const [reviewOpen, setReviewOpen] = useState(false);
   const discussionInput = useRef<HTMLTextAreaElement>(null);
   const status = detailReadiness(detail);
 
-  const refresh = useCallback(async () => {
-    await Promise.all([load(key, () => api.detail(detail.ref, true), true), load("inbox", () => api.inbox(true), true)]).catch(() => {});
-  }, [key, detail.ref]);
+  // After a change: both refetch past the server's cache (see lib/queries).
+  const refresh = useCallback(
+    () => Promise.all([queryClient.invalidateQueries({ queryKey: key }), queryClient.invalidateQueries({ queryKey: keys.inbox })]),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [detail.ref],
+  );
 
   const onFileChange = useCallback(
     (path: string | null) => history.replaceState(null, "", `${location.pathname}${location.search}#${routePath(detail.ref)}${path ? `/file/${encodeURIComponent(path)}` : ""}`),
@@ -51,34 +56,39 @@ export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems }:
     [detail],
   );
 
-  const railActions = useMemo(
-    () => ({
-      update: async (change: PRUpdate, optimistic: (d: DetailData) => DetailData, done?: string) => {
-        mutateCache<DetailData>(key, (d) => (d ? optimistic(d) : d));
-        try {
-          const fresh = await api.update(detail.number!, change);
-          mutateCache<DetailData>(key, () => fresh);
-          load("inbox", () => api.inbox(true), true).catch(() => {});
-          if (done) toast(done, { key: "update" });
-        } catch (error) {
-          toast(<span className="text-bad">{(error as Error).message}</span>, { key: "update" });
-          refresh();
-        }
-      },
-      rerun: async (check?: CheckRun) => {
-        const hit = (c: CheckRun) => (check ? c.name === check.name : c.state === "failure" && c.jobId !== null);
-        try {
-          await api.rerun(detail.number!, { jobId: check?.jobId ?? undefined });
-          // GitHub queues the job a moment later; show it as running right away.
-          mutateCache<DetailData>(key, (d) => d && { ...d, checks: d.checks.map((c) => (hit(c) ? { ...c, state: "pending", durationSeconds: null } : c)) });
-          toast(check ? `Re-running ${check.name}` : "Re-running failed checks", { key: "rerun" });
-        } catch (error) {
-          toast(<span className="text-bad">{(error as Error).message}</span>, { key: "rerun" });
-        }
-      },
-    }),
-    [key, detail.number, toast, refresh],
-  );
+  // Edits show at once, roll back if GitHub refuses, and refresh the inbox either way.
+  const update = useMutation({
+    mutationFn: ({ change }: { change: PRUpdate; optimistic: (d: DetailData) => DetailData; done?: string }) => api.update(detail.number!, change),
+    onMutate: async ({ optimistic }) => {
+      await queryClient.cancelQueries({ queryKey: key });
+      const previous = queryClient.getQueryData<DetailData>(key);
+      queryClient.setQueryData<DetailData>(key, (d) => d && optimistic(d));
+      return { previous };
+    },
+    onError: (error, _change, context) => {
+      queryClient.setQueryData(key, context?.previous);
+      toast(<span className="text-bad">{error.message}</span>, { key: "update" });
+    },
+    onSuccess: (fresh, { done }) => {
+      queryClient.setQueryData(key, fresh);
+      if (done) toast(done, { key: "update" });
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: keys.inbox }),
+  });
+  const rerun = useMutation({
+    mutationFn: (check?: CheckRun) => api.rerun(detail.number!, { jobId: check?.jobId ?? undefined }),
+    onSuccess: (_fresh, check) => {
+      // GitHub queues the job a moment later; show it running now. Polling takes over from here.
+      const hit = (c: CheckRun) => (check ? c.name === check.name : c.state === "failure" && c.jobId !== null);
+      queryClient.setQueryData<DetailData>(key, (d) => d && { ...d, checks: d.checks.map((c) => (hit(c) ? { ...c, state: "pending", durationSeconds: null } : c)) });
+      toast(check ? `Re-running ${check.name}` : "Re-running failed checks", { key: "rerun" });
+    },
+    onError: (error) => toast(<span className="text-bad">{error.message}</span>, { key: "rerun" }),
+  });
+  const railActions: RailActions = {
+    update: (change, optimistic, done) => update.mutateAsync({ change, optimistic, done }).then(() => {}, () => {}),
+    rerun: (check) => rerun.mutateAsync(check).then(() => {}, () => {}),
+  };
 
   const submitReview = async (request: ReviewRequest) => {
     await api.review(detail.number!, { ...request, comments: pending.map(({ path, line, side, body }) => ({ path, line, side, body })) });
@@ -132,7 +142,7 @@ export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems }:
 
       <FilesPanel
         detail={detail}
-        itemKey={key}
+        itemKey={refKey(detail.ref)}
         scrollEl={scrollEl}
         pending={pending}
         onAddPending={(c) => {
@@ -607,7 +617,7 @@ function Rail({ detail, status, onReview, actions }: { detail: DetailData; statu
 
   const [picker, setPicker] = useState<"reviewers" | "assignees" | "labels" | null>(null);
   // Loaded on first use; shared by all three pickers.
-  const options = useResource<RepoOptions>(picker ? "options" : null, api.options);
+  const options = useOptions(picker !== null);
   const people = (exclude?: string): PickerItem[] | undefined =>
     options.data?.people.map((p) => ({
       id: p.login,

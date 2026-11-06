@@ -1,4 +1,3 @@
-import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import type { ApiError, Detail, FileContent, Inbox, ItemRef, PRUpdate, RepoOptions, RerunRequest, ReviewRequest, Session } from "../api";
 
 /**
@@ -51,8 +50,6 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return data as T;
 }
 
-export const refKey = (ref: ItemRef) => (ref.kind === "pr" ? `pr/${ref.number}` : `branch/${ref.name}`);
-
 export const api = {
   hasToken: () => token.length > 0,
   session: () => request<Session>("GET", "/session"),
@@ -73,99 +70,3 @@ export const api = {
   update: (number: number, change: PRUpdate) => request<Detail>("PATCH", `/pr/${number}`, change),
   rerun: (number: number, rerun: RerunRequest) => request<Detail>("POST", `/pr/${number}/checks/rerun`, rerun),
 };
-
-// -----------------------------------------------------------------------------
-// A tiny stale-while-revalidate cache shared by all components.
-
-interface Entry<T> {
-  data?: T;
-  error?: RequestError | Error;
-  loading: boolean;
-  promise?: Promise<T>;
-  at: number;
-}
-
-const entries = new Map<string, Entry<unknown>>();
-const listeners = new Set<() => void>();
-const emit = () => listeners.forEach((l) => l());
-
-function entry<T>(key: string): Entry<T> {
-  if (!entries.has(key)) entries.set(key, { loading: false, at: 0 });
-  return entries.get(key) as Entry<T>;
-}
-
-export function load<T>(key: string, fetcher: () => Promise<T>, force = false): Promise<T> {
-  const current = entry<T>(key);
-  if (current.promise && !force) return current.promise;
-  const promise = fetcher()
-    .then((data) => {
-      entries.set(key, { data, loading: false, at: Date.now() });
-      emit();
-      return data;
-    })
-    .catch((error) => {
-      entries.set(key, { ...entry<T>(key), error, loading: false, promise: undefined });
-      emit();
-      throw error;
-    });
-  entries.set(key, { ...current, loading: true, promise });
-  emit();
-  return promise;
-}
-
-/** Warms the cache, e.g. on hover, without subscribing. */
-export function prefetch<T>(key: string, fetcher: () => Promise<T>, maxAgeMs = 30_000): void {
-  const current = entry<T>(key);
-  if (current.promise || Date.now() - current.at < maxAgeMs) return;
-  load(key, fetcher).catch(() => {});
-}
-
-export function mutateCache<T>(key: string, update: (data: T | undefined) => T | undefined): void {
-  const current = entry<T>(key);
-  entries.set(key, { ...current, data: update(current.data) });
-  emit();
-}
-
-export function useResource<T>(
-  key: string | null,
-  fetcher: () => Promise<T>,
-  options: { refreshMs?: number } = {},
-): { data?: T; error?: RequestError | Error; loading: boolean; refresh: () => Promise<T | undefined> } {
-  const fetcherRef = useRef(fetcher);
-  fetcherRef.current = fetcher;
-
-  const snapshot = useSyncExternalStore(
-    (listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    () => (key ? entries.get(key) : undefined),
-  ) as Entry<T> | undefined;
-
-  useEffect(() => {
-    if (!key) return;
-    const current = entry<T>(key);
-    if (!current.data && !current.promise) load(key, () => fetcherRef.current()).catch(() => {});
-    else if (Date.now() - current.at > 15_000) load(key, () => fetcherRef.current()).catch(() => {});
-  }, [key]);
-
-  useEffect(() => {
-    if (!key || !options.refreshMs) return;
-    const timer = setInterval(() => {
-      if (document.visibilityState === "visible") load(key, () => fetcherRef.current()).catch(() => {});
-    }, options.refreshMs);
-    return () => clearInterval(timer);
-  }, [key, options.refreshMs]);
-
-  const refresh = useCallback(
-    () => (key ? load(key, () => fetcherRef.current(), true).catch(() => undefined) : Promise.resolve(undefined)),
-    [key],
-  );
-
-  return {
-    data: snapshot?.data,
-    error: snapshot?.data ? undefined : snapshot?.error,
-    loading: !snapshot?.data && (snapshot?.loading ?? !!key),
-    refresh,
-  };
-}

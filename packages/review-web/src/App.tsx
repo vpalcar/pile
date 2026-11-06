@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, CircleAlert, CircleHelp, ExternalLink, Inbox as InboxIcon, KeyRound, Moon, RefreshCw, Search, Sun } from "lucide-react";
 import type { Detail, InboxItem } from "./api";
-import { api, load, prefetch, refKey, RequestError, useResource } from "./lib/client";
+import { api, RequestError } from "./lib/client";
+import { keys, prefetchDetail, queryClient, refKey, useDetail, useInbox, useSession } from "./lib/queries";
 import { modKey, navigate, sameRef, useRoute, useShortcuts, usePersisted } from "./lib/util";
 import { DetailView } from "./components/Detail";
 import { flatItems } from "./components/Inbox";
@@ -22,20 +23,10 @@ export function App() {
 
 function Shell() {
   const route = useRoute();
-  const session = useResource("session", api.session);
-  const inbox = useResource("inbox", () => api.inbox(), { refreshMs: 30_000 });
+  const session = useSession();
+  const inbox = useInbox();
   const detailKey = route.ref ? refKey(route.ref) : null;
-  // While checks run, poll often and past the server's cache so progress shows up live.
-  const [checksRunning, setChecksRunning] = useState(false);
-  const detail = useResource<Detail>(detailKey, () => api.detail(route.ref!, checksRunning), { refreshMs: checksRunning ? 8_000 : 60_000 });
-  useEffect(() => setChecksRunning(!!detail.data?.checks.some((c) => c.state === "pending")), [detail.data]);
-
-  // The first answer may be the quick list; ask again until the full version arrives.
-  useEffect(() => {
-    if (!inbox.data?.partial) return;
-    const timer = setTimeout(() => load("inbox", () => api.inbox(), true).catch(() => {}), 1200);
-    return () => clearTimeout(timer);
-  }, [inbox.data]);
+  const detail = useDetail(route.ref ?? null);
 
   const [theme, setTheme] = usePersisted<Theme>("pile:theme", "system");
   const [palette, setPalette] = useState(false);
@@ -73,7 +64,7 @@ function Shell() {
   // Neighbors load in the background, so [ and ] feel instant.
   useEffect(() => {
     for (const neighbor of [items[index + 1], items[index - 1]]) {
-      if (neighbor) prefetch(refKey(neighbor.ref), () => api.detail(neighbor.ref));
+      if (neighbor) prefetchDetail(neighbor.ref);
     }
   }, [index, items]);
 
@@ -82,10 +73,15 @@ function Shell() {
     if (next) navigate(next.ref);
   };
 
+  // Invalidated queries refetch past the server's cache (see lib/queries).
+  const [refreshing, setRefreshing] = useState(false);
   const refresh = useCallback(() => {
-    load("inbox", () => api.inbox(true), true).catch(() => {});
-    if (detailKey && route.ref) load(detailKey, () => api.detail(route.ref!, true), true).catch(() => {});
-  }, [detailKey, route.ref]);
+    setRefreshing(true);
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: keys.inbox }),
+      route.ref && queryClient.invalidateQueries({ queryKey: keys.detail(route.ref) }),
+    ]).finally(() => setRefreshing(false));
+  }, [route.ref]);
 
   const goInbox = () => navigate(null);
 
@@ -125,7 +121,6 @@ function Shell() {
 
   const repo = session.data?.repo;
   const waiting = inbox.data?.groups.find((g) => g.id === "needs_review")?.items.length ?? 0;
-  const refreshing = (inbox.loading && !!inbox.data) || (detail.loading && !!detail.data);
 
   // Every control in the bar is 28px tall.
   const navLink = "inline-flex h-7 shrink-0 items-center gap-2 rounded-lg px-2.5 font-medium leading-none text-fg-2 transition-colors hover:bg-hover hover:text-fg [&_svg]:shrink-0";
@@ -209,7 +204,7 @@ function Shell() {
         <div className="glow pointer-events-none absolute inset-x-0 top-0 h-[440px]" aria-hidden />
         <div className="relative">
           {!route.ref ? (
-            <InboxPage inbox={inbox.data} session={session.data} loading={inbox.loading} />
+            <InboxPage inbox={inbox.data} session={session.data} loading={inbox.isPending} />
           ) : detail.data ? (
             <DetailView key={detailKey} detail={detail.data} scrollEl={scrollEl} initialFile={route.file} trunk={session.data?.trunk ?? "main"} inboxItems={items} />
           ) : detail.error ? (

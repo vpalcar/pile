@@ -90,8 +90,7 @@ export async function startReviewServer(options: {
 
     if (method === "GET" && path === "/session") return send(res, 200, await service.session(initial));
     if (method === "GET" && path === "/inbox") {
-      if (url.searchParams.has("fresh")) service.invalidate();
-      return send(res, 200, await service.inbox());
+      return send(res, 200, await service.inbox({ fresh: url.searchParams.has("fresh") }));
     }
     if (method === "GET" && (match = path.match(/^\/pr\/(\d+)$/))) {
       const ref = { kind: "pr" as const, number: Number(match[1]) };

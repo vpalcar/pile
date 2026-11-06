@@ -90,6 +90,8 @@ export interface StackEntry {
   branch: string;
   state: PRState | "local";
   reviewDecision: InboxItem["reviewDecision"];
+  /** The entry's own checks, so the stack shows real statuses without the inbox. */
+  checks?: ChecksSummary | null;
   isCurrent: boolean;
 }
 

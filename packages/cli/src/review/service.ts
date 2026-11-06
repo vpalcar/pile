@@ -142,7 +142,9 @@ export class ReviewService {
   /** Forget cached reads, e.g. after a comment or review changes them. */
   invalidate(ref?: ItemRef): void {
     if (ref) this.memo.delete(ref.kind === "pr" ? `pr/${ref.number}` : `branch/${ref.name}`);
-    this.memo.delete("inbox");
+    // The full inbox is kept and served until its replacement is ready: dropping it
+    // would fall back to the quick list, whose missing checks read as "Open".
+    this.inboxVersion++;
     this.memo.delete("inbox-fast");
   }
 
@@ -166,28 +168,43 @@ export class ReviewService {
    * The inbox comes in two passes: the plain PR list answers fast (one request), and
    * the full version with checks, reviews and sizes is built in the background. Until
    * it is ready, responses carry `partial: true` so the client polls again shortly.
+   * Once a full inbox exists it is always what's served; stale ones are rebuilt in
+   * the background, and `fresh` waits for the rebuild.
    */
-  async inbox(): Promise<Inbox> {
+  async inbox({ fresh = false } = {}): Promise<Inbox> {
     const full = this.memo.get("inbox");
-    if (full && Date.now() - full.at < 60_000) {
-      if (Date.now() - full.at > 8_000) this.refreshInbox();
-      return full.value as Promise<Inbox>;
+    if (!full) {
+      this.refreshInbox();
+      return this.cached("inbox-fast", 5_000, () => this.loadInbox(false));
     }
-    this.refreshInbox();
-    return this.cached("inbox-fast", 5_000, () => this.loadInbox(false));
+    const stale = this.inboxBuiltFrom !== this.inboxVersion || Date.now() - full.at > 8_000;
+    if (fresh) return (await this.refreshInbox()) ?? (full.value as Promise<Inbox>);
+    if (stale) this.refreshInbox();
+    return full.value as Promise<Inbox>;
   }
 
-  private inboxRefresh: Promise<unknown> | null = null;
-  private refreshInbox(): void {
-    if (this.inboxRefresh) return;
+  /** Bumped by every change; a full inbox built from an older version is stale. */
+  private inboxVersion = 0;
+  private inboxBuiltFrom = -1;
+  private inboxRefresh: Promise<Inbox | undefined> | null = null;
+  private refreshInbox(): Promise<Inbox | undefined> {
+    if (this.inboxRefresh) return this.inboxRefresh;
+    const version = this.inboxVersion;
     const next = this.loadInbox(true);
     this.inboxRefresh = next
       .then((inbox) => {
         this.memo.set("inbox", { at: Date.now(), value: next });
+        this.inboxBuiltFrom = version;
         this.warmDetails(inbox);
+        return inbox;
       })
-      .catch(() => {})
-      .finally(() => (this.inboxRefresh = null));
+      .catch(() => undefined)
+      .finally(() => {
+        this.inboxRefresh = null;
+        // Something changed while this was being built: build again.
+        if (version !== this.inboxVersion) this.refreshInbox();
+      });
+    return this.inboxRefresh;
   }
 
   private async loadInbox(enrich: boolean): Promise<Inbox> {
@@ -425,7 +442,34 @@ export class ReviewService {
     };
   }
 
+  /**
+   * The PR's stack, each open entry with its own checks and review state (requests
+   * are ETag-cached, so refreshing a whole stack is cheap).
+   */
   private async prStack(pr: FullPR): Promise<StackEntry[]> {
+    const entries = await this.stackEntries(pr);
+    if (entries.length === 0) return entries;
+    const octokit = this.octokit!;
+    const repo = this.repo!;
+    const [open, viewer] = await Promise.all([this.listOpenPRs(), this.viewer()]);
+    const byNumber = new Map(open.map((p) => [p.number, p as ListedPR | FullPR]));
+    byNumber.set(pr.number, pr);
+    return mapLimit(entries, 4, async (entry) => {
+      const listed = entry.ref.kind === "pr" ? byNumber.get(entry.ref.number) : undefined;
+      if (!listed || entry.state === "merged" || entry.state === "closed") return entry;
+      const [checks, reviews] = await Promise.all([
+        fetchChecks(octokit, repo, listed.head.sha).catch(() => null),
+        fetchReviews(octokit, repo, listed.number).catch(() => null),
+      ]);
+      return {
+        ...entry,
+        checks: checks ? summarizeChecks(checks) : null,
+        reviewDecision: reviews ? decisionFor(reviews, listed, viewer?.login ?? null) : entry.reviewDecision,
+      };
+    });
+  }
+
+  private async stackEntries(pr: FullPR): Promise<StackEntry[]> {
     const octokit = this.octokit!;
     const repo = this.repo!;
     // Native GitHub stack: the stack itself is the source of truth.
