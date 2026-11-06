@@ -7,6 +7,7 @@ import { createPile } from "@pile/core";
 import { parseGitDiff } from "../src/review/local-data.js";
 import { ReviewError, ReviewService } from "../src/review/service.js";
 import { startReviewServer } from "../src/review/server.js";
+import { fakeGitHub } from "./fake-github.js";
 import { createCliRepo } from "./helpers.js";
 
 function webRoot(): string {
@@ -254,3 +255,31 @@ describe("detail cache", () => {
   });
 });
 
+
+describe("inbox membership", () => {
+  const groups = async (opts: Parameters<typeof fakeGitHub>[0]) => {
+    const fake = fakeGitHub(opts);
+    // A PR whose review is requested only from a team you're on.
+    fake.prs[4].requested = [];
+    fake.prs[4].teams = ["web"];
+    fake.prs[4].author = "dev9";
+    const service = new ReviewService(await createPile(createCliRepo().dir), fake.github);
+    await service.inbox();
+    const inbox = await service.inbox({ fresh: true });
+    return { inbox, service, ids: (id: string) => inbox.groups.find((g) => g.id === id)!.items.map((i) => (i.ref as { number: number }).number) };
+  };
+
+  it("counts review requests to your teams as waiting for you (GraphQL and REST)", async () => {
+    for (const graphql of [true, false]) {
+      const { ids } = await groups({ prs: 12, teams: ["web"], graphql });
+      expect(ids("needs_review"), `graphql=${graphql}`).toContain(5);
+    }
+  });
+
+  it("falls back to the PR list when GitHub search returns nothing for a busy repo", async () => {
+    const { ids, service } = await groups({ prs: 12, teams: ["web"], searchBroken: true });
+    expect(ids("mine").length).toBeGreaterThan(0);
+    expect(ids("needs_review")).toContain(5);
+    expect(service.usage()!.mode).toMatch(/PR list/);
+  });
+});

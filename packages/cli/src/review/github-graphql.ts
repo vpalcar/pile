@@ -35,7 +35,7 @@ const PR_SLOW = `number additions deletions
 const inboxQuery = (fields: string) => `query PileInbox($owner: String!, $name: String!, $mine: String!, $review: String!) {
   viewer { ${USER} }
   ${RATE}
-  repository(owner: $owner, name: $name) { defaultBranchRef { name } }
+  repository(owner: $owner, name: $name) { defaultBranchRef { name } pullRequests(states: OPEN) { totalCount } }
   mine: search(query: $mine, type: ISSUE, first: 100) { nodes { ... on PullRequest { ${fields} } } }
   review: search(query: $review, type: ISSUE, first: 100) { nodes { ... on PullRequest { ${fields} } } }
 }`;
@@ -115,7 +115,7 @@ export async function fetchInboxGraphQL(octokit: Octokit, repo: Repo, { full = f
   const scope = `repo:${repo.owner}/${repo.repo} is:pr is:open`;
   const data: {
     viewer: User;
-    repository: { defaultBranchRef: { name: string } | null };
+    repository: { defaultBranchRef: { name: string } | null; pullRequests: { totalCount: number } };
     mine: { nodes: InboxNode[] };
     review: { nodes: InboxNode[] };
   } = await query(octokit, inboxQuery(full ? `${PR_FAST} ${PR_SLOW}` : PR_FAST), {
@@ -126,7 +126,16 @@ export async function fetchInboxGraphQL(octokit: Octokit, repo: Repo, { full = f
   });
   const nodes = new Map<number, InboxNode>();
   for (const node of [...data.mine.nodes, ...data.review.nodes]) if (node?.number) nodes.set(node.number, node);
-  return { viewer: restUser(data.viewer), defaultBranch: data.repository.defaultBranchRef?.name ?? "main", nodes: [...nodes.values()] };
+  return {
+    viewer: restUser(data.viewer),
+    defaultBranch: data.repository.defaultBranchRef?.name ?? "main",
+    nodes: [...nodes.values()],
+    // Requested from you or a team you're on (search's review-requested covers both).
+    requested: new Set(data.review.nodes.filter((n) => n?.number).map((n) => n.number)),
+    // Search can come back empty without an error when the token can't search this
+    // repo (SSO not authorized, fine-grained tokens): the caller checks this.
+    openInRepo: data.repository.pullRequests.totalCount,
+  };
 }
 
 /** Open PRs matching `text` (title, body, number, branch or author), across the repo. */

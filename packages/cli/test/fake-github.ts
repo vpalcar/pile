@@ -15,10 +15,12 @@ export interface FakePR {
   updatedAt: string;
   author: string;
   requested: string[];
+  /** Team slugs whose review is requested. */
+  teams?: string[];
   checks: Array<{ name: string; status: "completed" | "in_progress"; conclusion: string | null }>;
 }
 
-export function fakeGitHub(options: { prs: number; viewer?: string; trunk?: string; graphql?: boolean }) {
+export function fakeGitHub(options: { prs: number; viewer?: string; trunk?: string; graphql?: boolean; searchBroken?: boolean; teams?: string[] }) {
   const graphqlEnabled = options.graphql ?? true;
   const viewer = options.viewer ?? "me";
   const trunk = options.trunk ?? "main";
@@ -52,7 +54,7 @@ export function fakeGitHub(options: { prs: number; viewer?: string; trunk?: stri
     head: { ref: p.head, sha: p.sha },
     base: { ref: p.base, sha: "base".padEnd(40, "0"), repo: { default_branch: trunk } },
     requested_reviewers: p.requested.map(user),
-    requested_teams: [],
+    requested_teams: (p.teams ?? []).map((slug) => ({ slug, name: slug })),
     labels: [],
     assignees: [],
     updated_at: p.updatedAt,
@@ -63,6 +65,7 @@ export function fakeGitHub(options: { prs: number; viewer?: string; trunk?: stri
 
   const routes: Array<[RegExp, (m: RegExpMatchArray, url: URL) => unknown]> = [
     [/^\/user$/, () => user(viewer)],
+    [/^\/user\/teams$/, () => (options.teams ?? []).map((slug) => ({ slug, name: slug, organization: { login: "o" } }))],
     [/^\/repos\/o\/r\/pulls$/, (_m, url) => {
       const page = Number(url.searchParams.get("page") ?? 1);
       const size = Number(url.searchParams.get("per_page") ?? 30);
@@ -128,9 +131,14 @@ export function fakeGitHub(options: { prs: number; viewer?: string; trunk?: stri
         data: {
           viewer: gqlUser(viewer),
           rateLimit,
-          repository: { defaultBranchRef: { name: trunk } },
-          mine: { nodes: prs.filter((p) => p.author === viewer).map(pick) },
-          review: { nodes: prs.filter((p) => p.requested.includes(viewer) && p.author !== viewer).map(pick) },
+          repository: { defaultBranchRef: { name: trunk }, pullRequests: { totalCount: prs.length } },
+          // A token that can't search this repo gets empty results, not an error.
+          mine: { nodes: options.searchBroken ? [] : prs.filter((p) => p.author === viewer).map(pick) },
+          review: {
+            nodes: options.searchBroken
+              ? []
+              : prs.filter((p) => (p.requested.includes(viewer) || (p.teams ?? []).some((t) => options.teams?.includes(t))) && p.author !== viewer).map(pick),
+          },
         },
       };
     }

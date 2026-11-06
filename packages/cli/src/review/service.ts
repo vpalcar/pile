@@ -96,6 +96,11 @@ export class ReviewService {
   /** The inbox query's PRs, by number: inbox rows and stack entries come from these. */
   private inboxNodes = new Map<number, InboxNode>();
   private graphqlViewer: { login: string; avatar_url: string } | null = null;
+  /** PRs requesting your review (directly or from one of your teams), per GraphQL search. */
+  private reviewRequested = new Set<number>();
+  /** Set when GitHub search returns nothing for a repo with open PRs: list them instead. */
+  private searchUnreliable = false;
+  private teamsPromise: Promise<Set<string>> | null = null;
   private openPRs: { at: number; prs: Promise<ListedPR[]> } | null = null;
   private memo = new Map<string, { at: number; value: Promise<unknown> }>();
 
@@ -134,9 +139,16 @@ export class ReviewService {
       const rest = () => this.octokit!.paginate(this.octokit!.pulls.list, { ...this.repo!, state: "open", per_page: 100 });
       // One GraphQL query brings every open PR with its reviews, checks and size, so
       // inbox rows and stack entries need no further requests.
-      const prs = this.graphql()
+      const prs = this.graphql() && !this.searchUnreliable
         ? fetchInboxGraphQL(this.octokit, this.repo).then(
-            ({ viewer, defaultBranch, nodes }) => {
+            ({ viewer, defaultBranch, nodes, requested, openInRepo }) => {
+              if (nodes.length === 0 && openInRepo > 0) {
+                // Nothing from search in a repo with open PRs: don't trust it.
+                this.searchUnreliable = true;
+                if (viewer) this.graphqlViewer = viewer as { login: string; avatar_url: string };
+                return rest();
+              }
+              this.reviewRequested = requested;
               // Keep what the slow pass knew (sizes, checks) for PRs that haven't changed.
               this.inboxNodes = new Map(
                 nodes.map((n) => {
@@ -161,7 +173,12 @@ export class ReviewService {
   /** The slow pass: the same PRs with sizes and check counts. */
   private async fullInboxGraphQL(): Promise<ListedPR[]> {
     try {
-      const { viewer, defaultBranch, nodes } = await fetchInboxGraphQL(this.octokit!, this.repo!, { full: true });
+      const { viewer, defaultBranch, nodes, requested, openInRepo } = await fetchInboxGraphQL(this.octokit!, this.repo!, { full: true });
+      if (nodes.length === 0 && openInRepo > 0) {
+        this.searchUnreliable = true;
+        throw new Error("GitHub search returned nothing for a repo with open pull requests");
+      }
+      this.reviewRequested = requested;
       if (viewer) this.graphqlViewer = viewer as { login: string; avatar_url: string };
       this.inboxNodes = new Map(nodes.map((n) => [n.number, n]));
       const listed = nodes.map((n) => listedFromNode(n, defaultBranch) as unknown as ListedPR);
@@ -169,7 +186,8 @@ export class ReviewService {
       this.openPRs = { at: Date.now(), prs: Promise.resolve(listed) };
       return listed;
     } catch (error) {
-      this.graphqlFailed(error);
+      // An empty search only means the inbox comes from the PR list; GraphQL stays on.
+      if (!this.searchUnreliable) this.graphqlFailed(error);
       throw error;
     }
   }
@@ -193,6 +211,20 @@ export class ReviewService {
       .filter((pr) => [pr.title, pr.head.ref, pr.user?.login ?? "", `#${pr.number}`].some((s) => s.toLowerCase().includes(q)))
       .slice(0, 25)
       .map((pr) => this.basicPRItem(pr));
+  }
+
+  /**
+   * Slugs of the teams you're on in this repo's organisation, so team review requests
+   * count as yours. One request, kept for the session; none needed when GraphQL search
+   * already says which PRs request you.
+   */
+  private viewerTeams(): Promise<Set<string>> {
+    if (!this.octokit || !this.repo || (this.graphql() && !this.searchUnreliable)) return Promise.resolve(new Set());
+    this.teamsPromise ??= this.octokit
+      .paginate(this.octokit.teams.listForAuthenticatedUser, { per_page: 100 })
+      .then((teams) => new Set(teams.filter((t) => t.organization.login.toLowerCase() === this.repo!.owner.toLowerCase()).map((t) => t.slug)))
+      .catch(() => new Set<string>());
+    return this.teamsPromise;
   }
 
   /** Whether reads go over GraphQL right now. */
@@ -383,15 +415,21 @@ export class ReviewService {
     // Over GraphQL the full inbox is the slower second pass (sizes and checks); the
     // quick one is the shared list of your PRs and review requests.
     // The full pass already has everything the quick list has, so it replaces it.
-    const prsP = enrich && this.graphql() ? this.fullInboxGraphQL().catch(() => this.listOpenPRs()) : this.listOpenPRs();
+    const prsP = enrich && this.graphql() && !this.searchUnreliable ? this.fullInboxGraphQL().catch(() => this.listOpenPRs()) : this.listOpenPRs();
     const [prs, refs, currentBranch] = await Promise.all([prsP, this.pile.git.getRefs(), this.pile.git.getCurrentBranch()]);
     const viewer = await this.viewer();
     const fromGraphQL = this.graphql() && this.inboxNodes.size + prs.length > 0 && prs.every((p) => this.inboxNodes.has(p.number));
 
     // Only PRs that are yours or wait on your review are enriched (checks, reviews,
     // size); everyone else's come from the list alone and only show up in search.
-    const yours = (pr: ListedPR) =>
-      !!viewer && (pr.user?.login === viewer.login || (pr.requested_reviewers ?? []).some((u) => u?.login === viewer.login));
+    const teams = await this.viewerTeams();
+    // Waiting for you: requested from you, or from a team you're on.
+    const requestedFromYou = (pr: ListedPR) =>
+      !!viewer &&
+      ((pr.requested_reviewers ?? []).some((u) => u?.login === viewer.login) ||
+        this.reviewRequested.has(pr.number) ||
+        (pr.requested_teams ?? []).some((t) => teams.has(t.slug)));
+    const yours = (pr: ListedPR) => !!viewer && (pr.user?.login === viewer.login || requestedFromYou(pr));
     const prItems =
       enrich || fromGraphQL
         ? await mapPRs(prs, (pr) => (yours(pr) ? this.inboxItem(pr, viewer?.login ?? null, refs, currentBranch) : Promise.resolve(this.basicPRItem(pr))))
@@ -414,7 +452,7 @@ export class ReviewService {
     const others: InboxItem[] = [];
     prs.forEach((pr, i) => {
       const item = prItems[i];
-      const requested = (pr.requested_reviewers ?? []).some((u) => u?.login === login);
+      const requested = requestedFromYou(pr);
       if (pr.user?.login === login) mine.push(item);
       else if (requested) needsReview.push(item);
       else others.push(item);
@@ -1085,7 +1123,11 @@ export class ReviewService {
 
   /** GitHub requests made so far and what's left of the hourly rate limit. */
   usage() {
-    return this.octokit ? (apiUsage(this.octokit) ?? null) : null;
+    const usage = this.octokit ? apiUsage(this.octokit) : undefined;
+    if (!usage) return null;
+    // How the inbox is being read, for working out why something looks off.
+    const mode = !this.graphql() ? "rest" : this.searchUnreliable ? "graphql, inbox from the PR list (search returned nothing)" : "graphql";
+    return { ...usage, mode, graphqlOffReason: this.graphql() ? null : this.graphqlOffReason };
   }
 
   /** People and labels a PR can be given; cached for a few minutes. */
