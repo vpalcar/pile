@@ -267,8 +267,6 @@ export class ReviewService {
       fetchChecks(octokit, repo, pr.head.sha),
       localState(this.pile, pr.head.ref, refs, currentBranch),
     ]);
-    const requested = (pr.requested_reviewers?.length ?? 0) + (pr.requested_teams?.length ?? 0);
-    const mine = latestReviews(reviews).get(viewer ?? "");
     return {
       ref: { kind: "pr", number: pr.number },
       id: `pr-${pr.number}`,
@@ -280,7 +278,7 @@ export class ReviewService {
       updatedAt: pr.updated_at,
       additions: full.additions,
       deletions: full.deletions,
-      reviewDecision: mine && pr.user?.login !== viewer ? reviewStateOf(mine.state) : reviewDecision(reviews, requested),
+      reviewDecision: decisionFor(reviews, pr, viewer),
       checks: summarizeChecks(checks),
       stack: full.stack ? { index: full.stack.position, size: full.stack.size, nativeStack: full.stack.number } : null,
       local,
@@ -413,6 +411,7 @@ export class ReviewService {
       assignees: (pr.assignees ?? []).map((a) => person(a)!),
       mergeable: pr.mergeable,
       mergeableState: pr.mergeable_state,
+      reviewDecision: decisionFor(reviews, pr, viewer?.login ?? null),
       files,
       local,
       can: {
@@ -536,6 +535,7 @@ export class ReviewService {
       assignees: [],
       mergeable: null,
       mergeableState: null,
+      reviewDecision: null,
       files,
       local,
       can: { review: false, comment: false, merge: false },
@@ -604,6 +604,20 @@ export class ReviewService {
       body: { error: error instanceof Error ? error.message : String(error), code: status ? `GITHUB_${status}` : "ERROR" },
     };
   }
+}
+
+/**
+ * What the PR needs from review, the same for the inbox and the PR page: for
+ * someone else's PR the viewer's own latest verdict, otherwise the overall state.
+ */
+function decisionFor(
+  reviews: Array<{ user: { login: string } | null; state: string; submitted_at?: string | null }>,
+  pr: { user: { login: string } | null; requested_reviewers?: unknown[] | null; requested_teams?: unknown[] | null },
+  viewer: string | null,
+): InboxItem["reviewDecision"] {
+  const requested = (pr.requested_reviewers?.length ?? 0) + (pr.requested_teams?.length ?? 0);
+  const mine = viewer ? latestReviews(reviews).get(viewer) : undefined;
+  return mine && pr.user?.login !== viewer ? reviewStateOf(mine.state) : reviewDecision(reviews, requested);
 }
 
 function reviewStateOf(state: string): InboxItem["reviewDecision"] {
