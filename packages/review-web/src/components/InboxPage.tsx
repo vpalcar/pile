@@ -1,5 +1,5 @@
-import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUpRight, GitBranch, Layers, MessageSquare, Search, Sparkles } from "lucide-react";
+import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ArrowUpRight, ChevronDown, GitBranch, Layers, MessageSquare, Search, Sparkles } from "lucide-react";
 import type { Inbox, InboxGroup, InboxItem, Session } from "../api";
 import { prefetchDetail } from "../lib/queries";
 import { itemReadiness } from "../lib/status";
@@ -29,6 +29,8 @@ const GROUP_TITLES: Record<InboxGroup["id"], string> = {
  * Row columns, shared by every row so badges, sizes and times line up:
  * icon · title · status · checks · comments · size · time · arrow
  */
+/** PRs a section shows before "Show all" (whole stacks, so it can be a few more). */
+const SECTION_LIMIT = 10;
 /** How many PRs "Recently in review" shows. */
 const RECENT = 5;
 const ROW_GRID = "grid grid-cols-[22px_minmax(0,1fr)_136px_10px_40px_96px_44px_14px] items-center gap-x-3";
@@ -71,7 +73,25 @@ export function InboxPage({ inbox, session, loading, onSearch }: { inbox: Inbox 
   );
 
   // Display order: stacks top first, as drawn, so j / k move the way the rows read.
-  const visible = useMemo(() => groups.flatMap((g) => clusters(g.items).flatMap((c) => c.items)), [groups]);
+  // Sections fold (remembered), and long ones show their first ~10 PRs, whole stacks only.
+  const [collapsed, setCollapsed] = usePersisted<Record<string, boolean>>("pile:inbox-collapsed", {});
+  const [showAll, setShowAll] = useState<Record<string, boolean>>({});
+  const toggle = (id: string) => setCollapsed((c) => ({ ...c, [id]: !c[id] }));
+  const shown = useMemo(() => {
+    const result = new Map<string, ReturnType<typeof clusters>>();
+    for (const g of groups) {
+      if (collapsed[g.id]) {
+        result.set(g.id, []);
+        continue;
+      }
+      const all = clusters(g.items);
+      let count = 0;
+      result.set(g.id, showAll[g.id] ? all : all.filter((c) => (count += c.items.length) - c.items.length < SECTION_LIMIT));
+    }
+    return result;
+  }, [groups, collapsed, showAll]);
+  // j / k move through the rows on screen.
+  const visible = useMemo(() => groups.flatMap((g) => (shown.get(g.id) ?? []).flatMap((c) => c.items)), [groups, shown]);
   const index = Math.max(0, visible.findIndex((i) => i.id === cursor));
   const counts = useMemo(() => {
     const all = inbox?.groups ?? [];
@@ -189,27 +209,36 @@ export function InboxPage({ inbox, session, loading, onSearch }: { inbox: Inbox 
           <Fragment key={group.id}>
           {/* Under All, right after what waits for your review (or first, if nothing does). */}
           {filter === "all" && recent.length > 0 && group === (groups.find((g) => g.id !== "needs_review") ?? groups[groups.length - 1]) && group.id !== "needs_review" && (
-            <RecentSection items={recent} />
+            <RecentSection items={recent} collapsed={!!collapsed.recent} onToggle={() => toggle("recent")} />
           )}
-          <section className="mt-7">
-            <h2 className="mb-2.5 ml-0.5 flex h-5 items-center gap-2 text-[13px] font-semibold leading-none tracking-[-0.005em]">
-              {GROUP_TITLES[group.id]}
-              <span className="font-normal text-fg-3 tabular">{group.items.length}</span>
+          <section className="mt-7" data-section={group.id}>
+            <SectionHeader title={GROUP_TITLES[group.id]} count={group.items.length} collapsed={!!collapsed[group.id]} onToggle={() => toggle(group.id)}>
               {inbox?.partial && <span className="animate-pulse-soft tracking-[2px] text-fg-3">···</span>}
-            </h2>
-            {group.items.length === 0 ? (
+            </SectionHeader>
+            {collapsed[group.id] ? null : group.items.length === 0 ? (
               <div className="flex h-14 items-center justify-center gap-2 rounded-xl border border-line bg-panel text-fg-2">
                 <Sparkles size={15} className="shrink-0" /> You're all caught up.
               </div>
             ) : (
               <div className="flex flex-col gap-2">
-                {clusters(group.items).map((cluster) =>
+                {(shown.get(group.id) ?? []).map((cluster) =>
                   cluster.items.length > 1 ? (
                     <StackCluster key={cluster.key} cluster={cluster} cursor={visible[index]?.id} onHover={setCursor} loading={!!inbox?.partial} />
                   ) : (
                     <Row key={cluster.key} item={cluster.items[0]} active={visible[index]?.id === cluster.items[0].id} onHover={setCursor} loading={!!inbox?.partial} />
                   ),
                 )}
+                {(() => {
+                  const hidden = group.items.length - (shown.get(group.id) ?? []).reduce((n, c) => n + c.items.length, 0);
+                  return hidden > 0 ? (
+                    <button
+                      className="flex h-10 items-center justify-center gap-1.5 rounded-xl border border-dashed border-line-2 text-[12.5px] text-fg-2 hover:border-line-3 hover:bg-hover hover:text-fg"
+                      onClick={() => setShowAll((s) => ({ ...s, [group.id]: true }))}
+                    >
+                      <ChevronDown size={13} /> Show all {group.items.length} <span className="text-fg-3">({hidden} more)</span>
+                    </button>
+                  ) : null;
+                })()}
               </div>
             )}
           </section>
@@ -217,7 +246,7 @@ export function InboxPage({ inbox, session, loading, onSearch }: { inbox: Inbox 
         ))
       )}
       {!(loading && !inbox) && filter === "all" && recent.length > 0 && groups.every((g) => g.id === "needs_review") && (
-        <RecentSection items={recent} />
+        <RecentSection items={recent} collapsed={!!collapsed.recent} onToggle={() => toggle("recent")} />
       )}
 
       <footer className="mt-10 flex justify-center gap-5 text-xs text-fg-3">
@@ -240,19 +269,39 @@ export function InboxPage({ inbox, session, loading, onSearch }: { inbox: Inbox 
 }
 
 /** The latest open PRs among yours and those waiting on you, one row each. */
-function RecentSection({ items }: { items: InboxItem[] }) {
+function RecentSection({ items, collapsed, onToggle }: { items: InboxItem[]; collapsed: boolean; onToggle: () => void }) {
   return (
     <section className="mt-7" data-recent>
-      <h2 className="mb-2.5 ml-0.5 flex h-5 items-center gap-2 text-[13px] font-semibold leading-none tracking-[-0.005em]">
-        Recently in review
+      <SectionHeader title="Recently in review" count={items.length} collapsed={collapsed} onToggle={onToggle}>
         <span className="font-normal text-fg-3">latest activity first</span>
-      </h2>
-      <div className="flex flex-col gap-2">
-        {items.map((item) => (
-          <Row key={item.id} item={item} active={false} onHover={() => {}} showStack recent />
-        ))}
-      </div>
+      </SectionHeader>
+      {!collapsed && (
+        <div className="flex flex-col gap-2">
+          {items.map((item) => (
+            <Row key={item.id} item={item} active={false} onHover={() => {}} showStack recent />
+          ))}
+        </div>
+      )}
     </section>
+  );
+}
+
+/** A section's title and count; click to fold the section away. */
+function SectionHeader({ title, count, collapsed, onToggle, children }: { title: string; count: number; collapsed: boolean; onToggle: () => void; children?: ReactNode }) {
+  return (
+    <h2 className={cx("ml-0.5 flex h-6 items-center gap-2 text-[13px] font-semibold leading-none tracking-[-0.005em]", collapsed ? "mb-0" : "mb-2")}>
+      <button
+        className="-ml-2 inline-flex h-6 items-center gap-1.5 rounded-md pl-1 pr-2 transition-colors hover:bg-hover"
+        aria-expanded={!collapsed}
+        onClick={onToggle}
+        data-tip={collapsed ? "Show" : "Hide"}
+      >
+        <ChevronDown size={14} className={cx("shrink-0 text-fg-3 transition-transform duration-150", collapsed && "-rotate-90")} />
+        {title}
+        <span className="font-normal text-fg-3 tabular">{count}</span>
+      </button>
+      {children}
+    </h2>
   );
 }
 

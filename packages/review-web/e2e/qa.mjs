@@ -216,6 +216,26 @@ await check("rows show the author's picture", async () => {
   expect((await author.innerText()).includes("alice"), await author.innerText());
   expect((await author.locator("img, span[aria-hidden]").count()) === 1, "avatar next to the name");
 });
+await check("sections fold away, and stay folded after a reload", async () => {
+  const header = page.locator('[data-section="needs_review"] h2 button');
+  await header.click();
+  expect((await header.getAttribute("aria-expanded")) === "false", "folded");
+  expect((await page.locator('[data-section="needs_review"] [data-row]').count()) === 0, "rows hidden");
+  await page.reload();
+  await page.waitForSelector("[data-page=inbox]");
+  expect((await page.locator('[data-section="needs_review"] h2 button').getAttribute("aria-expanded")) === "false", "still folded");
+  expect((await page.locator('[data-section="needs_review"] h2').innerText()).includes("3"), "count still shown");
+  await shot("section folded");
+  await page.locator('[data-section="needs_review"] h2 button').click();
+  expect((await page.locator('[data-section="needs_review"] [data-row]').count()) === 3, "unfolded");
+});
+await check("long sections show about ten PRs, then Show all", async () => {
+  const mine = page.locator('[data-section="mine"]');
+  const before = await mine.locator("[data-row]").count();
+  expect(before >= 10 && before < 18, `rows before: ${before}`);
+  await mine.getByRole("button", { name: /Show all 18/ }).click();
+  expect((await mine.locator("[data-row]").count()) === 18, "all 18");
+});
 await check("filters with 1–4 and shows only that group", async () => {
   await page.keyboard.press("2");
   expect((await page.locator("section h2").allInnerTexts()).every((t) => t.startsWith("Waiting for your review")), "only needs-review");
@@ -1008,6 +1028,10 @@ await check("merge: higher up, the stack is blocked by the PRs below", async () 
 });
 await check("diverging stack in the inbox: one card, every branch on its own lane", async () => {
   await open();
+  // It sits past the first ten of your PRs.
+  const more = page.locator('[data-section="mine"]').getByRole("button", { name: /Show all/ });
+  await page.waitForSelector("[data-page=inbox]:not([data-partial])");
+  await more.click();
   const card = page.locator("div.rounded-\\[14px\\]", { hasText: "Index documents for search" });
   const header = (await card.innerText()).replace(/\s+/g, " ");
   expect(header.includes("Stack of 6 on main · 3 branches"), header.slice(0, 80));

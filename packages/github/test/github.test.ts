@@ -272,3 +272,20 @@ describe("async merge (native stacks)", () => {
     ]);
   });
 });
+
+describe("createOctokit logging", () => {
+  it("drops Octokit's per-request lines (304s from the ETag cache) and keeps other errors", async () => {
+    const { createOctokit } = await import("../src/client.js");
+    const errors: unknown[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => void errors.push(args.join(" "));
+    try {
+      const octokit = createOctokit("token");
+      octokit.log.error("GET /repos/o/r/pulls/1/files?per_page=100 - 304 with id CC14:1618C7 in 361ms");
+      octokit.log.error("Something else broke");
+    } finally {
+      console.error = original;
+    }
+    expect(errors).toEqual(["Something else broke"]);
+  });
+});
