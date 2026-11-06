@@ -391,6 +391,16 @@ function buildDetail(number) {
     };
   }
   if (number === 110) return { ...base, bodyHtml: null, files: [files[0]], timeline: [], checks: [], checksSummary: null, reviewers: [{ person: person("frank"), state: "approved" }] };
+  // A big repo's CI: dozens of checks, most passing or skipped.
+  if (number === 131) {
+    const many = [
+      { name: "typescript / TypeScript apps check", state: "failure", summary: "3 errors", url: null, durationSeconds: 138, jobId: 8001 },
+      ...["e2e / chrome", "e2e / safari"].map((name, i) => ({ name, state: "pending", summary: null, url: null, durationSeconds: null, jobId: 8100 + i })),
+      ...Array.from({ length: 18 }, (_, i) => ({ name: `conventions / check ${i + 1}`, state: "success", summary: null, url: null, durationSeconds: 8 + i, jobId: 8200 + i })),
+      ...Array.from({ length: 26 }, (_, i) => ({ name: `deploy / preview ${i + 1}`, state: "neutral", summary: "Skipped", url: null, durationSeconds: null, jobId: null })),
+    ];
+    return { ...base, checks: many, checksSummary: { state: "failure", total: 47, passed: 18, failed: 1, pending: 2 } };
+  }
   if (number === 113) return { ...base, bodyHtml: "<p>Mechanical upgrade.</p>", files: [files[5], files[6]] };
   return base;
 }

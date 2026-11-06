@@ -408,7 +408,7 @@ await check("composer: an unsent draft survives leaving the page", async () => {
 });
 await check("rail: status, checks with durations, reviewers, labels, assignees", async () => {
   const rail = (await text("[data-page=detail] > aside")).replace(/\s+/g, " ");
-  for (const part of ["Checks failing", "2 passed · 1 failed · 1 running", "typecheck", "42s", "1m 35s", "frank", "Approved", "erin", "Changes requested", "grace", "Commented", "platform-team", "Requested", "api", "security", "alice", "bob"]) {
+  for (const part of ["Checks failing", "1 failed · 1 running · 2 passed", "typecheck", "42s", "1m 35s", "frank", "Approved", "erin", "Changes requested", "grace", "Commented", "platform-team", "Requested", "api", "security", "alice", "bob"]) {
     expect(rail.includes(part), `missing "${part}"`);
   }
   const order = await page.locator("[data-page=detail] > aside a[href*='example.com/ci'], [data-page=detail] > aside a:not([href])").allInnerTexts();
@@ -873,6 +873,24 @@ await check("status checks without a job can't be re-run", async () => {
   const row = rail().locator("div.group\\/check", { hasText: "preview deploy" });
   await row.hover();
   expect((await row.getByRole("button").count()) === 0, "no re-run on a status");
+});
+await check("many checks: what needs attention shows, passed and skipped fold away", async () => {
+  await open("#/pr/131");
+  await detailReady();
+  const summary = await text("[data-checks-summary]");
+  expect(summary === "1 failed · 2 running · 18 passed", summary);
+  expect((await count("aside [data-check=failure]")) === 1 && (await count("aside [data-check=pending]")) === 2, "failing and running are listed");
+  expect((await count("aside [data-check=success], aside [data-check=neutral]")) === 0, "passed and skipped start folded");
+  const folded = await page.locator("aside").last().boundingBox();
+  expect(folded.height < 900, `rail is ${Math.round(folded.height)}px tall`);
+  await shot("many checks folded");
+  await page.locator("aside button", { hasText: "18 passed" }).click();
+  expect((await count("aside [data-check=success]")) === 18, "passed expand");
+  await page.locator("aside button", { hasText: "18 passed" }).click();
+  expect((await count("aside [data-check=success]")) === 0, "and fold again");
+  await page.locator("aside button", { hasText: "26 skipped" }).click();
+  expect((await count("aside [data-check=neutral]")) === 26, "skipped expand");
+  await shot("many checks skipped open");
 });
 await check("draft → ready for review, and back", async () => {
   await open("#/pr/112");

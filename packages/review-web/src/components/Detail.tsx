@@ -675,6 +675,7 @@ function Rail({ detail, status, actions }: { detail: DetailData; status: Readine
           passed: detail.checks.filter((c) => c.state === "success").length,
           failed: detail.checks.filter((c) => c.state === "failure").length,
           pending: detail.checks.filter((c) => c.state === "pending").length,
+          skipped: detail.checks.filter((c) => c.state === "neutral").length,
         }
       : null;
   const row = "-mx-1.5 flex min-h-7 items-center gap-2 rounded-md px-1.5 text-fg no-underline";
@@ -762,9 +763,15 @@ function Rail({ detail, status, actions }: { detail: DetailData; status: Readine
             Checks
             <span className="flex-1" />
             {summary && (
-              <span className="tabular">
-                {summary.failed || summary.pending
-                  ? [summary.passed && `${summary.passed} passed`, summary.failed && `${summary.failed} failed`, summary.pending && `${summary.pending} running`]
+              <span className="truncate whitespace-nowrap tabular" data-checks-summary>
+                {summary.failed || summary.pending || summary.skipped
+                  ? [
+                      summary.failed && `${summary.failed} failed`,
+                      summary.pending && `${summary.pending} running`,
+                      summary.passed && `${summary.passed} passed`,
+                      // Only when nothing needs attention; otherwise its own row says it.
+                      !summary.failed && !summary.pending && summary.skipped && `${summary.skipped} skipped`,
+                    ]
                       .filter(Boolean)
                       .join(" · ")
                   : `${summary.passed} of ${summary.total} passed`}
@@ -776,39 +783,11 @@ function Rail({ detail, status, actions }: { detail: DetailData; status: Readine
               <i className="h-full bg-ok transition-[width] duration-500" style={{ width: `${(summary.passed / summary.total) * 100}%` }} />
               <i className="h-full bg-warn transition-[width] duration-500" style={{ width: `${(summary.pending / summary.total) * 100}%` }} />
               <i className="h-full bg-bad transition-[width] duration-500" style={{ width: `${(summary.failed / summary.total) * 100}%` }} />
+              {/* Skipped checks didn't fail: grey, not empty track. */}
+              <i className="h-full bg-line-3 transition-[width] duration-500" style={{ width: `${(summary.skipped / summary.total) * 100}%` }} />
             </div>
           )}
-          <div className="flex flex-col gap-0.5">
-            {detail.checks.length === 0 && <span className="text-xs text-fg-3">No checks reported.</span>}
-            {detail.checks.map((check) => (
-              <div key={check.name} className={cx(row, "group/check relative hover:bg-hover")} data-tip={check.summary ?? undefined}>
-                <CheckIcon state={check.state} />
-                <a className="min-w-0 flex-1 truncate text-fg no-underline after:absolute after:inset-0" href={check.url ?? undefined} target="_blank" rel="noreferrer">
-                  {check.name}
-                </a>
-                {check.durationSeconds !== null && (
-                  <span className={cx("shrink-0 text-[11.5px] text-fg-3 tabular", check.jobId !== null && check.state !== "pending" && "group-hover/check:hidden")}>
-                    {formatDuration(check.durationSeconds)}
-                  </span>
-                )}
-                {check.jobId !== null && check.state !== "pending" && (
-                  <span className="relative z-[1] -mr-1 hidden group-focus-within/check:flex group-hover/check:flex">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    icon
-                    aria-label={`Re-run ${check.name}`}
-                    data-tip="Re-run"
-                    disabled={busy === `check-${check.name}`}
-                    onClick={() => run(`check-${check.name}`, () => actions.rerun(check))}
-                  >
-                    <RotateCw size={12} />
-                  </Button>
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
+          <ChecksList checks={detail.checks} row={row} busy={busy} onRerun={(check) => run(`check-${check.name}`, () => actions.rerun(check))} />
           {rerunnable.length > 0 && (
             <Button size="sm" variant="ghost" className="-ml-1.5 mt-1.5 text-fg-2" disabled={busy === "rerun"} onClick={() => run("rerun", () => actions.rerun())}>
               {busy === "rerun" ? <Spinner size={11} /> : <RotateCw size={12} />}
@@ -1100,6 +1079,67 @@ function StatusCard({ detail, status, actions }: { detail: DetailData; status: R
             )}
           </div>
         )
+      )}
+    </div>
+  );
+}
+
+/**
+ * Checks, with what needs attention first: failing and running checks are always
+ * listed; passed and skipped ones fold into a summary row each once there are more
+ * than a handful, so a repo with dozens of checks doesn't make the rail endless.
+ */
+function ChecksList({ checks, row, busy, onRerun }: { checks: CheckRun[]; row: string; busy: string | null; onRerun: (check: CheckRun) => void }) {
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  if (checks.length === 0) return <span className="text-xs text-fg-3">No checks reported.</span>;
+  const fold = checks.length > 6;
+  const groups: Array<{ key: string; label: string; state: CheckRun["state"]; items: CheckRun[] }> = [
+    { key: "passed", label: "passed", state: "success", items: checks.filter((c) => c.state === "success") },
+    { key: "skipped", label: "skipped", state: "neutral", items: checks.filter((c) => c.state === "neutral" || c.state === "none") },
+  ];
+  const urgent = checks.filter((c) => c.state === "failure" || c.state === "pending");
+  const item = (check: CheckRun) => (
+    <div key={check.name} className={cx(row, "group/check relative hover:bg-hover")} data-tip={check.summary ?? undefined} data-check={check.state}>
+      <CheckIcon state={check.state} />
+      <a className="min-w-0 flex-1 truncate text-fg no-underline after:absolute after:inset-0" href={check.url ?? undefined} target="_blank" rel="noreferrer">
+        {check.name}
+      </a>
+      {check.durationSeconds !== null && (
+        <span className={cx("shrink-0 text-[11.5px] text-fg-3 tabular", check.jobId !== null && check.state !== "pending" && "group-hover/check:hidden")}>
+          {formatDuration(check.durationSeconds)}
+        </span>
+      )}
+      {check.jobId !== null && check.state !== "pending" && (
+        <span className="relative z-[1] -mr-1 hidden group-focus-within/check:flex group-hover/check:flex">
+          <Button variant="ghost" size="sm" icon aria-label={`Re-run ${check.name}`} data-tip="Re-run" disabled={busy === `check-${check.name}`} onClick={() => onRerun(check)}>
+            <RotateCw size={12} />
+          </Button>
+        </span>
+      )}
+    </div>
+  );
+  if (!fold) return <div className="flex flex-col gap-0.5">{checks.map(item)}</div>;
+  return (
+    <div className="flex flex-col gap-0.5">
+      {urgent.map(item)}
+      {groups.map(
+        (group) =>
+          group.items.length > 0 && (
+            <div key={group.key} className="flex flex-col gap-0.5">
+              <button
+                className={cx(row, "w-full text-left text-fg-2 hover:bg-hover hover:text-fg")}
+                aria-expanded={!!open[group.key]}
+                onClick={() => setOpen((o) => ({ ...o, [group.key]: !o[group.key] }))}
+              >
+                <CheckIcon state={group.state} />
+                <span className="flex-1">
+                  {group.items.length} {group.label}
+                </span>
+                <ChevronDown size={13} className={cx("shrink-0 text-fg-3 transition-transform duration-150", !open[group.key] && "-rotate-90")} />
+              </button>
+              {open[group.key] && <div className="ml-3 flex flex-col gap-0.5 border-l border-line pl-1.5">{group.items.map(item)}</div>}
+            </div>
+          ),
       )}
     </div>
   );
