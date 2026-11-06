@@ -172,3 +172,28 @@ describe("local branches without GitHub", () => {
     await expect(service.detail({ kind: "branch", name: "nope" })).rejects.toMatchObject({ code: "BRANCH_NOT_FOUND" });
   });
 });
+
+describe("inbox freshness", () => {
+  it("keeps serving the full inbox after a change, never falling back to the quick list", async () => {
+    const pile = await createPile(createCliRepo().dir);
+    const service = new ReviewService(pile, null);
+    // Pretend GitHub is configured and count full builds instead of calling it.
+    let builds = 0;
+    Object.assign(service, {
+      octokit: {},
+      loadInbox: async (enrich: boolean) => ({ groups: [], fetchedAt: enrich ? `full ${++builds}` : "quick", partial: !enrich }),
+    });
+
+    expect(await service.inbox()).toMatchObject({ partial: true }); // nothing built yet
+    await (service as unknown as { refreshInbox(): Promise<unknown> }).refreshInbox();
+    expect(await service.inbox()).toMatchObject({ partial: false });
+    const before = builds;
+
+    service.invalidate({ kind: "pr", number: 1 });
+    // Stale, but still the full one while its replacement is built.
+    expect(await service.inbox()).toMatchObject({ partial: false });
+    // An explicit refresh waits for the new full inbox.
+    expect((await service.inbox({ fresh: true })).fetchedAt).toBe(`full ${builds}`);
+    expect(builds).toBeGreaterThan(before);
+  });
+});

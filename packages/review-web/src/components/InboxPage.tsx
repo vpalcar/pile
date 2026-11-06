@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUpRight, GitBranch, Layers, MessageSquare, Search, Sparkles } from "lucide-react";
 import type { Inbox, InboxGroup, InboxItem, Session } from "../api";
-import { api, prefetch, refKey } from "../lib/client";
+import { prefetchDetail } from "../lib/queries";
 import { itemReadiness } from "../lib/status";
 import { modKey, navigate, plural, timeAgo, useNow, useShortcuts, usePersisted } from "../lib/util";
 import { ChecksDot, cx, Kbd, Pill, PRStateIcon, StatusBadge } from "./ui";
@@ -86,7 +86,7 @@ export function InboxPage({ inbox, session, loading }: { inbox: Inbox | undefine
 
   // Warm the first few so opening them is instant.
   useEffect(() => {
-    visible.slice(0, 6).forEach((i) => prefetch(refKey(i.ref), () => api.detail(i.ref)));
+    visible.slice(0, 6).forEach((i) => prefetchDetail(i.ref));
   }, [visible]);
 
   useEffect(() => {
@@ -97,7 +97,7 @@ export function InboxPage({ inbox, session, loading }: { inbox: Inbox | undefine
     const next = visible[Math.min(visible.length - 1, Math.max(0, index + delta))];
     if (next) {
       setCursor(next.id);
-      prefetch(refKey(next.ref), () => api.detail(next.ref));
+      prefetchDetail(next.ref);
     }
   };
 
@@ -321,7 +321,7 @@ const Row = memo(function Row({ item, active, onHover, stacked }: { item: InboxI
       }}
       onMouseEnter={() => {
         onHover(item.id);
-        prefetch(refKey(item.ref), () => api.detail(item.ref));
+        prefetchDetail(item.ref);
       }}
     >
       {stacked ? (
