@@ -54,6 +54,7 @@
   --hunk-text: #8b9dd6;
   --primary-bg: #ededef;
   --primary-text: #0b0b0c;
+  --ok-text: #04140c; /* on a solid green button */
   --scrim: rgba(0, 0, 0, 0.55);
   --pop: 0 0 0 1px var(--border-2), 0 16px 48px -12px rgba(0, 0, 0, 0.7);
   --topbar-h: 52px;
@@ -96,6 +97,7 @@
     --hunk-text: #5267b5;
     --primary-bg: #18181b;
     --primary-text: #fafafa;
+    --ok-text: #ffffff;
     --scrim: rgba(20, 20, 25, 0.25);
     --pop: 0 0 0 1px var(--border-2), 0 16px 40px -14px rgba(20, 20, 30, 0.25);
   }
@@ -136,6 +138,7 @@
   --hunk-text: #5267b5;
   --primary-bg: #18181b;
   --primary-text: #fafafa;
+  --ok-text: #ffffff;
   --scrim: rgba(20, 20, 25, 0.25);
   --pop: 0 0 0 1px var(--border-2), 0 16px 40px -14px rgba(20, 20, 30, 0.25);
 }
@@ -170,6 +173,7 @@
   --color-merged-soft: var(--purple-soft);
   --color-primary: var(--primary-bg);
   --color-on-primary: var(--primary-text);
+  --color-on-ok: var(--ok-text);
   --color-scrim: var(--scrim);
   --shadow-pop: var(--pop);
   --ease-soft: cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -243,6 +247,10 @@
   .rail-first .rail-node::before { top: 50%; }
   .rail-last .rail-node::before { bottom: 50%; }
   .rail-dashed::before { background: linear-gradient(var(--border-3) 50%, transparent 50%) 0 0 / 1.5px 5px; }
+  /* Stack rails drawn per row (see StackRail): straight lines and branch elbows. */
+  .rail-line { position: absolute; width: 1.5px; margin-left: -0.75px; background: var(--border-3); }
+  .rail-line-dashed { background: linear-gradient(var(--border-3) 50%, transparent 50%) 0 0 / 1.5px 5px; }
+  .rail-join { position: absolute; box-sizing: border-box; border: 0 solid var(--border-3); border-right-width: 1.5px; border-bottom-width: 1.5px; border-bottom-right-radius: 9px; }
 
   /* GitHub-rendered markdown */
   .markdown { color: var(--text); line-height: 1.6; overflow-wrap: anywhere; }
@@ -296,8 +304,9 @@
   .diff-table .split-divider { background: var(--border); }
   .diff-table tr.hunk td { background: var(--hunk-bg); color: var(--hunk-text); }
   /* Threads start where the code does: after both gutters (unified) or one (split). */
-  .diff-table tr.thread > td { padding: 8px 16px 12px 138px; font: 13px/1.55 var(--font-sans); white-space: normal; }
-  .diff-table tr.split-thread > td { padding: 8px 12px 12px 68px; }
+  /* Threads start where the code does: right after the line-number column(s). */
+  .diff-table tr.thread > td { padding: 8px 16px 12px var(--gutter, 120px); font: 13px/1.55 var(--font-sans); white-space: normal; }
+  .diff-table tr.split-thread > td { padding: 8px 12px 12px 60px; }
   .diff-table tr.split-thread > td:empty, .diff-table tr.split-thread > td.split-divider { padding: 0; }
 
   /* The "+" shown on hover over a line number: a centred square inside the gutter. */

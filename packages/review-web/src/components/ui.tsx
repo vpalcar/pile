@@ -24,7 +24,7 @@ const VARIANTS: Record<Variant, string> = {
   default: "border-line-2 bg-panel-2 text-fg hover:bg-panel-3 hover:border-line-3",
   primary: "border-transparent bg-primary text-on-primary hover:opacity-90",
   ghost: "border-transparent bg-transparent text-fg-2 hover:bg-hover hover:text-fg",
-  success: "border-transparent bg-ok text-[#04140c] hover:opacity-90",
+  success: "border-transparent bg-ok text-on-ok hover:opacity-90",
   danger: "border-bad/35 bg-bad-soft text-bad hover:bg-bad/20",
 };
 

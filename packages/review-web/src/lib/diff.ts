@@ -12,6 +12,8 @@ export interface DiffLine {
   newNumber: number | null;
   /** "\ No newline at end of file" follows this line. */
   noNewline?: boolean;
+  /** Context revealed by expanding: outside the diff, so GitHub takes no comments on it. */
+  expanded?: boolean;
 }
 
 export interface Hunk {
@@ -131,7 +133,7 @@ export function gapLines(gap: Gap, fileLines: string[], from: number, to: number
   for (let offset = from; offset < to; offset++) {
     const newNumber = gap.newStart + offset;
     if (newNumber > fileLines.length) break;
-    lines.push({ kind: "context", text: fileLines[newNumber - 1], oldNumber: gap.oldStart + offset, newNumber });
+    lines.push({ kind: "context", text: fileLines[newNumber - 1], oldNumber: gap.oldStart + offset, newNumber, expanded: true });
   }
   return lines;
 }

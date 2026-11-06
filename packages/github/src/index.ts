@@ -12,6 +12,9 @@ export {
   getPRStatus,
 } from "./types.js";
 
+// Merge rules
+export { blockingReasons, getBlockingReasons, type BlockingReason, type MergeSignals } from "./merge-rules.js";
+
 // Client
 export {
   GitHubClient,

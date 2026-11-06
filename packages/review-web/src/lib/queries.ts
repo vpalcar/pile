@@ -1,5 +1,6 @@
 import { QueryClient, useQuery } from "@tanstack/react-query";
-import type { Detail, ItemRef } from "../api";
+import { useCallback } from "react";
+import type { Detail, ItemRef, Preferences } from "../api";
 import { api, RequestError } from "./client";
 import { keepKnownSignals } from "./inbox";
 
@@ -22,6 +23,7 @@ export const keys = {
   inbox: ["inbox"] as const,
   detail: (ref: ItemRef) => ["detail", refKey(ref)] as const,
   options: ["options"] as const,
+  preferences: ["preferences"] as const,
 };
 
 /**
@@ -76,3 +78,24 @@ export const prefetchDetail = (ref: ItemRef) =>
 // Repository options (reviewers, assignees, labels)
 
 export const useOptions = (enabled: boolean) => useQuery({ queryKey: keys.options, queryFn: api.options, enabled, staleTime: 5 * 60_000 });
+
+// -----------------------------------------------------------------------------
+// Preferences (theme, diff layout): saved by the server in ~/.config/pile/review.json
+
+type Pref<K extends keyof Preferences> = NonNullable<Preferences[K]>;
+
+/** One preference, its setter applying at once and saving in the background. */
+export function usePreference<K extends keyof Preferences>(key: K, fallback: Pref<K>): [Pref<K>, (next: Pref<K> | ((current: Pref<K>) => Pref<K>)) => void] {
+  const { data } = useQuery({ queryKey: keys.preferences, queryFn: api.preferences, staleTime: Infinity });
+  const value = (data?.[key] ?? fallback) as Pref<K>;
+  const set = useCallback(
+    (next: Pref<K> | ((current: Pref<K>) => Pref<K>)) => {
+      const current = (queryClient.getQueryData<Preferences>(keys.preferences)?.[key] ?? fallback) as Pref<K>;
+      const resolved = typeof next === "function" ? (next as (c: Pref<K>) => Pref<K>)(current) : next;
+      queryClient.setQueryData<Preferences>(keys.preferences, (p) => ({ ...p, [key]: resolved }));
+      api.setPreferences({ [key]: resolved } as Preferences).catch(() => {});
+    },
+    [key, fallback],
+  );
+  return [value, set];
+}
