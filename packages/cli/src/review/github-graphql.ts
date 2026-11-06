@@ -182,6 +182,20 @@ export async function stackNeighboursGraphQL(octokit: Octokit, repo: Repo, { hea
   };
 }
 
+/** Open PRs by number, with reviews and check counts: a native stack's members outside the inbox. */
+export async function prsByNumberGraphQL(octokit: Octokit, repo: Repo, numbers: number[]) {
+  const fields = numbers.map((n, i) => `p${i}: pullRequest(number: ${Math.trunc(n)}) { ${PR_FAST} ${CHECK_COUNTS} }`);
+  const text = `query PileStackPRs($owner: String!, $name: String!) {
+  ${RATE}
+  repository(owner: $owner, name: $name) { defaultBranchRef { name } ${fields.join("\n    ")} }
+}`;
+  const data: { repository: Record<string, InboxNode | null> & { defaultBranchRef: { name: string } | null } } = await query(octokit, text, { owner: repo.owner, name: repo.repo });
+  return {
+    defaultBranch: data.repository.defaultBranchRef?.name ?? null,
+    nodes: numbers.map((_, i) => data.repository[`p${i}`] as InboxNode | null).filter((n): n is InboxNode => !!n?.number),
+  };
+}
+
 const requestedUsers = (r: Requested) =>
   r.nodes.flatMap((n) => (n.requestedReviewer?.__typename === "User" ? [restUser(n.requestedReviewer)!] : []));
 const requestedTeams = (r: Requested) =>

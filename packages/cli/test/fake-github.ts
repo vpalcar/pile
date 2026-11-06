@@ -24,7 +24,7 @@ export interface FakePR {
   checks: Array<{ name: string; status: "completed" | "in_progress"; conclusion: string | null }>;
 }
 
-export function fakeGitHub(options: { prs: number; viewer?: string; trunk?: string; graphql?: boolean; searchBroken?: boolean; teams?: string[] }) {
+export function fakeGitHub(options: { prs: number; viewer?: string; trunk?: string; graphql?: boolean; searchBroken?: boolean; teams?: string[]; nativeStacks?: number[][] }) {
   const graphqlEnabled = options.graphql ?? true;
   const viewer = options.viewer ?? "me";
   const trunk = options.trunk ?? "main";
@@ -67,6 +67,13 @@ export function fakeGitHub(options: { prs: number; viewer?: string; trunk?: stri
     ...(full ? { additions: 10, deletions: 2, comments: 0, review_comments: 0, body_html: "", mergeable: true, mergeable_state: "clean", stack: null } : {}),
   });
 
+  const stacks = () =>
+    (options.nativeStacks ?? []).map((numbers, i) => ({
+      number: 100 + i,
+      open: true,
+      base: { ref: trunk },
+      pull_requests: numbers.map((n) => ({ number: n, title: `PR ${n}`, state: "open", draft: false, merged_at: null, head: { ref: prs[n - 1].head } })),
+    }));
   const routes: Array<[RegExp, (m: RegExpMatchArray, url: URL) => unknown]> = [
     [/^\/user$/, () => user(viewer)],
     [/^\/user\/teams$/, () => (options.teams ?? []).map((slug) => ({ slug, name: slug, organization: { login: "o" } }))],
@@ -83,8 +90,9 @@ export function fakeGitHub(options: { prs: number; viewer?: string; trunk?: stri
       return { total_count: p?.checks.length ?? 0, check_runs: (p?.checks ?? []).map((c, i) => ({ id: i + 1, name: c.name, status: c.status, conclusion: c.conclusion, started_at: null, completed_at: null, output: { title: null }, html_url: null, details_url: null, app: { slug: "github-actions" } })) };
     }],
     [/^\/repos\/o\/r\/commits\/([^/]+)\/status$/, () => ({ state: "success", statuses: [] })],
-    // Native GitHub stacks: none in this repo.
-    [/^\/repos\/o\/r\/stacks$/, () => []],
+    // Native GitHub stacks (numbered 100, 101, …), bottom first.
+    [/^\/repos\/o\/r\/stacks$/, (_m, url) => stacks().filter((s) => !url.searchParams.has("pull_request") || s.pull_requests.some((p) => p.number === Number(url.searchParams.get("pull_request"))))],
+    [/^\/repos\/o\/r\/stacks\/(\d+)$/, (m) => stacks().find((s) => s.number === Number(m[1]))],
   ];
 
   // GraphQL: the two queries the review server sends, answered from the same repo.
@@ -149,7 +157,12 @@ export function fakeGitHub(options: { prs: number; viewer?: string; trunk?: stri
         },
       };
     }
-    if (query.includes("query PileStack")) {
+    if (query.includes("query PileStackPRs")) {
+      const repository: Record<string, unknown> = { defaultBranchRef: { name: trunk } };
+      for (const [, alias, n] of query.matchAll(/(p\d+): pullRequest\(number: (\d+)\)/g)) repository[alias] = prs[Number(n) - 1] ? node(prs[Number(n) - 1]) : null;
+      return { data: { rateLimit, repository } };
+    }
+    if (query.includes("query PileStack(")) {
       // Aliases c0.. ask for PRs based on a branch, p0.. for the PR with that head.
       const repository: Record<string, unknown> = { defaultBranchRef: { name: trunk } };
       for (const [key, branch] of Object.entries(variables)) {

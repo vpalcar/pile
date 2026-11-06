@@ -41,7 +41,7 @@ import {
 } from "./github-data.js";
 import { diffStats, localCommits, localFiles, localState } from "./local-data.js";
 import { cleanupMergedBranch } from "../utils/merge-cleanup.js";
-import { checksFromNode, fetchInboxGraphQL, fetchPRGraphQL, listedFromNode, reviewsFromNode, searchPRsGraphQL, stackNeighboursGraphQL, type InboxNode } from "./github-graphql.js";
+import { checksFromNode, fetchInboxGraphQL, fetchPRGraphQL, listedFromNode, prsByNumberGraphQL, reviewsFromNode, searchPRsGraphQL, stackNeighboursGraphQL, type InboxNode } from "./github-graphql.js";
 
 type ListedPR = Awaited<ReturnType<Octokit["pulls"]["list"]>>["data"][number];
 type FullPR = Awaited<ReturnType<Octokit["pulls"]["get"]>>["data"] & {
@@ -780,6 +780,19 @@ export class ReviewService {
     const [open, viewer] = await Promise.all([this.listOpenPRs(), this.viewer()]);
     const byNumber = new Map([...this.stackExtras, ...open.map((p) => [p.number, p] as const)] as Array<[number, ListedPR | FullPR]>);
     byNumber.set(pr.number, pr);
+    // A native stack lists its PRs by number; any outside the inbox (others' PRs, or ones
+    // you've already reviewed) are fetched, so each entry's status is the same on every page.
+    const inInbox = new Set([pr.number, ...open.map((p) => p.number)]);
+    const missing = entries
+      .flatMap((e) => (e.ref.kind === "pr" && (e.state === "open" || e.state === "draft") && !inInbox.has(e.ref.number) ? [e.ref.number] : []))
+      .sort((a, b) => a - b);
+    // (Stacks inferred from branches already brought theirs, with the neighbour lookup.)
+    if (pr.stack && missing.length > 0) {
+      for (const p of await this.openPRsByNumber(missing)) {
+        byNumber.set(p.number, p);
+        this.stackExtras.set(p.number, p);
+      }
+    }
     const trunk = pr.base.repo.default_branch;
     // A stack merge lands every PR on the trunk, so each must meet the trunk's review
     // rule, even while GitHub judges the upper ones against their (unprotected) bases.
@@ -823,6 +836,23 @@ export class ReviewService {
           reviewRequired: needsApproval(listed, decision),
         }).map((r) => r.message),
       };
+    });
+  }
+
+  /** Open PRs by number (cached for a minute): GraphQL with reviews and check counts, else REST. */
+  private openPRsByNumber(numbers: number[]): Promise<ListedPR[]> {
+    return this.cached(`prs/${numbers.join(",")}`, STACK_LINKS_MS, async () => {
+      if (this.graphql()) {
+        const found = await prsByNumberGraphQL(this.octokit!, this.repo!, numbers).catch(() => null);
+        if (found) {
+          return found.nodes.map((n) => {
+            this.stackNodes.set(n.number, n);
+            return listedFromNode(n, found.defaultBranch ?? "main") as unknown as ListedPR;
+          });
+        }
+      }
+      const prs = await Promise.all(numbers.map((n) => this.octokit!.pulls.get({ ...this.repo!, pull_number: n }).then((r) => r.data as unknown as ListedPR, () => null)));
+      return prs.filter((p): p is ListedPR => !!p && p.state === "open");
     });
   }
 

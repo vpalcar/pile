@@ -321,4 +321,20 @@ describe("PR pages over GraphQL", () => {
     const detail = await service.detail({ kind: "pr", number: 2 });
     expect(detail.merge!.stack!.blockers).toContain("#2: Needs an approving review");
   });
+
+  it("show every entry of a GitHub stack the same on each of its pages, inbox or not", async () => {
+    // GitHub stack 1 → 2 → 3: #1 is yours; #2 and #3 are others', not asking for your
+    // review (#3 already approved), so the inbox doesn't have them.
+    const fake = fakeGitHub({ prs: 12, nativeStacks: [[1, 2, 3]] });
+    fake.prs[2].decision = "APPROVED";
+    const service = new ReviewService(await createPile(createCliRepo().dir), fake.github);
+    const entry = async (page: number, number: number) => (await service.detail({ kind: "pr", number: page })).stack.find((e) => (e.ref as { number: number }).number === number)!;
+    const fromBottom = await entry(1, 3);
+    expect(fromBottom.reviewDecision).toBe("approved");
+    expect(fromBottom.checks).not.toBeNull();
+    const own = await entry(3, 3);
+    expect([own.reviewDecision, own.checks?.state]).toEqual([fromBottom.reviewDecision, fromBottom.checks?.state]);
+    expect((await service.detail({ kind: "pr", number: 1 })).nativeStack).toBe(100);
+  });
 });
+
