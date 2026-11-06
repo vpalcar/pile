@@ -17,6 +17,8 @@ export interface FakePR {
   requested: string[];
   /** Team slugs whose review is requested. */
   teams?: string[];
+  /** GitHub's review decision under the base branch's rules (null: none required). */
+  decision?: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
   /** Branch protection still wants an approving review (no conflicts, though). */
   reviewRequired?: boolean;
   checks: Array<{ name: string; status: "completed" | "in_progress"; conclusion: string | null }>;
@@ -104,6 +106,7 @@ export function fakeGitHub(options: { prs: number; viewer?: string; trunk?: stri
     additions: 10,
     deletions: 2,
     totalCommentsCount: 0,
+    reviewDecision: p.decision ?? null,
     headRefName: p.head,
     headRefOid: p.sha,
     baseRefName: p.base,
@@ -171,7 +174,7 @@ export function fakeGitHub(options: { prs: number; viewer?: string; trunk?: stri
             bodyHTML: "",
             mergeable: "MERGEABLE",
             mergeStateStatus: p.reviewRequired ? "BLOCKED" : "CLEAN",
-            reviewDecision: p.reviewRequired ? "REVIEW_REQUIRED" : null,
+            reviewDecision: p.reviewRequired ? "REVIEW_REQUIRED" : (p.decision ?? null),
             labels: { nodes: [] },
             assignees: { nodes: [] },
             reviews: { nodes: [] },

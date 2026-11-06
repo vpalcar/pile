@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
-import { Check, ChevronDown, Columns2, PanelLeft, Rows3, Search, WrapText } from "lucide-react";
+import { Check, ChevronDown, Columns2, MessageSquare, PanelLeft, Rows3, Search, WrapText } from "lucide-react";
 import type { Detail, DiffFile } from "../api";
 import { FileDiff, fileAnchor, type PendingComment } from "./FileDiff";
 import { Button, cx, DiffStat, StatusLetter } from "./ui";
@@ -106,6 +106,12 @@ export function FilesPanel({ detail, itemKey, scrollEl, pending, onAddPending, o
 
   const pendingByPath = useMemo(() => groupBy(pending, (p) => p.path), [pending]);
   const commentsByPath = useMemo(() => groupBy(detail.inlineComments, (c) => c.path), [detail.inlineComments]);
+  // Open conversations per file (a thread is its first comment), for the tree.
+  const unresolved = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const c of detail.inlineComments) if (c.inReplyTo === null && !c.resolved) counts.set(c.path, (counts.get(c.path) ?? 0) + 1);
+    return counts;
+  }, [detail.inlineComments]);
   const fileUrl = (f: DiffFile) => (detail.url ? `${detail.url}/files#diff-${f.sha.split(":")[0]}` : null);
 
   if (files.length === 0) {
@@ -154,7 +160,7 @@ export function FilesPanel({ detail, itemKey, scrollEl, pending, onAddPending, o
         </Button>
       </div>
       <div className={cx("grid items-start transition-[grid-template-columns] duration-200", treeOpen ? "grid-cols-[264px_minmax(0,1fr)]" : "grid-cols-[0_minmax(0,1fr)]")}>
-        <FileTree files={files} active={files[index]?.path ?? null} isViewed={isViewed} onSelect={(p) => scrollTo(p)} />
+        <FileTree files={files} active={files[index]?.path ?? null} isViewed={isViewed} unresolved={unresolved} onSelect={(p) => scrollTo(p)} />
         <div className="flex min-w-0 flex-col gap-3.5 px-4 pb-10 pt-2.5">
           {files.map((file) => (
             <FileDiff
@@ -257,11 +263,14 @@ const FileTree = memo(function FileTree({
   files,
   active: activePath,
   isViewed,
+  unresolved,
   onSelect,
 }: {
   files: DiffFile[];
   active: string | null;
   isViewed: (f: DiffFile) => boolean;
+  /** Unresolved comment threads, by path. */
+  unresolved: Map<string, number>;
   onSelect: (path: string) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -293,7 +302,9 @@ const FileTree = memo(function FileTree({
           <span className="grid w-3.5 place-items-center">
             <ChevronDown size={12} className={cx("transition-transform duration-150", closed.has(dir.path) && "-rotate-90")} />
           </span>
-          <span className="min-w-0 truncate">{dir.name}</span>
+          <span className="min-w-0 flex-1 truncate">{dir.name}</span>
+          {/* A folded folder still says it holds open conversations. */}
+          {closed.has(dir.path) && <OpenThreads count={[...unresolved].reduce((n, [path, c]) => (path.startsWith(`${dir.path}/`) ? n + c : n), 0)} />}
         </button>,
         ...(closed.has(dir.path) ? [] : render(dir, depth + 1)),
       ]),
@@ -312,6 +323,7 @@ const FileTree = memo(function FileTree({
           >
             <StatusLetter status={file.status} />
             <span className={cx("min-w-0 flex-1 truncate", v && !active && "text-fg-3")}>{file.path.split("/").pop()}</span>
+            <OpenThreads count={unresolved.get(file.path) ?? 0} />
             {v ? (
               <Check size={12} strokeWidth={2.5} className="text-ok" />
             ) : (
@@ -359,3 +371,15 @@ function fuzzy(text: string, query: string): boolean {
   for (const ch of text) if (ch === query[i]) i++;
   return i === query.length;
 }
+
+/** How many comment threads in a file (or folded folder) are still unresolved. */
+function OpenThreads({ count }: { count: number }) {
+  if (count === 0) return null;
+  return (
+    <span className="inline-flex shrink-0 items-center gap-[3px] rounded-full bg-accent-soft px-1.5 py-[3px] text-[10.5px] font-medium leading-none text-accent tabular" data-tip={`${count} unresolved ${count === 1 ? "comment" : "comments"}`} data-unresolved={count}>
+      <MessageSquare size={10} strokeWidth={2.25} />
+      {count}
+    </span>
+  );
+}
+

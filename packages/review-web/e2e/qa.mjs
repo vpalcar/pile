@@ -598,6 +598,11 @@ await check("tree lists files folders-first, like the diff order", async () => {
   expect(diffs[0] === "assets/diagram.png" && diffs.at(-1) === "README.md", diffs.join(", "));
   await shot("files top");
 });
+await check("tree counts unresolved comment threads per file", async () => {
+  const badges = await page.locator("aside[aria-label='File tree'] [data-unresolved]").evaluateAll((els) => els.map((e) => [e.closest("button")?.title, e.textContent]));
+  // src/api/limit.ts has two threads, one of them resolved.
+  expect(JSON.stringify(badges) === JSON.stringify([["src/api/limit.ts", "1"]]), JSON.stringify(badges));
+});
 await check("bar: count, size, viewed progress, layout toggles", async () => {
   const bar = (await filesSection.locator("> div").first().innerText()).replace(/\s+/g, " ");
   expect(bar.includes("7 files") && bar.includes("0/7 viewed") && bar.includes("Split") && bar.includes("Unified"), bar);

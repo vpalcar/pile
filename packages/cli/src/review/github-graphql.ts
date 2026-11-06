@@ -20,7 +20,7 @@ const RATE = "rateLimit { cost remaining limit resetAt }";
  * reviews: about a second even on very large repos), then the same PRs with sizes and
  * check counts, which GitHub computes on the fly and are several times slower.
  */
-const PR_FAST = `number title url isDraft createdAt updatedAt totalCommentsCount
+const PR_FAST = `number title url isDraft createdAt updatedAt totalCommentsCount reviewDecision
   headRefName headRefOid baseRefName baseRefOid
   author { ${USER} }
   ${REQUESTED}
@@ -59,7 +59,7 @@ const PR = `query PilePR($owner: String!, $name: String!, $number: Int!) {
       reviews(first: 100) { nodes { databaseId author { ${USER} } state submittedAt bodyHTML url } }
       comments(first: 100) { nodes { databaseId author { ${USER} } createdAt bodyHTML url } }
       commits(first: 100) { nodes { commit { oid message url committedDate authoredDate author { name user { ${USER} } } } } }
-      reviewThreads(first: 100) { nodes { path diffSide line originalLine
+      reviewThreads(first: 100) { nodes { path diffSide line originalLine isResolved
         comments(first: 50) { nodes { databaseId author { ${USER} } createdAt bodyHTML url replyTo { databaseId } pullRequestReview { databaseId } } }
       } }
       lastCommit: commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
@@ -86,6 +86,8 @@ export interface InboxNode {
   additions?: number;
   deletions?: number;
   totalCommentsCount: number | null;
+  /** GitHub's verdict under the base branch's rules; null where no review is required. */
+  reviewDecision?: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
   headRefName: string;
   headRefOid: string;
   baseRefName: string;
@@ -203,6 +205,7 @@ export function listedFromNode(node: InboxNode, defaultBranch: string) {
     html_url: node.url,
     labels: [],
     assignees: [],
+    review_decision: node.reviewDecision ?? null,
   };
 }
 
@@ -269,6 +272,7 @@ type PRData = {
       reviewThreads: {
         nodes: Array<{
           path: string;
+          isResolved: boolean;
           diffSide: "LEFT" | "RIGHT";
           line: number | null;
           originalLine: number | null;
@@ -358,6 +362,7 @@ export async function fetchPRGraphQL(octokit: Octokit, repo: Repo, number: numbe
           createdAt: c.createdAt,
           bodyHtml: c.bodyHTML,
           inReplyTo: c.replyTo?.databaseId ?? null,
+          resolved: t.isResolved,
           url: c.url,
           reviewId: c.pullRequestReview?.databaseId,
         }) as InlineComment,

@@ -110,6 +110,8 @@ export class ReviewService {
   private stackExtras = new Map<number, ListedPR>();
   /** Open PRs based on a branch (`c:branch`) or with it as head (`p:branch`), as last asked. */
   private stackLinks = new Map<string, { at: number; prs: ListedPR[] }>();
+  /** Whether the trunk requires an approving review, as last seen in a PR's stack. */
+  private trunkReview = false;
   /** The nodes behind those: reviews and check counts for others' stack entries. */
   private stackNodes = new Map<number, InboxNode>();
   private memo = new Map<string, { at: number; value: Promise<unknown> }>();
@@ -776,6 +778,12 @@ export class ReviewService {
     const [open, viewer] = await Promise.all([this.listOpenPRs(), this.viewer()]);
     const byNumber = new Map([...this.stackExtras, ...open.map((p) => [p.number, p] as const)] as Array<[number, ListedPR | FullPR]>);
     byNumber.set(pr.number, pr);
+    const trunk = pr.base.repo.default_branch;
+    // A stack merge lands every PR on the trunk, so each must meet the trunk's review
+    // rule, even while GitHub judges the upper ones against their (unprotected) bases.
+    this.trunkReview = trunkNeedsReview([...byNumber.values()], trunk);
+    const needsApproval = (p: ListedPR | FullPR, decision: InboxItem["reviewDecision"]) =>
+      githubDecision(p) === "REVIEW_REQUIRED" || (this.trunkReview && p.base.ref !== trunk && decision !== "approved");
     return mapLimit(entries, 4, async (entry) => {
       const listed = entry.ref.kind === "pr" ? byNumber.get(entry.ref.number) : undefined;
       if (!listed || entry.state === "merged" || entry.state === "closed") return entry;
@@ -791,7 +799,7 @@ export class ReviewService {
           ...entry,
           checks: summary,
           reviewDecision: decision,
-          blockers: blockingReasons({ draft: !!listed.draft, checks: summary, changesRequested: changesRequested(reviews), mergeable: null, mergeableState: null }).map((r) => r.message),
+          blockers: blockingReasons({ draft: !!listed.draft, checks: summary, changesRequested: changesRequested(reviews), mergeable: null, mergeableState: null, reviewRequired: needsApproval(listed, decision) }).map((r) => r.message),
         };
       }
       const [checks, reviews] = await Promise.all([
@@ -799,16 +807,18 @@ export class ReviewService {
         this.getReviews(listed.number).catch(() => null),
       ]);
       const summary = checks ? summarizeChecks(checks) : null;
+      const decision = reviews ? decisionFor(reviews, listed, viewer?.login ?? null) : entry.reviewDecision;
       return {
         ...entry,
         checks: summary,
-        reviewDecision: reviews ? decisionFor(reviews, listed, viewer?.login ?? null) : entry.reviewDecision,
+        reviewDecision: decision,
         blockers: blockingReasons({
           draft: !!listed.draft,
           checks: summary ?? { state: "pending", total: 0, failed: 0, pending: 0 },
           changesRequested: !!reviews && changesRequested(reviews),
           mergeable: null, // only known per PR; GitHub refuses at merge time if it can't
           mergeableState: null,
+          reviewRequired: needsApproval(listed, decision),
         }).map((r) => r.message),
       };
     });
@@ -1020,7 +1030,10 @@ export class ReviewService {
       changesRequested: changesRequested(reviews),
       mergeable: pr.mergeable,
       mergeableState: pr.mergeable_state,
-      reviewRequired: (pr as { review_decision?: string | null }).review_decision === "REVIEW_REQUIRED",
+      reviewRequired:
+        githubDecision(pr) === "REVIEW_REQUIRED" ||
+        // Merged with the stack it lands on the trunk, under the trunk's rule.
+        (this.trunkReview && pr.base.ref !== pr.base.repo.default_branch && decisionFor(reviews, pr, null) !== "approved"),
     }).map((r) => r.message);
     const trunk = pr.base.repo.default_branch;
     // Open PRs this one is built on, bottom first (never a sibling branch).
@@ -1283,7 +1296,25 @@ function decisionFor(
 ): InboxItem["reviewDecision"] {
   const requested = (pr.requested_reviewers?.length ?? 0) + (pr.requested_teams?.length ?? 0);
   const mine = viewer ? latestReviews(reviews).get(viewer) : undefined;
-  return mine && pr.user?.login !== viewer ? reviewStateOf(mine.state) : reviewDecision(reviews, requested);
+  if (mine && pr.user?.login !== viewer) return reviewStateOf(mine.state);
+  const ours = reviewDecision(reviews, requested);
+  // GitHub's own verdict (over GraphQL) wins: approved even while others are still asked.
+  const github = githubDecision(pr);
+  if (github === "APPROVED") return "approved";
+  if (github === "CHANGES_REQUESTED") return "changes_requested";
+  if (github === "REVIEW_REQUIRED" && ours === "approved") return "review_required";
+  return ours;
+}
+
+const githubDecision = (pr: object) => (pr as { review_decision?: string | null }).review_decision;
+
+/**
+ * Whether the trunk's rules want an approving review: GitHub gives a review decision
+ * only where one is required, so any open PR into the trunk with one says so. Unknown
+ * (REST, or no PR into the trunk) counts as no.
+ */
+function trunkNeedsReview(prs: object[], trunk: string): boolean {
+  return prs.some((p) => (p as { base?: { ref: string } }).base?.ref === trunk && githubDecision(p) != null);
 }
 
 /** The stack around `pr`: its bottom, then every PR built on it, breadth first. */

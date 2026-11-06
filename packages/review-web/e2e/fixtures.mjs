@@ -366,9 +366,9 @@ function buildDetail(number) {
         { id: "review-3", kind: "review", author: person("grace"), createdAt: ago(60), bodyHtml: "<p>Looks good, one nit.</p>", reviewState: "commented", url: "https://github.com/acme/web/pull/101#r3", inlineCount: 1 },
       ],
       inlineComments: [
-        { id: 9001, path: "src/api/limit.ts", line: 23, side: "RIGHT", author: person("erin"), createdAt: ago(240), bodyHtml: "<p>This refills on every request. Should be per window.</p>", inReplyTo: null, url: "https://github.com/acme/web/pull/101#d1" },
-        { id: 9002, path: "src/api/limit.ts", line: 23, side: "RIGHT", author: person("alice"), createdAt: ago(200), bodyHtml: "<p>Fixed in e5f6a7b.</p>", inReplyTo: 9001, url: "https://github.com/acme/web/pull/101#d2" },
-        { id: 9003, path: "src/api/limit.ts", line: 22, side: "LEFT", author: person("grace"), createdAt: ago(60), bodyHtml: "<p>Nit: keep the old name in a comment?</p>", inReplyTo: null, url: "https://github.com/acme/web/pull/101#d3" },
+        { id: 9001, path: "src/api/limit.ts", line: 23, side: "RIGHT", author: person("erin"), createdAt: ago(240), bodyHtml: "<p>This refills on every request. Should be per window.</p>", inReplyTo: null, resolved: false, url: "https://github.com/acme/web/pull/101#d1" },
+        { id: 9002, path: "src/api/limit.ts", line: 23, side: "RIGHT", author: person("alice"), createdAt: ago(200), bodyHtml: "<p>Fixed in e5f6a7b.</p>", inReplyTo: 9001, resolved: false, url: "https://github.com/acme/web/pull/101#d2" },
+        { id: 9003, path: "src/api/limit.ts", line: 22, side: "LEFT", author: person("grace"), createdAt: ago(60), bodyHtml: "<p>Nit: keep the old name in a comment?</p>", inReplyTo: null, resolved: true, url: "https://github.com/acme/web/pull/101#d3" },
       ],
       checks: [
         { name: "typecheck", jobId: 7001, state: "failure", summary: "2 errors in src/api/limit.ts", url: "https://example.com/ci/1", durationSeconds: 42 },

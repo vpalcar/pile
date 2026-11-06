@@ -375,6 +375,8 @@ export async function fetchInlineComments(octokit: Octokit, repo: Repo, number: 
     createdAt: c.created_at,
     bodyHtml: (c as { body_html?: string }).body_html ?? "",
     inReplyTo: c.in_reply_to_id ?? null,
+    // REST doesn't say; GraphQL does.
+    resolved: false,
     url: c.html_url,
     reviewId: c.pull_request_review_id,
   })) as InlineComment[];

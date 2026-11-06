@@ -302,5 +302,23 @@ describe("PR pages over GraphQL", () => {
     const detail = await service.detail({ kind: "pr", number: 4 });
     expect(detail.merge!.single.blockers).toContain("Needs an approving review");
   });
-});
 
+  it("say approved when GitHub does, even while another reviewer is still asked", async () => {
+    const fake = fakeGitHub({ prs: 12 });
+    fake.prs[0].requested = ["dev7"];
+    fake.prs[0].decision = "APPROVED";
+    const service = new ReviewService(await createPile(createCliRepo().dir), fake.github);
+    expect((await service.detail({ kind: "pr", number: 1 })).reviewDecision).toBe("approved");
+  });
+
+  it("won't merge a stack whose upper PRs lack the approval the trunk requires", async () => {
+    // #1 is into main and approved (main requires a review); #2 sits on #1, where GitHub
+    // asks for nothing, but merging the stack lands it on main too.
+    const fake = fakeGitHub({ prs: 12 });
+    fake.prs[0].decision = "APPROVED";
+    fake.prs[1].requested = ["me"];
+    const service = new ReviewService(await createPile(createCliRepo().dir), fake.github);
+    const detail = await service.detail({ kind: "pr", number: 2 });
+    expect(detail.merge!.stack!.blockers).toContain("#2: Needs an approving review");
+  });
+});

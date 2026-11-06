@@ -187,6 +187,8 @@ export interface InlineComment {
   createdAt: string;
   bodyHtml: string;
   inReplyTo: number | null;
+  /** The thread was marked resolved on GitHub. */
+  resolved: boolean;
   url: string;
 }
 
