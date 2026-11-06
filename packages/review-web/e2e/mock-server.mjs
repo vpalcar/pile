@@ -74,7 +74,10 @@ export function startMockServer(port = 0) {
       if (api === "/session") return json(res, 200, session);
       if (api === "/inbox") {
         state.inboxRequests++;
-        return json(res, 200, withReviews(state.inboxRequests === 1 && !url.searchParams.has("fresh") ? partialInbox() : inbox));
+        const body = withReviews(state.inboxRequests === 1 && !url.searchParams.has("fresh") ? partialInbox() : inbox);
+        // /__state?emptyGroups=mine,local: those groups come back empty.
+        const empty = String(state.emptyGroups ?? "").split(",");
+        return json(res, 200, { ...body, groups: body.groups.map((g) => (empty.includes(g.id) ? { ...g, items: [] } : g)) });
       }
       if ((m = api.match(/^\/pr\/(\d+)$/))) {
         const detail = withEdits(detailFor(Number(m[1])));

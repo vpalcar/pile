@@ -1,5 +1,5 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowUpRight, ChevronDown, GitBranch, Layers, MessageSquare, Search, Sparkles } from "lucide-react";
+import { ArrowUpRight, ChevronDown, GitBranch, GitPullRequest, Inbox as InboxIcon, Layers, MessageSquare, Search, Sparkles } from "lucide-react";
 import type { Inbox, InboxGroup, InboxItem, Session } from "../api";
 import { prefetchDetail } from "../lib/queries";
 import { itemReadiness } from "../lib/status";
@@ -204,6 +204,8 @@ export function InboxPage({ inbox, session, loading, onSearch }: { inbox: Inbox 
 
       {loading && !inbox ? (
         <InboxSkeleton />
+      ) : groups.length === 0 ? (
+        <EmptyTab filter={filter} onSearch={onSearch} />
       ) : (
         groups.map((group) => (
           <Fragment key={group.id}>
@@ -506,3 +508,31 @@ function InboxSkeleton() {
     </div>
   );
 }
+
+/** A tab with nothing in it: what would show here, and how to get it there. */
+function EmptyTab({ filter, onSearch }: { filter: string; onSearch: () => void }) {
+  const [Icon, title, hint] = (
+    {
+      mine: [GitPullRequest, "You have no open pull requests", <>Run <code>pile submit</code> on a branch to open one.</>],
+      local: [GitBranch, "No local branches waiting", <>Branches you make with <code>pile create</code> show up here until they're on GitHub.</>],
+      needs_review: [Sparkles, "Nothing is waiting for your review", <>You're all caught up.</>],
+    } as Record<string, [typeof Sparkles, string, ReactNode]>
+  )[filter] ?? [InboxIcon, "Your inbox is empty", <>Your pull requests, review requests and local branches show up here.</>];
+  return (
+    <div className="mt-7 flex flex-col items-center rounded-xl border border-dashed border-line-2 px-6 py-12 text-center" data-empty={filter}>
+      <span className="mb-3.5 grid size-10 place-items-center rounded-full bg-panel-2 text-fg-3">
+        <Icon size={18} />
+      </span>
+      <div className="font-medium text-fg">{title}</div>
+      <div className="mt-1 text-[13px] text-fg-3 [&_code]:rounded [&_code]:bg-panel-3 [&_code]:px-1 [&_code]:py-px [&_code]:font-mono [&_code]:text-[12px] [&_code]:text-fg-2">{hint}</div>
+      <button className="mt-4 inline-flex h-8 items-center gap-2 rounded-lg px-2.5 text-[12.5px] text-fg-2 transition-colors hover:bg-hover hover:text-fg" onClick={onSearch}>
+        <Search size={13} /> Search all PRs
+        <span className="flex gap-0.5">
+          <Kbd>{modKey}</Kbd>
+          <Kbd>K</Kbd>
+        </span>
+      </button>
+    </div>
+  );
+}
+

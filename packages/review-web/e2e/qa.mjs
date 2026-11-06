@@ -244,6 +244,24 @@ await check("filters with 1–4 and shows only that group", async () => {
   expect((await count("[data-row]")) === 3, "3 local rows");
   await page.keyboard.press("1");
 });
+await check("an empty tab says what would be there, and how to get it there", async () => {
+  try {
+    await setState("emptyGroups=mine");
+    await page.reload();
+    await page.waitForSelector("[data-page=inbox]:not([data-partial])");
+    await page.keyboard.press("3");
+    const empty = page.locator("[data-empty=mine]");
+    const text = (await empty.innerText()).replace(/\s+/g, " ");
+    expect(text.includes("You have no open pull requests") && text.includes("pile submit") && text.includes("Search all PRs"), text);
+    await shot("inbox empty tab");
+  } finally {
+    await setState("emptyGroups=");
+    await page.reload();
+    await page.waitForSelector("[data-page=inbox]:not([data-partial])");
+    await page.keyboard.press("1");
+    await page.waitForSelector("[data-row]");
+  }
+});
 await check("⌘K with nothing typed: a short list, the actions in view", async () => {
   await page.keyboard.press("/");
   const palette = page.locator(".palette");
