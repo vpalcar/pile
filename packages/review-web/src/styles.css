@@ -29,6 +29,7 @@
   --border: rgba(255, 255, 255, 0.07);
   --border-2: rgba(255, 255, 255, 0.11);
   --border-3: rgba(255, 255, 255, 0.17);
+  --rail: rgba(255, 255, 255, 0.15);
   --text: #ededef;
   --text-2: #a1a1aa;
   --text-3: #71717a;
@@ -72,6 +73,7 @@
     --border: rgba(0, 0, 0, 0.075);
     --border-2: rgba(0, 0, 0, 0.11);
     --border-3: rgba(0, 0, 0, 0.17);
+    --rail: rgba(0, 0, 0, 0.15);
     --text: #18181b;
     --text-2: #52525b;
     --text-3: #80808a;
@@ -113,6 +115,7 @@
   --border: rgba(0, 0, 0, 0.075);
   --border-2: rgba(0, 0, 0, 0.11);
   --border-3: rgba(0, 0, 0, 0.17);
+  --rail: rgba(0, 0, 0, 0.15);
   --text: #18181b;
   --text-2: #52525b;
   --text-3: #80808a;
@@ -248,9 +251,12 @@
   .rail-last .rail-node::before { bottom: 50%; }
   .rail-dashed::before { background: linear-gradient(var(--border-3) 50%, transparent 50%) 0 0 / 1.5px 5px; }
   /* Stack rails drawn per row (see StackRail): straight lines and branch elbows. */
-  .rail-line { position: absolute; width: 1.5px; margin-left: -0.75px; background: var(--border-3); }
-  .rail-line-dashed { background: linear-gradient(var(--border-3) 50%, transparent 50%) 0 0 / 1.5px 5px; }
-  .rail-join { position: absolute; box-sizing: border-box; border: 0 solid var(--border-3); border-right-width: 1.5px; border-bottom-width: 1.5px; border-bottom-right-radius: 9px; }
+  /* 2px on whole-pixel lane centres: a fractional width lands on half pixels and the
+     browser rounds each line (and the corners) to a different weight. */
+  .rail-line { position: absolute; width: 2px; margin-left: -1px; background: var(--rail); }
+  .rail-line-dashed { background: linear-gradient(var(--rail) 50%, transparent 50%) 0 0 / 2px 5px; }
+  .rail-line-h { height: 2px; margin: -1px 0 0 0; }
+  .rail-corner { position: absolute; overflow: visible; fill: none; stroke: var(--rail); stroke-width: 2px; }
 
   /* GitHub-rendered markdown */
   .markdown { color: var(--text); line-height: 1.6; overflow-wrap: anywhere; }
