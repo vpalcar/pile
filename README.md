@@ -28,11 +28,12 @@ Pile is a command-line tool for managing stacked pull requests on GitHub. It hel
 
 ## Features
 
-- **Stacked branches** - Create branches that build on each other
+- **Stacked branches** - Create branches that build on each other, in a line or branching
 - **Automatic rebasing** - Keep your stack in sync with `pile sync`
-- **GitHub integration** - Create and update PRs with `pile submit`
+- **GitHub integration** - Create and update PRs with `pile submit`, merge stacks with `pile merge`
+- **A review app** - `pile review` opens an inbox and diff viewer for every open PR and local branch
 - **Offline support** - Queue operations when offline, sync when back online
-- **AI-friendly** - JSON output for all commands (`--json`)
+- **AI-friendly** - JSON output and non-interactive mode for every command
 
 ## Installation
 
@@ -81,6 +82,17 @@ pile checkout main       # Go to trunk
 pile checkout my-branch  # Go to specific branch
 ```
 
+## Reviewing
+
+`pile review` opens a local review app: an inbox of everything open, grouped by what it needs from
+you, and a page per pull request with its stack, discussion, checks and diff. Comment on any line,
+submit reviews, request reviewers, re-run checks and merge a PR or a whole stack, all from the
+browser. Local branches show up too, so you can look over work before opening a PR.
+
+![pile review](https://raw.githubusercontent.com/vpalcar/pile/main/docs/images/review-pr.png)
+
+See [docs/review.md](docs/review.md) for the full guide and keyboard shortcuts.
+
 ## Commands
 
 ### Stack Management
@@ -120,7 +132,8 @@ pile checkout my-branch  # Go to specific branch
 
 | Command | Description |
 |---------|-------------|
-| `pile review --approve` | Approve the PR |
+| `pile review [target]` | Open the review app (on a PR or branch, or the inbox) |
+| `pile review --approve` | Approve the current branch's PR from the terminal |
 | `pile review --request-changes -m "message"` | Request changes |
 | `pile review -m "comment"` | Add a comment |
 | `pile request user1 user2 [--pr <target>]` | Request review from users |
@@ -183,11 +196,13 @@ pile sync
 ### Reviewing PRs
 
 ```bash
-# Check out a branch and approve its PR
+# Open the review app on the inbox, or on one PR
+pile review
+pile review 42
+
+# Or review from the terminal: check out a branch and approve its PR
 pile co feature-branch
 pile review --approve -m "LGTM!"
-
-# Request changes
 pile review --request-changes -m "Please add tests"
 ```
 
@@ -202,7 +217,8 @@ git config --get-regexp 'branch\..*\.pile-' # parent, base commit, title and PR 
 ```
 
 Set them with `pile init --trunk main --remote origin --merge-method squash`. Pile's caches and
-offline queue live in `.git/pile/`.
+offline queue live in `.git/pile/`. The review app's personal preferences (theme, diff layout)
+live in `~/.config/pile/review.json`.
 
 ## Scripting and AI agents
 
@@ -237,7 +253,7 @@ in Claude Code cloud sessions) those operations fail with `GRAPHQL_UNAVAILABLE`.
 
 ## Requirements
 
-- Node.js 18+
+- Node.js 20+
 - Git
 - GitHub account with authentication (`gh auth login` or `GITHUB_TOKEN`)
 
