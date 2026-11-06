@@ -25,6 +25,7 @@ import { RequestCommand } from "../commands/request.js";
 import { ReviewCommand } from "../commands/review.js";
 import { DiffCommand } from "../commands/diff.js";
 import { ReviewWebCommand } from "../commands/review-web.js";
+import { runNotes } from "../commands/notes.js";
 import { NavCommand } from "../commands/nav.js";
 import { TrackCommand, UntrackCommand } from "../commands/track.js";
 import { getSecretPileMessage, getPileWisdom } from "../utils/fun.js";
@@ -469,6 +470,16 @@ for (const [direction, alias, description] of [
     );
   });
 }
+
+// notes command
+program
+  .command("notes [action] [ids...]")
+  .description("Review notes for the agent on this branch: list (default), done <id>, reopen <id>, rm <id>, clear")
+  .option("-b, --branch <branch>", "Notes for this branch (default: the current branch)")
+  .option("-a, --all", "Notes on every branch")
+  .action(async (action, ids, opts) => {
+    await runNotes({ action, ids: ids ?? [], branch: opts.branch, all: opts.all, options: resolveOptions(program.opts()) });
+  });
 
 // track command
 program
