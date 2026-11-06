@@ -11,7 +11,20 @@ export const TOKEN = "test-token";
 const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".woff2": "font/woff2" };
 
 export function startMockServer(port = 0) {
-  const state = { calls: [], inboxRequests: 0, down: false, delayMs: 120, edits: {}, preferences: {}, notes: [] };
+  const state = { calls: [], inboxRequests: 0, down: false, delayMs: 120, edits: {}, preferences: {}, notes: [], reviewed: new Set() };
+  // Like GitHub: once you've reviewed a PR you're no longer a requested reviewer.
+  const withReviews = (data) =>
+    state.reviewed.size === 0
+      ? data
+      : {
+          ...data,
+          groups: data.groups.map((g) => {
+            const moved = data.groups.find((x) => x.id === "needs_review").items.filter((i) => state.reviewed.has(i.ref.number));
+            if (g.id === "needs_review") return { ...g, items: g.items.filter((i) => !state.reviewed.has(i.ref.number)) };
+            if (g.id === "others") return { ...g, items: [...moved, ...g.items] };
+            return g;
+          }),
+        };
   // Edits made through the app, layered over the fixtures.
   const withEdits = (detail) => (detail ? { ...detail, ...state.edits[detail.number] } : detail);
   const json = (res, status, body) => {
@@ -39,7 +52,7 @@ export function startMockServer(port = 0) {
     }
     if (path === "/__state") {
       Object.assign(state, Object.fromEntries([...url.searchParams].map(([k, v]) => [k, v === "true" ? true : v === "false" ? false : Number.isNaN(Number(v)) ? v : Number(v)])));
-      if (url.searchParams.has("reset")) Object.assign(state, { calls: [], inboxRequests: 0, down: false, edits: {}, fileDown: false, notes: [] });
+      if (url.searchParams.has("reset")) Object.assign(state, { calls: [], inboxRequests: 0, down: false, edits: {}, fileDown: false, notes: [], reviewed: new Set() });
       return json(res, 200, { ok: true });
     }
 
@@ -52,7 +65,7 @@ export function startMockServer(port = 0) {
       if (api === "/session") return json(res, 200, session);
       if (api === "/inbox") {
         state.inboxRequests++;
-        return json(res, 200, state.inboxRequests === 1 && !url.searchParams.has("fresh") ? partialInbox() : inbox);
+        return json(res, 200, withReviews(state.inboxRequests === 1 && !url.searchParams.has("fresh") ? partialInbox() : inbox));
       }
       if ((m = api.match(/^\/pr\/(\d+)$/))) {
         const detail = withEdits(detailFor(Number(m[1])));
@@ -168,6 +181,7 @@ export function startMockServer(port = 0) {
         const body = await readBody(req);
         state.calls.push({ type: "review", pr: Number(m[1]), ...body });
         if (/fail/i.test(body.body ?? "")) return json(res, 422, { error: "Review cannot be submitted right now", code: "REVIEW_REJECTED" });
+        state.reviewed.add(Number(m[1]));
         return json(res, 201, { ok: true });
       }
       return json(res, 404, { error: "Not found", code: "NOT_FOUND" });

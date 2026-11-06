@@ -453,8 +453,25 @@ await check("approving sends the review and confirms", async () => {
   await page.locator("[role=dialog] textarea").fill("Ship it.");
   await page.keyboard.press("Meta+Enter");
   await toast("Approved #101");
+  // From here the server is slow (like rebuilding a big repo's inbox), so only the
+  // app's own update can move the PR in the next check.
+  await setState("delayMs=4000");
   const last = (await calls()).at(-1);
   expect(last.type === "review" && last.event === "APPROVE" && last.body === "Ship it.", JSON.stringify(last));
+});
+await check("a reviewed PR leaves Needs your review right away", async () => {
+  // No waiting for the server to rebuild the inbox: the badge drops as the review lands.
+  const badge = await text("nav button:has-text('Inbox')");
+  expect(badge.includes("2"), `inbox badge: ${badge}`);
+  await setState("delayMs=120");
+  await page.click("nav button:has-text('Inbox')");
+  await page.waitForSelector("[data-page=inbox]");
+  await page.getByRole("tab", { name: /Needs review/ }).click();
+  const rows = await page.locator("[data-row]").evaluateAll((r) => r.map((x) => x.dataset.row));
+  expect(!rows.includes("pr-101") && rows.length === 2, rows.join());
+  await page.getByRole("tab", { name: /All/ }).click();
+  await page.goto(`${server.url}/#/pr/101`);
+  await detailReady();
 });
 await check("on your own PR only Comment is possible", async () => {
   await page.goto(`${server.url}/#/pr/110`);

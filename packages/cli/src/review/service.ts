@@ -154,6 +154,8 @@ export class ReviewService {
     // would fall back to the quick list, whose missing checks read as "Open".
     this.inboxVersion++;
     this.memo.delete("inbox-fast");
+    // Who's requested to review lives on the PR list, so that has to be read again too.
+    this.openPRs = null;
   }
 
   private warming = false;

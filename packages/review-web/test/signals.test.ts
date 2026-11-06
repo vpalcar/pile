@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Inbox, InboxItem, StackEntry } from "../src/api";
-import { keepKnownSignals } from "../src/lib/inbox";
+import { afterReview, keepKnownSignals } from "../src/lib/inbox";
 import { entryReadiness } from "../src/lib/status";
 
 const item = (number: number, extra: Partial<InboxItem> = {}): InboxItem => ({
@@ -67,3 +67,27 @@ describe("entryReadiness", () => {
     expect(entryReadiness(entry(), [item(1)]).label).toBe("Checks failing");
   });
 });
+
+describe("afterReview", () => {
+  it("moves the reviewed PR out of Needs your review, with your verdict", () => {
+    const before: Inbox = {
+      fetchedAt: "",
+      groups: [
+        { id: "needs_review", title: "", items: [item(1), item(2)] },
+        { id: "others", title: "", items: [item(3)] },
+      ],
+    };
+    const after = afterReview(before, 1, "approved");
+    expect(after.groups[0].items.map((i) => i.ref)).toEqual([{ kind: "pr", number: 2 }]);
+    expect(after.groups[1].items.map((i) => [i.id, i.reviewDecision])).toEqual([
+      ["pr-1", "approved"],
+      ["pr-3", "review_required"],
+    ]);
+  });
+
+  it("only updates the verdict when the PR wasn't waiting on you", () => {
+    const before: Inbox = { fetchedAt: "", groups: [{ id: "others", title: "", items: [item(3)] }] };
+    expect(afterReview(before, 3, "changes_requested").groups[0].items[0].reviewDecision).toBe("changes_requested");
+  });
+});
+

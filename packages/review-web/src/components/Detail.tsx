@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, ArrowRight, Check, ChevronDown, CircleAlert, Copy, ExternalLink, Eye, GitMerge, Layers, MessageSquare, MoreHorizontal, Pencil, PencilLine, RotateCw, Tag, UploadCloud, UserPlus } from "lucide-react";
-import type { CheckRun, Session, Detail as DetailData, InboxItem, ItemRef, PRUpdate, ReviewRequest, StackEntry, TimelineEntry } from "../api";
+import type { CheckRun, Inbox, Session, Detail as DetailData, InboxItem, ItemRef, PRUpdate, ReviewRequest, StackEntry, TimelineEntry } from "../api";
 import { useMutation } from "@tanstack/react-query";
 import { api } from "../lib/client";
 import { keys, queryClient, refKey, useOptions } from "../lib/queries";
+import { afterReview } from "../lib/inbox";
 import { detailReadiness, entryReadiness, type Readiness } from "../lib/status";
 import { absoluteTime, copy, modKey, navigate, plural, timeAgo, useNow, useShortcuts } from "../lib/util";
 import { Composer } from "./Composer";
@@ -117,6 +118,10 @@ export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems, c
 
   const submitReview = async (request: ReviewRequest) => {
     await api.review(detail.number!, { ...request, comments: pending.map(({ path, line, side, body }) => ({ path, line, side, body })) });
+    // The inbox too: the PR leaves "Needs your review" now, not after the next full inbox.
+    queryClient.setQueryData<Inbox>(keys.inbox, (inbox) =>
+      inbox && afterReview(inbox, detail.number!, request.event === "APPROVE" ? "approved" : request.event === "REQUEST_CHANGES" ? "changes_requested" : "commented"),
+    );
     // Show the verdict now; the refetch below confirms it (and the merge rules) from GitHub.
     const viewer = queryClient.getQueryData<Session>(keys.session)?.viewer;
     const verdict = request.event === "APPROVE" ? "approved" : request.event === "REQUEST_CHANGES" ? "changes_requested" : "commented";
