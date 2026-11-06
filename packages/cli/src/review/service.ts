@@ -11,6 +11,8 @@ import type {
   MergeInfo,
   MergeRequest,
   MergeResult,
+  NewNoteRequest,
+  AgentNote,
   PRState,
   PRUpdate,
   RepoOptions,
@@ -738,6 +740,60 @@ export class ReviewService {
       this.openPRs = null;
       this.memo.clear();
       this.inboxVersion++;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Notes for the agent (.pile/notes.json, read with `pile notes`)
+
+  notes(branch: string | null): AgentNote[] {
+    return this.pile.notes.list(branch ? { branch } : {});
+  }
+
+  /** Saves a note with the code around its line, as the reviewer saw it. */
+  async addNote(request: NewNoteRequest): Promise<AgentNote> {
+    const detail = await this.detail(request.ref);
+    let code: string[] = [];
+    let codeStart: number | null = null;
+    if (request.path && request.line) {
+      // The old side reads the file as it was before the change.
+      const ref = request.side === "LEFT" ? detail.baseSha : detail.headSha;
+      const lines = await this.file(ref, request.path).then((f) => f.lines).catch(() => [] as string[]);
+      if (lines.length) {
+        codeStart = Math.max(1, request.line - 2);
+        code = lines.slice(codeStart - 1, Math.min(lines.length, request.line + 2));
+      }
+    }
+    try {
+      return this.pile.notes.add({
+        branch: detail.branch,
+        pr: detail.number,
+        path: request.path ?? null,
+        line: request.line ?? null,
+        side: request.path ? (request.side ?? "RIGHT") : null,
+        commit: detail.headSha,
+        code,
+        codeStart,
+        body: request.body,
+      });
+    } catch (error) {
+      throw new ReviewError(400, "EMPTY_NOTE", (error as Error).message);
+    }
+  }
+
+  updateNote(id: string, change: { done?: boolean; body?: string }): AgentNote {
+    try {
+      return this.pile.notes.update(id, { ...(change.done !== undefined && { done: !!change.done }), ...(change.body && { body: change.body }) });
+    } catch (error) {
+      throw new ReviewError(404, "NOTE_NOT_FOUND", (error as Error).message);
+    }
+  }
+
+  removeNote(id: string): void {
+    try {
+      this.pile.notes.remove(id);
+    } catch (error) {
+      throw new ReviewError(404, "NOTE_NOT_FOUND", (error as Error).message);
     }
   }
 
