@@ -40,7 +40,8 @@ export function ReviewWebCommand({ target, port, open, options }: ReviewWebComma
       try {
         const pile = await createPile();
         const github = await createGitHub(pile);
-        const service = new ReviewService(pile, github);
+        const gitDir = (await pile.git.run(["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
+        const service = new ReviewService(pile, github, { cacheFile: `${gitDir}/pile/review-cache.json` });
         const initial = await resolveTarget(pile, target);
         const root = (await pile.git.run(["rev-parse", "--show-toplevel"]).catch(() => process.cwd())).trim();
         running = await startReviewServer({ service, initial, port, preferredPort: portFor(root) });

@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./api": "./src/api.ts"
+    "./api": "./src/api.ts",
+    "./stack-tree": "./src/lib/stack-tree.ts"
   },
   "scripts": {
     "build": "node build.mjs",

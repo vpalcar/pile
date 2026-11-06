@@ -134,7 +134,7 @@ await check("greets the viewer and summarizes", async () => {
 });
 await check("tabs show counts per group", async () => {
   const tabs = await page.locator("[role=tab]").allInnerTexts();
-  expect(tabs.join("|").replace(/\s+/g, " ") === "All 26|Needs review 3|Yours 12|Local 3|Others 8".replace(/\s+/g, " ").replace(/\|/g, "|"), tabs.join(" | "));
+  expect(tabs.join("|").replace(/\s+/g, " ") === "All 24|Needs review 3|Yours 18|Local 3".replace(/\s+/g, " ").replace(/\|/g, "|"), tabs.join(" | "));
 });
 await check("every row shows its readiness", async () => {
   const status = async (id) => (await page.locator(`[data-row="${id}"]`).innerText()).replace(/\s+/g, " ");
@@ -147,8 +147,6 @@ await check("every row shows its readiness", async () => {
     "pr-112": "Draft",
     "pr-113": "Approved",
     "branch-wip": "Local",
-    "pr-130": "Open",
-    "pr-131": "In review",
   };
   for (const [id, label] of Object.entries(expected)) {
     const row = await status(id);
@@ -191,7 +189,54 @@ await check("stack rails pass through every dot", async () => {
   );
   expect(misaligned.length === 0, `misaligned by ${misaligned.join(", ")}px`);
 });
-await check("filters with 1–5 and shows only that group", async () => {
+await check("the inbox is your work: no search box, nobody else's PRs", async () => {
+  expect((await count("input[placeholder^='Filter by']")) === 0, "no search box on the page");
+  const sections = await page.locator("section h2").allInnerTexts();
+  expect(!sections.some((t) => t.startsWith("Other open pull requests")), sections.join(" | "));
+  expect((await count('[data-row="pr-130"]')) === 0, "dave's PR isn't listed");
+  expect(await page.getByRole("button", { name: /Search all PRs/ }).isVisible(), "a way to search everything");
+});
+await check("Recently in review, under All: the latest open PRs, one row each", async () => {
+  expect((await page.locator("section h2").allInnerTexts()).slice(0, 2).join(" | ").includes("Recently in review"), "right after Waiting for your review");
+  const section = page.locator("[data-recent]");
+  const rows = section.locator("[data-recent-row]");
+  const n = await rows.count();
+  expect(n > 0 && n <= 5, `rows: ${n}`);
+  // Every open PR counts (any verdict or checks), drafts and local branches don't.
+  for (const text of await rows.allInnerTexts()) expect(!text.includes("Draft") && !text.includes("Local"), text.slice(0, 80));
+  const order = await rows.evaluateAll((r) => r.map((x) => x.querySelector("[data-tip]:last-of-type")?.getAttribute("data-tip") ?? ""));
+  expect(order.length === n, "rows have times");
+  expect((await section.innerText()).includes("in a stack"), "says where a stacked PR sits");
+  // Shortcut rows aren't part of j / k (they repeat PRs listed below).
+  expect((await section.locator("[data-row]").count()) === 0, "not in the keyboard list");
+  await section.screenshot({ path: join(OUT, `${String(++shots).padStart(3, "0")} inbox - recently in review.png`) });
+});
+await check("rows show the author's picture", async () => {
+  const author = page.locator('[data-row="pr-101"] [data-author]');
+  expect((await author.innerText()).includes("alice"), await author.innerText());
+  expect((await author.locator("img, span[aria-hidden]").count()) === 1, "avatar next to the name");
+});
+await check("sections fold away, and stay folded after a reload", async () => {
+  const header = page.locator('[data-section="needs_review"] h2 button');
+  await header.click();
+  expect((await header.getAttribute("aria-expanded")) === "false", "folded");
+  expect((await page.locator('[data-section="needs_review"] [data-row]').count()) === 0, "rows hidden");
+  await page.reload();
+  await page.waitForSelector("[data-page=inbox]");
+  expect((await page.locator('[data-section="needs_review"] h2 button').getAttribute("aria-expanded")) === "false", "still folded");
+  expect((await page.locator('[data-section="needs_review"] h2').innerText()).includes("3"), "count still shown");
+  await shot("section folded");
+  await page.locator('[data-section="needs_review"] h2 button').click();
+  expect((await page.locator('[data-section="needs_review"] [data-row]').count()) === 3, "unfolded");
+});
+await check("long sections show about ten PRs, then Show all", async () => {
+  const mine = page.locator('[data-section="mine"]');
+  const before = await mine.locator("[data-row]").count();
+  expect(before >= 10 && before < 18, `rows before: ${before}`);
+  await mine.getByRole("button", { name: /Show all 18/ }).click();
+  expect((await mine.locator("[data-row]").count()) === 18, "all 18");
+});
+await check("filters with 1–4 and shows only that group", async () => {
   await page.keyboard.press("2");
   expect((await page.locator("section h2").allInnerTexts()).every((t) => t.startsWith("Waiting for your review")), "only needs-review");
   await shot("filter needs review");
@@ -199,22 +244,50 @@ await check("filters with 1–5 and shows only that group", async () => {
   expect((await count("[data-row]")) === 3, "3 local rows");
   await page.keyboard.press("1");
 });
-await check("search filters by title, branch, author and number", async () => {
-  const before = await count("[data-row]");
+await check("an empty tab says what would be there, and how to get it there", async () => {
+  try {
+    await setState("emptyGroups=mine");
+    await page.reload();
+    await page.waitForSelector("[data-page=inbox]:not([data-partial])");
+    await page.keyboard.press("3");
+    const empty = page.locator("[data-empty=mine]");
+    const text = (await empty.innerText()).replace(/\s+/g, " ");
+    expect(text.includes("You have no open pull requests") && text.includes("pile submit") && text.includes("Search all PRs"), text);
+    await shot("inbox empty tab");
+  } finally {
+    await setState("emptyGroups=");
+    await page.reload();
+    await page.waitForSelector("[data-page=inbox]:not([data-partial])");
+    await page.keyboard.press("1");
+    await page.waitForSelector("[data-row]");
+  }
+});
+await check("⌘K with nothing typed: a short list, the actions in view", async () => {
   await page.keyboard.press("/");
-  await page.keyboard.type("rate-limit");
-  expect((await count("[data-row]")) === 2, `rows for "rate-limit": ${await count("[data-row]")}`);
-  await shot("search");
+  const palette = page.locator(".palette");
+  await palette.waitFor();
+  const jump = palette.locator("[cmdk-group]", { hasText: "Jump to" });
+  expect((await jump.locator("[cmdk-item]").count()) === 5, `suggestions: ${await jump.locator("[cmdk-item]").count()}`);
+  const list = await palette.locator("[cmdk-list]").boundingBox();
+  const refresh = await palette.locator("[cmdk-item]", { hasText: "Refresh" }).boundingBox();
+  expect(refresh.y + refresh.height <= list.y + list.height, "actions visible without scrolling");
+  await shot("palette empty");
+});
+await check("⌘K search: matches, then every open PR through GitHub, with a loading row", async () => {
+  await page.keyboard.type("safari");
+  await page.locator("[data-searching]").waitFor({ timeout: 2000 });
+  expect((await page.getByText("No pull requests, branches, files or actions match").count()) === 0, "no 'no results' while searching");
+  await page.locator(".palette [cmdk-item]", { hasText: "Flaky e2e on Safari" }).waitFor({ timeout: 5000 });
+  expect((await calls()).some((c) => c.type === "search" && c.q === "safari"), "asked GitHub once typing paused");
+  await shot("palette search");
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.type("#103");
+  await page.locator(".palette [cmdk-item]", { hasText: "Fix typo in the onboarding email" }).waitFor();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.type("zzzzqq");
+  await page.getByText("No pull requests, branches, files or actions match").waitFor({ timeout: 5000 });
   await page.keyboard.press("Escape");
-  await page.locator("input[placeholder^='Filter by']").fill("#103");
-  expect((await count("[data-row]")) === 1, "#103 by number");
-  await page.locator("input[placeholder^='Filter by']").fill("carol");
-  expect((await count("[data-row]")) === 7, `by author: ${await count("[data-row]")}`); // #103 and her 6-PR search stack
-  await page.locator("input[placeholder^='Filter by']").fill("zzzz");
-  await page.getByText("No pull requests or branches match").waitFor();
-  await shot("search no match");
-  await page.locator("input[placeholder^='Filter by']").press("Escape");
-  expect((await count("[data-row]")) === before, "cleared");
+  expect((await count(".palette")) === 0, "closed");
 });
 await check("j / k move the selection, Enter opens it", async () => {
   await page.locator("body").click({ position: { x: 5, y: 300 } });
@@ -229,9 +302,9 @@ await check("j / k move the selection, Enter opens it", async () => {
   await page.waitForSelector("[data-page=inbox]");
 });
 await check("hover reveals the open arrow", async () => {
-  await page.hover('[data-row="pr-130"]');
+  await page.hover('[data-row="pr-111"]');
   await page.waitForTimeout(300);
-  const opacity = await page.locator('[data-row="pr-130"] svg.lucide-arrow-up-right').evaluate((e) => getComputedStyle(e).opacity);
+  const opacity = await page.locator('[data-row="pr-111"] svg.lucide-arrow-up-right').evaluate((e) => getComputedStyle(e).opacity);
   expect(Number(opacity) > 0.9, `arrow opacity ${opacity}`);
 });
 
@@ -258,7 +331,7 @@ await check("navbar: Inbox › branch on the left, repo in the middle, actions a
   expect(xs.every((x, i) => i === 0 || x > xs[i - 1]), `order ${xs.map(Math.round)}`);
   // The repo name is the bar's one link to GitHub: the repo's default branch.
   expect((await count("nav a")) === 1 && (await page.locator("nav a[data-repo]").getAttribute("href")) === "https://github.com/acme/web", "repo link");
-  expect((await text("nav")).includes("2 of 26"), "position: stacks are listed top first, so #102 comes before #101");
+  expect((await text("nav")).includes("2 of 24"), "position: stacks are listed top first, so #102 comes before #101");
   expect(!(await page.locator("nav button[data-tip=Previous]").isDisabled()), "previous enabled: #102 is listed above #101");
   await shot("breadcrumb");
 });
@@ -326,6 +399,15 @@ section = "detail";
 log("\nPR page");
 await page.click('[data-row="pr-101"]');
 await detailReady();
+await check("the tab is named after the page: Review inbox, or the PR's title", async () => {
+  expect((await page.title()) === "Rate limit the public API", await page.title());
+  await page.keyboard.press("g");
+  await page.waitForSelector("[data-page=inbox]");
+  expect((await page.title()) === "Review inbox", await page.title());
+  expect((await page.locator("nav button").first().innerText()).includes("Inbox"), "no logo before Inbox");
+  await page.goBack();
+  await detailReady();
+});
 await check("header: status, number, title, branches, size", async () => {
   const header = (await text("[data-page=detail] header")).replace(/\s+/g, " ");
   for (const part of ["Checks failing", "#101", "Rate limit the public API", "alice", "api/rate-limit", "main", "7 files", "+1,511", "−7"]) {
@@ -334,7 +416,7 @@ await check("header: status, number, title, branches, size", async () => {
   await shot("top");
 });
 await check("branch chip copies the checkout command", async () => {
-  await page.click("header button[data-tip='Copy checkout command']");
+  await page.click("header button[data-tip^='Copy checkout command']");
   await toast("Copied");
   const copied = await page.evaluate(() => navigator.clipboard.readText());
   expect(copied === "pile checkout api/rate-limit", copied);
@@ -342,6 +424,8 @@ await check("branch chip copies the checkout command", async () => {
 await check("stack lists both PRs with their status and marks the current one", async () => {
   const stack = (await page.locator("section", { hasText: "Stack" }).first().innerText()).replace(/\s+/g, " ");
   expect(stack.includes("1 of 2") && stack.includes("#102") && stack.includes("#101") && stack.includes("main"), stack);
+  // Not registered on GitHub in the fixtures: the section says it's inferred.
+  expect((await page.locator("[data-stack-kind]").getAttribute("data-stack-kind")) === "branches", "linked by branches");
 });
 await check("stack entry navigates", async () => {
   await page.getByRole("link", { name: /#102/ }).click();
@@ -361,10 +445,80 @@ await check("description renders markdown: headings, lists, table, tasks, quote,
   for (const selector of [".markdown h2", ".markdown ul li code", ".markdown table td", ".markdown input[type=checkbox]:checked", ".markdown blockquote", ".markdown details summary"]) {
     expect((await count(selector)) > 0, `missing ${selector}`);
   }
-  await page.locator(".markdown details summary").click();
+  await page.locator(".markdown details summary").first().click();
   expect(await page.locator(".markdown details pre").isVisible(), "details opens");
   expect((await page.locator(".markdown a").first().getAttribute("target")) === "_blank", "links open in a new tab");
   await page.locator("section", { hasText: "Description" }).first().screenshot({ path: join(OUT, `${String(++shots).padStart(3, "0")} detail - description.png`) });
+});
+await check("description shows GitHub's attached videos", async () => {
+  const video = page.locator(".markdown details.details-reset video");
+  expect(await video.isVisible(), "video visible");
+  const box = await video.boundingBox();
+  expect(box && box.width > 300 && box.height >= 150, JSON.stringify(box));
+  const summary = page.locator(".markdown details.details-reset > summary");
+  expect((await summary.evaluate((el) => getComputedStyle(el).display)) === "flex", "file name and icon on one line");
+  expect((await summary.boundingBox()).height < 48, "summary is one short row");
+});
+await check("title: full width, edited in place (Enter saves, Escape cancels)", async () => {
+  const h1 = page.locator("[data-page=detail] header h1");
+  expect((await h1.evaluate((e) => getComputedStyle(e).textWrap ?? getComputedStyle(e).textWrapStyle)) !== "balance", "not balanced into halves");
+  await h1.hover();
+  await h1.getByRole("button", { name: "Edit title" }).click();
+  const input = page.locator("[data-title-editor] textarea");
+  expect((await input.inputValue()) === "Rate limit the public API", await input.inputValue());
+  await page.keyboard.press("Escape");
+  expect((await page.locator("[data-title-editor]").count()) === 0, "escape cancels");
+  await h1.hover();
+  await h1.getByRole("button", { name: "Edit title" }).click();
+  await input.fill("Rate limit the public API per key");
+  await shot("title editing");
+  await page.keyboard.press("Enter");
+  await toast("Title saved");
+  const call = (await calls()).filter((c) => c.type === "update" && c.title !== undefined).at(-1);
+  expect(call?.title === "Rate limit the public API per key", JSON.stringify(call));
+  expect((await h1.innerText()).includes("per key"), await h1.innerText());
+  // Put it back for the checks below.
+  await h1.hover();
+  await h1.getByRole("button", { name: "Edit title" }).click();
+  await input.fill("Rate limit the public API");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => !document.querySelector("[data-title-editor]") && document.querySelector("[data-page=detail] header h1")?.textContent?.startsWith("Rate limit the public API") && !document.querySelector("[data-page=detail] header h1")?.textContent?.includes("per key"));
+});
+await check("description: edit as markdown, ⌘Enter saves to GitHub", async () => {
+  const section = page.locator("section", { hasText: "Description" }).first();
+  await section.locator("[data-edit-description]").click();
+  const input = section.locator("[data-description-editor] textarea");
+  expect((await input.inputValue()).startsWith("Adds a token-bucket rate limiter"), await input.inputValue());
+  await shot("description editing");
+  // Escape leaves without saving.
+  await page.keyboard.press("Escape");
+  expect((await section.locator("[data-description-editor]").count()) === 0, "escape cancels");
+  await section.locator("[data-edit-description]").click();
+  await input.fill("Rewritten in pile.\n\nSecond paragraph.");
+  await page.keyboard.press("Meta+Enter");
+  await toast("Description saved");
+  const call = (await calls()).filter((c) => c.type === "update" && c.body !== undefined).at(-1);
+  expect(call?.body === "Rewritten in pile.\n\nSecond paragraph.", JSON.stringify(call));
+  expect((await section.locator(".markdown").innerText()).includes("Second paragraph."), "shows the new description");
+  await fetch(`${server.url}/__undo-description?pr=101`);
+  await page.reload();
+  await detailReady();
+});
+await check("header: long branch names shrink, the row never wraps", async () => {
+  const meta = page.locator("[data-header-meta]");
+  const before = (await meta.boundingBox()).height;
+  await meta.evaluate((row) => {
+    for (const chip of row.querySelectorAll("[data-branch-chip]")) chip.textContent = "11-06-filter-the-attached-to-tab-by-attachment-context-and-more";
+  });
+  const after = await meta.evaluate((row) => ({ height: row.getBoundingClientRect().height, clipped: [...row.querySelectorAll("[data-branch-chip]")].every((c) => c.scrollWidth > c.clientWidth) }));
+  expect(Math.abs(after.height - before) < 1 && after.clipped, JSON.stringify({ before, ...after }));
+  await shot("header long branches");
+  await page.reload();
+  await detailReady();
+});
+await check("checks bar: rounded parts, all the same height", async () => {
+  const parts = await page.locator("[data-checks-bar] i").evaluateAll((els) => els.map((e) => ({ h: e.getBoundingClientRect().height, r: getComputedStyle(e).borderRadius })));
+  expect(parts.length >= 2 && parts.every((p) => p.h === parts[0].h && p.r !== "0px"), JSON.stringify(parts));
 });
 await check("discussion: comments, reviews and grouped commits", async () => {
   const discussion = page.locator("section", { hasText: "Discussion" }).first();
@@ -407,7 +561,7 @@ await check("composer: an unsent draft survives leaving the page", async () => {
 });
 await check("rail: status, checks with durations, reviewers, labels, assignees", async () => {
   const rail = (await text("[data-page=detail] > aside")).replace(/\s+/g, " ");
-  for (const part of ["Checks failing", "2 passed · 1 failed · 1 running", "typecheck", "42s", "1m 35s", "frank", "Approved", "erin", "Changes requested", "grace", "Commented", "platform-team", "Requested", "api", "security", "alice", "bob"]) {
+  for (const part of ["Checks failing", "1 failed · 1 running · 2 passed", "typecheck", "42s", "1m 35s", "frank", "Approved", "erin", "Changes requested", "grace", "Commented", "platform-team", "Requested", "api", "security", "alice", "bob"]) {
     expect(rail.includes(part), `missing "${part}"`);
   }
   const order = await page.locator("[data-page=detail] > aside a[href*='example.com/ci'], [data-page=detail] > aside a:not([href])").allInnerTexts();
@@ -452,8 +606,25 @@ await check("approving sends the review and confirms", async () => {
   await page.locator("[role=dialog] textarea").fill("Ship it.");
   await page.keyboard.press("Meta+Enter");
   await toast("Approved #101");
+  // From here the server is slow (like rebuilding a big repo's inbox), so only the
+  // app's own update can move the PR in the next check.
+  await setState("delayMs=4000");
   const last = (await calls()).at(-1);
   expect(last.type === "review" && last.event === "APPROVE" && last.body === "Ship it.", JSON.stringify(last));
+});
+await check("a reviewed PR leaves Needs your review right away", async () => {
+  // No waiting for the server to rebuild the inbox: the badge drops as the review lands.
+  const badge = await text("nav button:has-text('Inbox')");
+  expect(badge.includes("2"), `inbox badge: ${badge}`);
+  await setState("delayMs=120");
+  await page.click("nav button:has-text('Inbox')");
+  await page.waitForSelector("[data-page=inbox]");
+  await page.getByRole("tab", { name: /Needs review/ }).click();
+  const rows = await page.locator("[data-row]").evaluateAll((r) => r.map((x) => x.dataset.row));
+  expect(!rows.includes("pr-101") && rows.length === 2, rows.join());
+  await page.getByRole("tab", { name: /All/ }).click();
+  await page.goto(`${server.url}/#/pr/101`);
+  await detailReady();
 });
 await check("on your own PR only Comment is possible", async () => {
   await page.goto(`${server.url}/#/pr/110`);
@@ -480,6 +651,51 @@ await check("tree lists files folders-first, like the diff order", async () => {
   expect(JSON.stringify(tree) === JSON.stringify(diffs), `tree ${tree.join(", ")} vs diffs ${diffs.join(", ")}`);
   expect(diffs[0] === "assets/diagram.png" && diffs.at(-1) === "README.md", diffs.join(", "));
   await shot("files top");
+});
+await check("tree shows comment threads per file as resolved/total", async () => {
+  const badges = await page.locator("aside[aria-label='File tree'] [data-threads]").evaluateAll((els) => els.map((e) => [e.closest("button")?.title, e.dataset.threads]));
+  // limit.ts: three threads, one resolved; README.md: one, open.
+  expect(JSON.stringify(badges) === JSON.stringify([["src/api/limit.ts", "1/3"], ["README.md", "0/1"]]), JSON.stringify(badges));
+  const bar = (await page.locator("[data-conversations]").innerText()).replace(/\s+/g, " ");
+  expect(bar.includes("3 open comments"), bar);
+});
+await check("comments: n steps through the open threads across files, opening what it needs", async () => {
+  await page.locator("body").click({ position: { x: 5, y: 300 } });
+  const landed = async () => {
+    const el = page.locator(".thread-flash").last();
+    await el.waitFor({ timeout: 5000 });
+    await page.waitForTimeout(700);
+    const at = await el.evaluate((e) => ({ path: e.closest(".file")?.getAttribute("data-path"), key: e.getAttribute("data-thread"), top: e.getBoundingClientRect().top }));
+    await el.evaluate((e) => e.classList.remove("thread-flash"));
+    return at;
+  };
+  const seen = [];
+  for (let i = 0; i < 3; i++) {
+    await page.keyboard.press("n");
+    seen.push(await landed());
+  }
+  expect(JSON.stringify(seen.map((s) => `${s.path} ${s.key}`)) === JSON.stringify(["src/api/limit.ts RIGHT:23", "src/api/limit.ts RIGHT:400", "README.md RIGHT:3"]), JSON.stringify(seen));
+  expect(seen.every((s) => s.top > 0 && s.top < 1000), "each one scrolled into view");
+  await shot("jumped to a comment");
+  await page.keyboard.press("Shift+N");
+  const back = await landed();
+  expect(back.key === "RIGHT:400", JSON.stringify(back));
+});
+await check("comments: resolved threads fold to one line; outdated ones sit above the diff", async () => {
+  const file = page.locator('.file[data-path="src/api/limit.ts"]');
+  const folded = file.locator('[data-thread="LEFT:22"] [data-folded]');
+  expect((await folded.innerText()).includes("Resolved"), await folded.innerText());
+  await folded.click();
+  expect((await file.locator('[data-thread="LEFT:22"]').innerText()).includes("Nit: keep the old name"), "opens");
+  const outdated = file.locator("[data-outdated]");
+  const text = (await outdated.innerText()).replace(/\s+/g, " ");
+  expect(text.includes("line 400 · outdated") && text.includes("Should this log"), text);
+  expect((await outdated.getByRole("button", { name: "Reply…" }).count()) === 0, "no replies to outdated lines");
+});
+await check("comments: the tree badge jumps to that file's open thread", async () => {
+  await page.locator("aside[aria-label='File tree'] [data-threads='0/1']").click();
+  const el = page.locator('.file[data-path="README.md"] [data-thread="RIGHT:3"].thread-flash');
+  await el.waitFor({ timeout: 5000 });
 });
 await check("bar: count, size, viewed progress, layout toggles", async () => {
   const bar = (await filesSection.locator("> div").first().innerText()).replace(/\s+/g, " ");
@@ -664,6 +880,8 @@ await check("file header: copy path, collapse", async () => {
   await file.scrollIntoViewIfNeeded();
   await file.locator("button[data-tip='Copy path']").click();
   await toast("Copied");
+  // An earlier check may have marked it viewed (which folds it): start from open.
+  if (await file.getByRole("button", { name: "Expand file" }).count()) await file.getByRole("button", { name: "Expand file" }).click();
   await file.getByRole("button", { name: "Collapse file" }).click();
   expect((await file.locator("table").count()) === 0, "collapsed");
   await file.getByRole("button", { name: "Expand file" }).click();
@@ -672,6 +890,15 @@ await check("file header: copy path, collapse", async () => {
 // =============================================================================
 section = "palette";
 log("\nCommand palette and shortcuts");
+await check("/ opens search on the PR page too, without typing the slash", async () => {
+  await page.locator("body").click({ position: { x: 5, y: 300 } });
+  await page.keyboard.press("/");
+  const input = page.locator(".palette input");
+  await input.waitFor();
+  expect((await input.inputValue()) === "", `typed: "${await input.inputValue()}"`);
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".palette", { state: "detached" });
+});
 await check("⌘K opens; files of this PR are listed first", async () => {
   await page.keyboard.press("Meta+k");
   await page.waitForSelector(".palette");
@@ -690,7 +917,7 @@ await check("jumps to another PR by title", async () => {
 await check("shows an empty state", async () => {
   await page.keyboard.press("Meta+k");
   await page.keyboard.type("qqqqqqq");
-  await page.getByText("No results").waitFor();
+  await page.getByText("No pull requests, branches, files or actions match").waitFor();
   await shot("no results");
   await page.keyboard.press("Escape");
 });
@@ -698,6 +925,7 @@ await check("actions: inbox, shortcuts, theme", async () => {
   await page.keyboard.press("Meta+k");
   await page.keyboard.type("light theme");
   await page.keyboard.press("Enter");
+  await page.waitForFunction(() => document.documentElement.dataset.theme === "light", null, { timeout: 2000 }).catch(() => {});
   expect((await page.evaluate(() => document.documentElement.dataset.theme)) === "light", "light");
   await page.keyboard.press("Meta+k");
   await page.keyboard.type("system theme");
@@ -873,6 +1101,24 @@ await check("status checks without a job can't be re-run", async () => {
   await row.hover();
   expect((await row.getByRole("button").count()) === 0, "no re-run on a status");
 });
+await check("many checks: what needs attention shows, passed and skipped fold away", async () => {
+  await open("#/pr/131");
+  await detailReady();
+  const summary = await text("[data-checks-summary]");
+  expect(summary === "1 failed · 2 running · 18 passed", summary);
+  expect((await count("aside [data-check=failure]")) === 1 && (await count("aside [data-check=pending]")) === 2, "failing and running are listed");
+  expect((await count("aside [data-check=success], aside [data-check=neutral]")) === 0, "passed and skipped start folded");
+  const folded = await page.locator("aside").last().boundingBox();
+  expect(folded.height < 900, `rail is ${Math.round(folded.height)}px tall`);
+  await shot("many checks folded");
+  await page.locator("aside button", { hasText: "18 passed" }).click();
+  expect((await count("aside [data-check=success]")) === 18, "passed expand");
+  await page.locator("aside button", { hasText: "18 passed" }).click();
+  expect((await count("aside [data-check=success]")) === 0, "and fold again");
+  await page.locator("aside button", { hasText: "26 skipped" }).click();
+  expect((await count("aside [data-check=neutral]")) === 26, "skipped expand");
+  await shot("many checks skipped open");
+});
 await check("draft → ready for review, and back", async () => {
   await open("#/pr/112");
   await detailReady();
@@ -937,12 +1183,16 @@ await check("merge: higher up, the stack is blocked by the PRs below", async () 
 });
 await check("diverging stack in the inbox: one card, every branch on its own lane", async () => {
   await open();
+  // It sits past the first ten of your PRs.
+  const more = page.locator('[data-section="mine"]').getByRole("button", { name: /Show all/ });
+  await page.waitForSelector("[data-page=inbox]:not([data-partial])");
+  await more.click();
   const card = page.locator("div.rounded-\\[14px\\]", { hasText: "Index documents for search" });
   const header = (await card.innerText()).replace(/\s+/g, " ");
   expect(header.includes("Stack of 6 on main · 3 branches"), header.slice(0, 80));
   const order = await card.locator("[data-row]").evaluateAll((rows) => rows.map((r) => r.dataset.row));
   expect(order.join(",") === "pr-145,pr-144,pr-142,pr-143,pr-141,pr-140", order.join(","));
-  expect((await card.locator(".rail-join").count()) === 2, "two branch points");
+  expect((await card.locator(".rail-corner").count()) === 2, "two branch points");
   await card.scrollIntoViewIfNeeded();
   await card.screenshot({ path: join(OUT, `${String(++shots).padStart(3, "0")} editing - diverging inbox.png`) });
 });
@@ -991,6 +1241,14 @@ await check("notes: on your own PR, comments go to your agent by default", async
   expect(!text.includes("--branch"), "settings/schema is checked out, so no --branch");
   await section.scrollIntoViewIfNeeded();
   await shot("notes section");
+  // A long path gives up its folders; label, file name, time and buttons stay on one line.
+  const header = section.locator("[data-note] > div").first();
+  const fits = await header.evaluate((row) => {
+    const path = row.querySelector("button.font-mono");
+    path.firstChild.textContent = "typescript/apps/registry/src/app/account/(dashboard)/certify/project/[projectId]/evidence/components/";
+    return { height: row.getBoundingClientRect().height, file: path.lastChild.scrollWidth <= path.lastChild.clientWidth + 1, wrapped: [...row.children].some((c) => c.getBoundingClientRect().height > 28) };
+  });
+  expect(fits.height <= 26 && fits.file && !fits.wrapped, JSON.stringify(fits));
 });
 await check("notes: the agent's reply shows up live, and a follow-up reopens the note", async () => {
   const section = page.locator("[data-notes-section]");

@@ -11,7 +11,20 @@ export const TOKEN = "test-token";
 const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".woff2": "font/woff2" };
 
 export function startMockServer(port = 0) {
-  const state = { calls: [], inboxRequests: 0, down: false, delayMs: 120, edits: {}, preferences: {}, notes: [] };
+  const state = { calls: [], inboxRequests: 0, down: false, delayMs: 120, edits: {}, preferences: {}, notes: [], reviewed: new Set() };
+  // Like GitHub: once you've reviewed a PR you're no longer a requested reviewer.
+  const withReviews = (data) =>
+    state.reviewed.size === 0
+      ? data
+      : {
+          ...data,
+          groups: data.groups.map((g) => {
+            const moved = data.groups.find((x) => x.id === "needs_review").items.filter((i) => state.reviewed.has(i.ref.number));
+            if (g.id === "needs_review") return { ...g, items: g.items.filter((i) => !state.reviewed.has(i.ref.number)) };
+            if (g.id === "others") return { ...g, items: [...moved, ...g.items] };
+            return g;
+          }),
+        };
   // Edits made through the app, layered over the fixtures.
   const withEdits = (detail) => (detail ? { ...detail, ...state.edits[detail.number] } : detail);
   const json = (res, status, body) => {
@@ -37,9 +50,18 @@ export function startMockServer(port = 0) {
       if (url.searchParams.has("done")) note.done = true;
       return json(res, 200, note);
     }
+    // Puts a PR's description back as the fixtures have it.
+    if (path === "/__undo-description") {
+      const edit = state.edits[Number(url.searchParams.get("pr"))];
+      if (edit) {
+        delete edit.body;
+        delete edit.bodyHtml;
+      }
+      return json(res, 200, { ok: true });
+    }
     if (path === "/__state") {
       Object.assign(state, Object.fromEntries([...url.searchParams].map(([k, v]) => [k, v === "true" ? true : v === "false" ? false : Number.isNaN(Number(v)) ? v : Number(v)])));
-      if (url.searchParams.has("reset")) Object.assign(state, { calls: [], inboxRequests: 0, down: false, edits: {}, fileDown: false, notes: [] });
+      if (url.searchParams.has("reset")) Object.assign(state, { calls: [], inboxRequests: 0, down: false, edits: {}, fileDown: false, notes: [], reviewed: new Set() });
       return json(res, 200, { ok: true });
     }
 
@@ -52,7 +74,10 @@ export function startMockServer(port = 0) {
       if (api === "/session") return json(res, 200, session);
       if (api === "/inbox") {
         state.inboxRequests++;
-        return json(res, 200, state.inboxRequests === 1 && !url.searchParams.has("fresh") ? partialInbox() : inbox);
+        const body = withReviews(state.inboxRequests === 1 && !url.searchParams.has("fresh") ? partialInbox() : inbox);
+        // /__state?emptyGroups=mine,local: those groups come back empty.
+        const empty = String(state.emptyGroups ?? "").split(",");
+        return json(res, 200, { ...body, groups: body.groups.map((g) => (empty.includes(g.id) ? { ...g, items: [] } : g)) });
       }
       if ((m = api.match(/^\/pr\/(\d+)$/))) {
         const detail = withEdits(detailFor(Number(m[1])));
@@ -72,11 +97,23 @@ export function startMockServer(port = 0) {
           }
           if (change.labels) edit.labels = change.labels.map((name) => options.labels.find((l) => l.name === name) ?? { name, color: "ededed", description: null });
           if (change.draft !== undefined) edit.state = change.draft ? "draft" : "open";
+          if (change.title !== undefined) edit.title = change.title;
+          if (change.body !== undefined) {
+            edit.body = change.body;
+            edit.bodyHtml = change.body.trim() ? change.body.split(/\n{2,}/).map((p) => `<p>${p.replace(/[&<>]/g, (c) => `&#${c.charCodeAt(0)};`)}</p>`).join("") : null;
+          }
           return json(res, 200, withEdits(detailFor(detail.number)));
         }
         return detail ? json(res, 200, detail) : json(res, 404, { error: `Pull request #${m[1]} doesn't exist`, code: "PR_NOT_FOUND" });
       }
       if (api === "/options") return json(res, 200, options);
+      // GitHub's search across the repo: here, one PR that isn't in the inbox at all.
+      if (api === "/search") {
+        const q = (url.searchParams.get("q") ?? "").toLowerCase();
+        state.calls.push({ type: "search", q });
+        const flaky = { ref: { kind: "pr", number: 150 }, id: "pr-150", title: "Flaky e2e on Safari", branch: "ci/safari-flake", base: "main", author: { login: "zoe", avatarUrl: null }, state: "open", updatedAt: new Date().toISOString(), additions: null, deletions: null, reviewDecision: null, checks: null, stack: null, local: null, url: "https://github.com/acme/web/pull/150", comments: 0 };
+        return json(res, 200, "safari".includes(q) || q.includes("safari") ? [flaky] : []);
+      }
       if (api === "/notes" && req.method === "GET") return json(res, 200, state.notes.filter((n) => n.branch === url.searchParams.get("branch")));
       if (api === "/notes" && req.method === "POST") {
         const body = await readBody(req);
@@ -168,6 +205,7 @@ export function startMockServer(port = 0) {
         const body = await readBody(req);
         state.calls.push({ type: "review", pr: Number(m[1]), ...body });
         if (/fail/i.test(body.body ?? "")) return json(res, 422, { error: "Review cannot be submitted right now", code: "REVIEW_REJECTED" });
+        state.reviewed.add(Number(m[1]));
         return json(res, 201, { ok: true });
       }
       return json(res, 404, { error: "Not found", code: "NOT_FOUND" });

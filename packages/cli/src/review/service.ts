@@ -23,6 +23,7 @@ import type {
   StackPosition,
 } from "@pile/review-web/api";
 import {
+  apiUsage,
   enableEtagCache,
   fetchChecks,
   fetchFiles,
@@ -40,10 +41,13 @@ import {
 } from "./github-data.js";
 import { diffStats, localCommits, localFiles, localState } from "./local-data.js";
 import { cleanupMergedBranch } from "../utils/merge-cleanup.js";
+import { checksFromNode, fetchInboxGraphQL, fetchPRGraphQL, listedFromNode, prsByNumberGraphQL, reviewsFromNode, searchPRsGraphQL, stackNeighboursGraphQL, type InboxNode } from "./github-graphql.js";
 
 type ListedPR = Awaited<ReturnType<Octokit["pulls"]["list"]>>["data"][number];
 type FullPR = Awaited<ReturnType<Octokit["pulls"]["get"]>>["data"] & {
   body_html?: string;
+  /** From GraphQL: whether the viewer may edit the title and description. */
+  viewer_can_update?: boolean;
   stack?: { number: number; position: number; size: number } | null;
 };
 
@@ -58,6 +62,20 @@ export class ReviewError extends Error {
   }
 }
 
+/** Requests budget knobs: see test/rate-budget.test.ts for what they cost. */
+const SHARED_READ_MS = 10_000;
+const WARM_LIMIT = 8;
+const LOW_QUOTA = 300;
+const GRAPHQL_RETRY_MS = 10 * 60_000;
+/** How long the list of open PRs (one GraphQL query) is shared by the inbox and PR pages. */
+/** How long a branch's stack neighbours are trusted before GitHub is asked again. */
+const STACK_LINKS_MS = 60_000;
+const OPEN_PRS_MS = 15_000;
+const PENDING_CHECKS_MS = 60_000;
+/** How often the inbox is rebuilt from GitHub; much less often when the quota runs low. */
+const INBOX_FRESH_MS = 20_000;
+const INBOX_FRESH_LOW_QUOTA_MS = 5 * 60_000;
+
 const prState = (pr: { state: string; draft?: boolean; merged_at?: string | null }): PRState =>
   pr.merged_at ? "merged" : pr.state === "closed" ? "closed" : pr.draft ? "draft" : "open";
 
@@ -69,21 +87,57 @@ export class ReviewService {
   private readonly octokit: Octokit | null;
   private readonly repo: Repo | null;
   private viewerPromise: Promise<{ login: string; avatar_url: string } | null> | null = null;
+  /** GitHub reads shared by the inbox, PR pages and stacks for a few seconds (see `recent`). */
+  private recentReads = new Map<string, { at: number; value: Promise<unknown> }>();
+  /** Each PR as last enriched for the inbox, so unchanged PRs cost no requests. */
+  private enriched = new Map<number, { version: string; item: InboxItem; pending: boolean; at: number }>();
+  /** PR pages already warmed, by version, so each is prepared once per change. */
+  private warmed = new Map<string, string>();
+  private warmedOnce = false;
+  /** GraphQL reads (fewer, richer queries); off when unavailable, until `graphqlOffUntil`. */
+  private graphqlOffUntil = 0;
+  private graphqlOffReason: string | null = null;
+  /** The inbox query's PRs, by number: inbox rows and stack entries come from these. */
+  private inboxNodes = new Map<number, InboxNode>();
+  private graphqlViewer: { login: string; avatar_url: string } | null = null;
+  /** PRs requesting your review (directly or from one of your teams), per GraphQL search. */
+  private reviewRequested = new Set<number>();
+  /** Set when GitHub search returns nothing for a repo with open PRs: list them instead. */
+  private searchUnreliable = false;
+  private teamsPromise: Promise<Set<string>> | null = null;
   private openPRs: { at: number; prs: Promise<ListedPR[]> } | null = null;
+  /** Others' PRs found around a PR page's stack, outside the inbox's searches. */
+  private stackExtras = new Map<number, ListedPR>();
+  /** Open PRs based on a branch (`c:branch`) or with it as head (`p:branch`), as last asked. */
+  private stackLinks = new Map<string, { at: number; prs: ListedPR[] }>();
+  /** Whether the trunk requires an approving review, as last seen in a PR's stack. */
+  private trunkReview = false;
+  /** The nodes behind those: reviews and check counts for others' stack entries. */
+  private stackNodes = new Map<number, InboxNode>();
   private memo = new Map<string, { at: number; value: Promise<unknown> }>();
 
   constructor(
     private readonly pile: PileInstance,
     private readonly github: GitHubInstance | null,
+    /** Where GitHub responses are cached between runs (.git/pile/review-cache.json). */
+    options: { cacheFile?: string; graphql?: boolean } = {},
   ) {
+    if (options.graphql === false || process.env.PILE_REVIEW_REST === "1") this.graphqlOffUntil = Infinity;
     this.octokit = github?.client.api ?? null;
     this.repo = github ? { owner: github.client.repoOwner, repo: github.client.repoName } : null;
-    if (this.octokit) enableEtagCache(this.octokit);
+    if (this.octokit) enableEtagCache(this.octokit, options.cacheFile);
   }
 
-  private viewer() {
+  /** Who you are: from the inbox query when GraphQL is in use, otherwise REST. */
+  private viewer(): Promise<{ login: string; avatar_url: string } | null> {
     if (!this.octokit) return Promise.resolve(null);
-    this.viewerPromise ??= this.octokit.users
+    if (this.graphqlViewer) return Promise.resolve(this.graphqlViewer);
+    if (this.graphql()) return this.listOpenPRs().then(() => this.graphqlViewer ?? this.restViewer());
+    return this.restViewer();
+  }
+
+  private restViewer() {
+    this.viewerPromise ??= this.octokit!.users
       .getAuthenticated()
       .then(({ data }) => ({ login: data.login, avatar_url: data.avatar_url }))
       .catch(() => null);
@@ -93,13 +147,108 @@ export class ReviewService {
   /** Open PRs, shared by the inbox and stack lookups for a few seconds. */
   private listOpenPRs(): Promise<ListedPR[]> {
     if (!this.octokit || !this.repo) return Promise.resolve([]);
-    if (!this.openPRs || Date.now() - this.openPRs.at > 5_000) {
-      this.openPRs = {
-        at: Date.now(),
-        prs: this.octokit.paginate(this.octokit.pulls.list, { ...this.repo, state: "open", per_page: 100 }),
-      };
+    if (!this.openPRs || Date.now() - this.openPRs.at > OPEN_PRS_MS) {
+      const rest = () => this.octokit!.paginate(this.octokit!.pulls.list, { ...this.repo!, state: "open", per_page: 100 });
+      // One GraphQL query brings every open PR with its reviews, checks and size, so
+      // inbox rows and stack entries need no further requests.
+      const prs = this.graphql() && !this.searchUnreliable
+        ? fetchInboxGraphQL(this.octokit, this.repo).then(
+            ({ viewer, defaultBranch, nodes, requested, openInRepo }) => {
+              if (nodes.length === 0 && openInRepo > 0) {
+                // Nothing from search in a repo with open PRs: don't trust it.
+                this.searchUnreliable = true;
+                if (viewer) this.graphqlViewer = viewer as { login: string; avatar_url: string };
+                return rest();
+              }
+              this.reviewRequested = requested;
+              // Keep what the slow pass knew (sizes, checks) for PRs that haven't changed.
+              this.inboxNodes = new Map(
+                nodes.map((n) => {
+                  const known = this.inboxNodes.get(n.number);
+                  return [n.number, known?.updatedAt === n.updatedAt && known.headRefOid === n.headRefOid ? { ...n, additions: known.additions, deletions: known.deletions, commits: known.commits } : n];
+                }),
+              );
+              if (viewer) this.graphqlViewer = viewer as { login: string; avatar_url: string };
+              return nodes.map((n) => listedFromNode(n, defaultBranch) as unknown as ListedPR);
+            },
+            (error) => {
+              this.graphqlFailed(error);
+              return rest();
+            },
+          )
+        : rest();
+      this.openPRs = { at: Date.now(), prs };
     }
     return this.openPRs.prs;
+  }
+
+  /** The slow pass: the same PRs with sizes and check counts. */
+  private async fullInboxGraphQL(): Promise<ListedPR[]> {
+    try {
+      const { viewer, defaultBranch, nodes, requested, openInRepo } = await fetchInboxGraphQL(this.octokit!, this.repo!, { full: true });
+      if (nodes.length === 0 && openInRepo > 0) {
+        this.searchUnreliable = true;
+        throw new Error("GitHub search returned nothing for a repo with open pull requests");
+      }
+      this.reviewRequested = requested;
+      if (viewer) this.graphqlViewer = viewer as { login: string; avatar_url: string };
+      this.inboxNodes = new Map(nodes.map((n) => [n.number, n]));
+      const listed = nodes.map((n) => listedFromNode(n, defaultBranch) as unknown as ListedPR);
+      // PR pages share this list (their stacks) instead of asking again.
+      this.openPRs = { at: Date.now(), prs: Promise.resolve(listed) };
+      return listed;
+    } catch (error) {
+      // An empty search only means the inbox comes from the PR list; GraphQL stays on.
+      if (!this.searchUnreliable) this.graphqlFailed(error);
+      throw error;
+    }
+  }
+
+  /** Open PRs matching `text`, across the repo: how other people's PRs are found. */
+  async search(text: string): Promise<InboxItem[]> {
+    if (!this.octokit || !this.repo || text.trim().length < 2) return [];
+    if (this.graphql()) {
+      try {
+        const [nodes, viewer] = await Promise.all([searchPRsGraphQL(this.octokit, this.repo, text), this.viewer()]);
+        return nodes.map((n) => {
+          const pr = listedFromNode(n, "main") as unknown as ListedPR;
+          return { ...this.basicPRItem(pr), comments: n.totalCommentsCount ?? 0, reviewDecision: decisionFor(reviewsFromNode(n), pr, viewer?.login ?? null) };
+        });
+      } catch (error) {
+        this.graphqlFailed(error);
+      }
+    }
+    const q = text.trim().toLowerCase();
+    return (await this.listOpenPRs())
+      .filter((pr) => [pr.title, pr.head.ref, pr.user?.login ?? "", `#${pr.number}`].some((s) => s.toLowerCase().includes(q)))
+      .slice(0, 25)
+      .map((pr) => this.basicPRItem(pr));
+  }
+
+  /**
+   * Slugs of the teams you're on in this repo's organisation, so team review requests
+   * count as yours. One request, kept for the session; none needed when GraphQL search
+   * already says which PRs request you.
+   */
+  private viewerTeams(): Promise<Set<string>> {
+    if (!this.octokit || !this.repo || (this.graphql() && !this.searchUnreliable)) return Promise.resolve(new Set());
+    this.teamsPromise ??= this.octokit
+      .paginate(this.octokit.teams.listForAuthenticatedUser, { per_page: 100 })
+      .then((teams) => new Set(teams.filter((t) => t.organization.login.toLowerCase() === this.repo!.owner.toLowerCase()).map((t) => t.slug)))
+      .catch(() => new Set<string>());
+    return this.teamsPromise;
+  }
+
+  /** Whether reads go over GraphQL right now. */
+  private graphql(): boolean {
+    return Date.now() >= this.graphqlOffUntil;
+  }
+
+  /** GraphQL failed (blocked in a sandbox, its own rate limit, an outage): REST for a while. */
+  private graphqlFailed(error: unknown): void {
+    this.graphqlOffReason = error instanceof Error ? error.message : String(error);
+    this.graphqlOffUntil = Date.now() + GRAPHQL_RETRY_MS;
+    this.inboxNodes.clear();
   }
 
   async session(initial: ItemRef | null): Promise<Session> {
@@ -137,8 +286,10 @@ export class ReviewService {
       if (this.memo.get(key) === entry) this.memo.delete(key);
     });
     if (hit && age < staleMs) {
-      // Stale but recent: answer now, swap in the new value when it lands.
-      next.then(() => this.memo.set(key, entry)).catch(() => {});
+      // Stale but recent: answer now, swap in the new value when it lands, unless the
+      // entry was invalidated meanwhile (a review was just posted, say): then this
+      // result predates the change and must not replace the fresh one.
+      next.then(() => this.memo.get(key) === hit && this.memo.set(key, entry)).catch(() => {});
       return hit.value as Promise<T>;
     }
     this.memo.set(key, entry);
@@ -148,19 +299,78 @@ export class ReviewService {
   /** Forget cached reads, e.g. after a comment or review changes them. */
   invalidate(ref?: ItemRef): void {
     if (ref) this.memo.delete(ref.kind === "pr" ? `pr/${ref.number}` : `branch/${ref.name}`);
+    if (ref?.kind === "pr") {
+      this.recentReads.delete(`pr/${ref.number}`);
+      this.recentReads.delete(`reviews/${ref.number}`);
+      this.enriched.delete(ref.number);
+    }
     // The full inbox is kept and served until its replacement is ready: dropping it
     // would fall back to the quick list, whose missing checks read as "Open".
     this.inboxVersion++;
     this.memo.delete("inbox-fast");
+    // Who's requested to review lives on the PR list, so that has to be read again too.
+    this.openPRs = null;
   }
 
   private warming = false;
   /** Prepares every open PR's details in the background, a few at a time, so opening one is instant. */
   private warmDetails(inbox: Inbox): void {
-    if (this.warming) return;
+    // Each warmed page costs a dozen requests: only the likeliest few, once per change,
+    // and not at all when the hourly quota runs low.
+    // Once, after the first full inbox: later pages are fetched when opened.
+    if (this.warming || this.warmedOnce || this.lowOnQuota()) return;
+    this.warmedOnce = true;
+    const order = ["needs_review", "mine", "local"];
+    const items = order
+      .flatMap((id) => inbox.groups.find((g) => g.id === id)?.items ?? [])
+      .filter((i) => !this.warmed.has(i.id))
+      .slice(0, WARM_LIMIT);
+    if (items.length === 0) return;
     this.warming = true;
-    const refs = inbox.groups.flatMap((g) => g.items.map((i) => i.ref)).slice(0, 40);
-    mapLimit(refs, 3, (ref) => this.detail(ref).catch(() => undefined)).finally(() => (this.warming = false));
+    mapLimit(items, 3, (item) =>
+      this.detail(item.ref)
+        .then(() => this.warmed.set(item.id, `${item.updatedAt}`))
+        .catch(() => undefined),
+    ).finally(() => (this.warming = false));
+  }
+
+  /** Under 300 requests left this hour: stop extras and refresh rarely. */
+  private lowOnQuota(): boolean {
+    const quota = this.quota();
+    return !!quota && quota.remaining < LOW_QUOTA;
+  }
+
+  /** The tighter of the two budgets: GraphQL points (when in use) and REST requests. */
+  private quota(): { remaining: number; limit: number; resetAt: string | null } | null {
+    const usage = this.usage();
+    if (!usage) return null;
+    const budgets = [
+      usage.remaining != null ? { remaining: usage.remaining, limit: usage.limit ?? 5000, resetAt: usage.resetAt } : null,
+      this.graphql() && usage.graphql.remaining != null ? { remaining: usage.graphql.remaining, limit: usage.graphql.limit ?? 5000, resetAt: usage.graphql.resetAt } : null,
+    ].filter((b): b is NonNullable<typeof b> => !!b);
+    return budgets.sort((a, b) => a.remaining / a.limit - b.remaining / b.limit)[0] ?? null;
+  }
+
+  /**
+   * One GitHub read shared for a few seconds by everything that needs it (the inbox,
+   * a PR page, the stacks it appears in), and by concurrent callers.
+   */
+  private recent<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
+    const hit = this.recentReads.get(key);
+    if (hit && Date.now() - hit.at < ttlMs) return hit.value as Promise<T>;
+    const value = load();
+    this.recentReads.set(key, { at: Date.now(), value });
+    value.catch(() => this.recentReads.get(key)?.value === value && this.recentReads.delete(key));
+    return value;
+  }
+  private getPR(number: number) {
+    return this.recent(`pr/${number}`, SHARED_READ_MS, () => this.octokit!.pulls.get({ ...this.repo!, pull_number: number }).then(({ data }) => data as FullPR));
+  }
+  private getReviews(number: number) {
+    return this.recent(`reviews/${number}`, SHARED_READ_MS, () => fetchReviews(this.octokit!, this.repo!, number));
+  }
+  private getChecks(sha: string) {
+    return this.recent(`checks/${sha}`, SHARED_READ_MS, () => fetchChecks(this.octokit!, this.repo!, sha));
   }
 
   /** Fetches the inbox and the first item's details ahead of the first page load. */
@@ -183,7 +393,7 @@ export class ReviewService {
       this.refreshInbox();
       return this.cached("inbox-fast", 5_000, () => this.loadInbox(false));
     }
-    const stale = this.inboxBuiltFrom !== this.inboxVersion || Date.now() - full.at > 8_000;
+    const stale = this.inboxBuiltFrom !== this.inboxVersion || Date.now() - full.at > (this.lowOnQuota() ? INBOX_FRESH_LOW_QUOTA_MS : INBOX_FRESH_MS);
     if (fresh) return (await this.refreshInbox()) ?? (full.value as Promise<Inbox>);
     if (stale) this.refreshInbox();
     return full.value as Promise<Inbox>;
@@ -214,16 +424,28 @@ export class ReviewService {
   }
 
   private async loadInbox(enrich: boolean): Promise<Inbox> {
-    const [viewer, prs, refs, currentBranch] = await Promise.all([
-      this.viewer(),
-      this.listOpenPRs(),
-      this.pile.git.getRefs(),
-      this.pile.git.getCurrentBranch(),
-    ]);
+    // Over GraphQL the full inbox is the slower second pass (sizes and checks); the
+    // quick one is the shared list of your PRs and review requests.
+    // The full pass already has everything the quick list has, so it replaces it.
+    const prsP = enrich && this.graphql() && !this.searchUnreliable ? this.fullInboxGraphQL().catch(() => this.listOpenPRs()) : this.listOpenPRs();
+    const [prs, refs, currentBranch] = await Promise.all([prsP, this.pile.git.getRefs(), this.pile.git.getCurrentBranch()]);
+    const viewer = await this.viewer();
+    const fromGraphQL = this.graphql() && this.inboxNodes.size + prs.length > 0 && prs.every((p) => this.inboxNodes.has(p.number));
 
-    const prItems = enrich
-      ? await mapPRs(prs, (pr) => this.prItem(pr, viewer?.login ?? null, refs, currentBranch))
-      : prs.map((pr) => this.basicPRItem(pr));
+    // Only PRs that are yours or wait on your review are enriched (checks, reviews,
+    // size); everyone else's come from the list alone and only show up in search.
+    const teams = await this.viewerTeams();
+    // Waiting for you: requested from you, or from a team you're on.
+    const requestedFromYou = (pr: ListedPR) =>
+      !!viewer &&
+      ((pr.requested_reviewers ?? []).some((u) => u?.login === viewer.login) ||
+        this.reviewRequested.has(pr.number) ||
+        (pr.requested_teams ?? []).some((t) => teams.has(t.slug)));
+    const yours = (pr: ListedPR) => !!viewer && (pr.user?.login === viewer.login || requestedFromYou(pr));
+    const prItems =
+      enrich || fromGraphQL
+        ? await mapPRs(prs, (pr) => (yours(pr) ? this.inboxItem(pr, viewer?.login ?? null, refs, currentBranch) : Promise.resolve(this.basicPRItem(pr))))
+        : prs.map((pr) => this.basicPRItem(pr));
     const positions = chainPositions(prs.map((pr) => ({ head: pr.head.ref, base: pr.base.ref })));
     for (const item of prItems) {
       item.stack ??= positions.get(item.branch) ?? null;
@@ -242,7 +464,7 @@ export class ReviewService {
     const others: InboxItem[] = [];
     prs.forEach((pr, i) => {
       const item = prItems[i];
-      const requested = (pr.requested_reviewers ?? []).some((u) => u?.login === login);
+      const requested = requestedFromYou(pr);
       if (pr.user?.login === login) mine.push(item);
       else if (requested) needsReview.push(item);
       else others.push(item);
@@ -252,9 +474,10 @@ export class ReviewService {
       { id: "needs_review", title: "Needs your review", items: sortByStack(needsReview) },
       { id: "mine", title: "Your pull requests", items: sortByStack(mine) },
       { id: "local", title: "Local branches", items: sortByStack(localItems) },
-      { id: "others", title: "Other open pull requests", items: sortByStack(others) },
+      // Not shown in the inbox; searched when you look for something specific.
+      { id: "others", title: "Other open pull requests", items: sortByStack(others), searchOnly: true },
     ];
-    return { groups, fetchedAt: new Date().toISOString(), partial: !enrich && !!this.octokit };
+    return { groups, fetchedAt: new Date().toISOString(), partial: !enrich && !!this.octokit, quota: this.quota() };
   }
 
   /** What the PR list alone tells us; checks, reviews and sizes come later. */
@@ -279,18 +502,58 @@ export class ReviewService {
     };
   }
 
+  /**
+   * A PR's inbox row. Unchanged PRs (same update time and head commit) are reused
+   * without a request; while checks run, only the checks are read again.
+   */
+  private async inboxItem(
+    pr: ListedPR,
+    viewer: string | null,
+    refs: Awaited<ReturnType<PileInstance["git"]["getRefs"]>>,
+    currentBranch: string,
+  ): Promise<InboxItem> {
+    const version = `${pr.updated_at}/${pr.head.sha}/${(pr.requested_reviewers ?? []).map((u) => u?.login).join(",")}`;
+    const node = this.inboxNodes.get(pr.number);
+    if (node) {
+      // Everything came with the inbox query.
+      return {
+        ...this.basicPRItem(pr),
+        additions: node.additions ?? null,
+        deletions: node.deletions ?? null,
+        comments: node.totalCommentsCount ?? 0,
+        reviewDecision: decisionFor(reviewsFromNode(node), pr, viewer),
+        checks: checksFromNode(node),
+        local: await localState(this.pile, pr.head.ref, refs, currentBranch),
+      };
+    }
+    const known = this.enriched.get(pr.number);
+    let item: InboxItem;
+    let at = Date.now();
+    if (known?.version === version && (!known.pending || Date.now() - known.at < PENDING_CHECKS_MS)) {
+      // Unchanged; running checks are re-read at most once a minute here (the PR page
+      // follows them live).
+      item = { ...known.item, local: await localState(this.pile, pr.head.ref, refs, currentBranch) };
+      at = known.at;
+    } else if (known?.version === version) {
+      const checks = summarizeChecks(await this.getChecks(pr.head.sha));
+      item = { ...known.item, checks, local: await localState(this.pile, pr.head.ref, refs, currentBranch) };
+    } else {
+      item = await this.prItem(pr, viewer, refs, currentBranch);
+    }
+    this.enriched.set(pr.number, { version, item, pending: item.checks?.state === "pending", at });
+    return item;
+  }
+
   private async prItem(
     pr: ListedPR,
     viewer: string | null,
     refs: Awaited<ReturnType<PileInstance["git"]["getRefs"]>>,
     currentBranch: string,
   ): Promise<InboxItem> {
-    const octokit = this.octokit!;
-    const repo = this.repo!;
     const [full, reviews, checks, local] = await Promise.all([
-      octokit.pulls.get({ ...repo, pull_number: pr.number }).then(({ data }) => data as FullPR),
-      octokit.pulls.listReviews({ ...repo, pull_number: pr.number, per_page: 100 }).then(({ data }) => data),
-      fetchChecks(octokit, repo, pr.head.sha),
+      this.getPR(pr.number),
+      this.getReviews(pr.number),
+      this.getChecks(pr.head.sha),
       localState(this.pile, pr.head.ref, refs, currentBranch),
     ]);
     return {
@@ -380,6 +643,14 @@ export class ReviewService {
     }
     const octokit = this.octokit;
     const repo = this.repo;
+    if (this.graphql()) {
+      try {
+        return await this.prDetailGraphQL(number);
+      } catch (error) {
+        if (error instanceof ReviewError) throw error;
+        this.graphqlFailed(error);
+      }
+    }
     // Everything that doesn't need the head commit starts right away, in parallel.
     const prPromise = octokit.pulls
       .get({ ...repo, pull_number: number, mediaType: { format: "full" } })
@@ -391,23 +662,63 @@ export class ReviewService {
         throw error;
       });
     const filesP = fetchFiles(octokit, repo, number);
-    const reviewsP = fetchReviews(octokit, repo, number);
+    const reviewsP = this.getReviews(number);
     const inlineP = fetchInlineComments(octokit, repo, number);
     const partsP = fetchTimelineParts(octokit, repo, number);
     const contextP = Promise.all([this.viewer(), this.pile.git.getRefs(), this.pile.git.getCurrentBranch()]);
     for (const p of [filesP, reviewsP, inlineP, partsP, contextP]) p.catch(() => {});
 
     const pr = await prPromise;
-    const [files, reviews, inline, checks, stack, [viewer, refs, currentBranch]] = await Promise.all([
-      filesP,
-      reviewsP,
-      inlineP,
-      fetchChecks(octokit, repo, pr.head.sha),
-      this.prStack(pr),
-      contextP,
-    ]);
+    const [files, reviews, inline, checks] = await Promise.all([filesP, reviewsP, inlineP, this.getChecks(pr.head.sha)]);
+    return this.buildDetail(number, pr, { files, reviews, inline, checks, parts: partsP, context: contextP });
+  }
+
+  /** A PR page from one GraphQL query plus the files (REST: GraphQL has no patches). */
+  private async prDetailGraphQL(number: number): Promise<Detail> {
+    const octokit = this.octokit!;
+    const repo = this.repo!;
+    // Files are the one REST read here. If REST's quota is used up, the page still
+    // shows everything else, and says why the files are missing.
+    let filesUnavailable: string | null = null;
+    const filesP = fetchFiles(octokit, repo, number).catch((error) => {
+      const { body } = ReviewService.errorBody(error);
+      if (body.code !== "RATE_LIMITED") throw error;
+      filesUnavailable = body.error;
+      return [];
+    });
+    const contextP = Promise.all([this.viewer(), this.pile.git.getRefs(), this.pile.git.getCurrentBranch()]);
+    filesP.catch(() => {});
+    contextP.catch(() => {});
+    const data = await fetchPRGraphQL(octokit, repo, number);
+    if (!data) throw new ReviewError(404, "PR_NOT_FOUND", `Pull request #${number} doesn't exist`);
+    const files = await filesP;
+    const detail = await this.buildDetail(number, data.pr as unknown as FullPR, {
+      files,
+      reviews: data.reviews as unknown as Awaited<ReturnType<typeof fetchReviews>>,
+      inline: data.inline,
+      checks: data.checks,
+      parts: Promise.resolve([data.comments, data.commits]) as unknown as ReturnType<typeof fetchTimelineParts>,
+      context: contextP,
+    });
+    return filesUnavailable ? { ...detail, filesUnavailable } : detail;
+  }
+
+  private async buildDetail(
+    number: number,
+    pr: FullPR,
+    got: {
+      files: Awaited<ReturnType<typeof fetchFiles>>;
+      reviews: Awaited<ReturnType<typeof fetchReviews>>;
+      inline: Awaited<ReturnType<typeof fetchInlineComments>>;
+      checks: Awaited<ReturnType<typeof fetchChecks>>;
+      parts: ReturnType<typeof fetchTimelineParts>;
+      context: Promise<[Awaited<ReturnType<ReviewService["viewer"]>>, Awaited<ReturnType<PileInstance["git"]["getRefs"]>>, string]>;
+    },
+  ): Promise<Detail> {
+    const { files, reviews, inline, checks } = got;
+    const [stack, [viewer, refs, currentBranch]] = await Promise.all([this.prStack(pr), got.context]);
     const [timeline, local] = await Promise.all([
-      fetchTimeline(partsP, reviews, inline),
+      fetchTimeline(got.parts, reviews, inline),
       localState(this.pile, pr.head.ref, refs, currentBranch),
     ]);
     const state = prState(pr);
@@ -426,6 +737,9 @@ export class ReviewService {
       createdAt: pr.created_at,
       updatedAt: pr.updated_at,
       bodyHtml: pr.body_html || null,
+      body: pr.body ?? null,
+      // Known once the stack is: prStack looks the native stack up.
+      nativeStack: pr.stack?.number ?? null,
       additions: pr.additions,
       deletions: pr.deletions,
       stack,
@@ -447,6 +761,8 @@ export class ReviewService {
         merge: state === "open",
         // Only the author moves their own PR between draft and ready.
         draft: !!viewer && viewer.login === pr.user?.login && (state === "open" || state === "draft"),
+        // GitHub says over GraphQL; over REST, assume only the author.
+        edit: pr.viewer_can_update ?? (!!viewer && viewer.login === pr.user?.login),
       },
       merge: state === "open" || state === "draft" ? this.mergeInfo(pr, reviews, checks, stack) : null,
     };
@@ -462,35 +778,103 @@ export class ReviewService {
     const octokit = this.octokit!;
     const repo = this.repo!;
     const [open, viewer] = await Promise.all([this.listOpenPRs(), this.viewer()]);
-    const byNumber = new Map(open.map((p) => [p.number, p as ListedPR | FullPR]));
+    const byNumber = new Map([...this.stackExtras, ...open.map((p) => [p.number, p] as const)] as Array<[number, ListedPR | FullPR]>);
     byNumber.set(pr.number, pr);
+    // A native stack lists its PRs by number; any outside the inbox (others' PRs, or ones
+    // you've already reviewed) are fetched, so each entry's status is the same on every page.
+    const inInbox = new Set([pr.number, ...open.map((p) => p.number)]);
+    const missing = entries
+      .flatMap((e) => (e.ref.kind === "pr" && (e.state === "open" || e.state === "draft") && !inInbox.has(e.ref.number) ? [e.ref.number] : []))
+      .sort((a, b) => a - b);
+    // (Stacks inferred from branches already brought theirs, with the neighbour lookup.)
+    if (pr.stack && missing.length > 0) {
+      for (const p of await this.openPRsByNumber(missing)) {
+        byNumber.set(p.number, p);
+        this.stackExtras.set(p.number, p);
+      }
+    }
+    const trunk = pr.base.repo.default_branch;
+    // A stack merge lands every PR on the trunk, so each must meet the trunk's review
+    // rule, even while GitHub judges the upper ones against their (unprotected) bases.
+    this.trunkReview = trunkNeedsReview([...byNumber.values()], trunk);
+    const needsApproval = (p: ListedPR | FullPR, decision: InboxItem["reviewDecision"]) =>
+      githubDecision(p) === "REVIEW_REQUIRED" || (this.trunkReview && p.base.ref !== trunk && decision !== "approved");
     return mapLimit(entries, 4, async (entry) => {
       const listed = entry.ref.kind === "pr" ? byNumber.get(entry.ref.number) : undefined;
       if (!listed || entry.state === "merged" || entry.state === "closed") return entry;
+      const node = this.inboxNodes.get(listed.number) ?? this.stackNodes.get(listed.number);
+      if (node) {
+        // From the inbox query: no requests.
+        const reviews = reviewsFromNode(node);
+        const summary = checksFromNode(node);
+        const decision = decisionFor(reviews, listed, viewer?.login ?? null);
+        // The quick pass has no checks yet: leave them to the inbox rather than guess.
+        if (!summary) return { ...entry, reviewDecision: decision };
+        return {
+          ...entry,
+          checks: summary,
+          reviewDecision: decision,
+          blockers: blockingReasons({ draft: !!listed.draft, checks: summary, changesRequested: changesRequested(reviews), mergeable: null, mergeableState: null, reviewRequired: needsApproval(listed, decision) }).map((r) => r.message),
+        };
+      }
       const [checks, reviews] = await Promise.all([
-        fetchChecks(octokit, repo, listed.head.sha).catch(() => null),
-        fetchReviews(octokit, repo, listed.number).catch(() => null),
+        this.getChecks(listed.head.sha).catch(() => null),
+        this.getReviews(listed.number).catch(() => null),
       ]);
       const summary = checks ? summarizeChecks(checks) : null;
+      const decision = reviews ? decisionFor(reviews, listed, viewer?.login ?? null) : entry.reviewDecision;
       return {
         ...entry,
         checks: summary,
-        reviewDecision: reviews ? decisionFor(reviews, listed, viewer?.login ?? null) : entry.reviewDecision,
+        reviewDecision: decision,
         blockers: blockingReasons({
           draft: !!listed.draft,
           checks: summary ?? { state: "pending", total: 0, failed: 0, pending: 0 },
           changesRequested: !!reviews && changesRequested(reviews),
           mergeable: null, // only known per PR; GitHub refuses at merge time if it can't
           mergeableState: null,
+          reviewRequired: needsApproval(listed, decision),
         }).map((r) => r.message),
       };
+    });
+  }
+
+  /** Open PRs by number (cached for a minute): GraphQL with reviews and check counts, else REST. */
+  private openPRsByNumber(numbers: number[]): Promise<ListedPR[]> {
+    return this.cached(`prs/${numbers.join(",")}`, STACK_LINKS_MS, async () => {
+      if (this.graphql()) {
+        const found = await prsByNumberGraphQL(this.octokit!, this.repo!, numbers).catch(() => null);
+        if (found) {
+          return found.nodes.map((n) => {
+            this.stackNodes.set(n.number, n);
+            return listedFromNode(n, found.defaultBranch ?? "main") as unknown as ListedPR;
+          });
+        }
+      }
+      const prs = await Promise.all(numbers.map((n) => this.octokit!.pulls.get({ ...this.repo!, pull_number: n }).then((r) => r.data as unknown as ListedPR, () => null)));
+      return prs.filter((p): p is ListedPR => !!p && p.state === "open");
+    });
+  }
+
+  /** The open native GitHub stack a PR is in, if any; null too where stacks aren't available. */
+  private nativeStackFor(number: number): Promise<{ number: number; position: number; size: number } | null> {
+    return this.cached(`native-stack/${number}`, STACK_LINKS_MS, async () => {
+      const { data } = await this.octokit!.request("GET /repos/{owner}/{repo}/stacks", { ...this.repo!, pull_request: number }).catch(() => ({ data: [] }));
+      const stack = (data as Array<{ number: number; open: boolean; pull_requests: Array<{ number: number }> }>).find((s) => s.open);
+      if (!stack) return null;
+      return { number: stack.number, position: stack.pull_requests.findIndex((p) => p.number === number) + 1, size: stack.pull_requests.length };
     });
   }
 
   private async stackEntries(pr: FullPR): Promise<StackEntry[]> {
     const octokit = this.octokit!;
     const repo = this.repo!;
-    // Native GitHub stack: the stack itself is the source of truth.
+    // Native GitHub stack: the stack itself is the source of truth. GraphQL doesn't say
+    // whether a PR is in one, so ask (cached; a 304 costs nothing).
+    if (!pr.stack && pr.state === "open") {
+      const found = await this.nativeStackFor(pr.number);
+      if (found) pr.stack = found;
+    }
     if (pr.stack) {
       const { data } = await octokit.request("GET /repos/{owner}/{repo}/stacks/{stack_number}", {
         ...repo,
@@ -512,24 +896,53 @@ export class ReviewService {
 
     // Otherwise follow base -> head links between open PRs: down to the bottom of the
     // stack, then every PR built on it. Stacks can diverge, so this is a tree.
-    const open = (await this.listOpenPRs()).filter((p) => p.number !== pr.number);
-    const all: Array<ListedPR | FullPR> = [pr, ...open];
-    const byHead = new Map(all.map((p) => [p.head.ref, p]));
-    let root: ListedPR | FullPR = pr;
-    const seen = new Set<string>([pr.head.ref]);
-    while (byHead.has(root.base.ref) && !seen.has(root.base.ref)) {
-      seen.add(root.base.ref);
-      root = byHead.get(root.base.ref)!;
-    }
-    const tree: Array<ListedPR | FullPR> = [];
-    const queue = [root];
-    const visited = new Set<string>();
-    while (queue.length) {
-      const next = queue.shift()!;
-      if (visited.has(next.head.ref)) continue;
-      visited.add(next.head.ref);
-      tree.push(next);
-      queue.push(...all.filter((p) => p.base.ref === next.head.ref).sort((a, b) => a.number - b.number));
+    const all = new Map<number, ListedPR | FullPR>((await this.listOpenPRs()).map((p) => [p.number, p]));
+    all.set(pr.number, pr);
+    const known = new Set(all.keys());
+    let tree = stackTree(pr, [...all.values()]);
+    // The inbox's searches only bring your PRs and your review requests; over GraphQL
+    // ask GitHub for the rest of this stack (others' PRs above or below), level by level.
+    if (this.graphql() && !this.searchUnreliable) {
+      const trunk = pr.base.repo.default_branch;
+      // What's built on each PR, and what the bottom one is built on. Each branch's
+      // answer is kept for a minute, and the whole known stack is re-asked in one query.
+      const keysOf = () => [...tree.map((p) => `c:${p.head.ref}`), ...(tree[0].base.ref !== trunk ? [`p:${tree[0].base.ref}`] : [])];
+      const grow = () => {
+        for (let added = true; added; ) {
+          added = false;
+          for (const key of keysOf()) {
+            for (const p of this.stackLinks.get(key)?.prs ?? []) {
+              if (all.has(p.number)) continue;
+              all.set(p.number, p);
+              added = true;
+            }
+          }
+          if (added) tree = stackTree(pr, [...all.values()]);
+        }
+      };
+      for (let round = 0; round < 8; round++) {
+        grow();
+        const stale = keysOf().filter((k) => !(Date.now() - (this.stackLinks.get(k)?.at ?? -Infinity) < STACK_LINKS_MS)).slice(0, 30);
+        if (stale.length === 0) break;
+        const heads = stale.filter((k) => k.startsWith("c:")).map((k) => k.slice(2));
+        const bases = stale.filter((k) => k.startsWith("p:")).map((k) => k.slice(2));
+        const found = await stackNeighboursGraphQL(this.octokit!, this.repo!, { heads, bases }).catch(() => null);
+        if (!found) break;
+        const at = Date.now();
+        const listed = (nodes: InboxNode[]) =>
+          nodes.map((n) => {
+            this.stackNodes.set(n.number, n);
+            return listedFromNode(n, found.defaultBranch ?? trunk) as unknown as ListedPR;
+          });
+        for (const [head, nodes] of found.children) this.stackLinks.set(`c:${head}`, { at, prs: listed(nodes) });
+        for (const [base, nodes] of found.parents) this.stackLinks.set(`p:${base}`, { at, prs: listed(nodes) });
+      }
+      // Start again from fresh answers, so PRs that left the stack since are dropped.
+      for (const n of [...all.keys()]) if (!known.has(n)) all.delete(n);
+      tree = stackTree(pr, [...all.values()]);
+      grow();
+      // Stack entries look PRs up by number: remember the ones found here.
+      for (const p of tree) if (p.number !== pr.number && !this.inboxNodes.has(p.number)) this.stackExtras.set(p.number, p as ListedPR);
     }
     if (tree.length < 2) return [];
     return tree.map((p) => ({
@@ -591,6 +1004,8 @@ export class ReviewService {
       createdAt: timeline[0]?.createdAt ?? null,
       updatedAt: last?.createdAt ?? null,
       bodyHtml: null,
+      body: null,
+      nativeStack: null,
       additions: stats.additions,
       deletions: stats.deletions,
       stack,
@@ -606,7 +1021,7 @@ export class ReviewService {
       reviewDecision: null,
       files,
       local,
-      can: { review: false, comment: false, merge: false, draft: false },
+      can: { review: false, comment: false, merge: false, draft: false, edit: false },
       merge: null,
     };
   }
@@ -663,6 +1078,10 @@ export class ReviewService {
       changesRequested: changesRequested(reviews),
       mergeable: pr.mergeable,
       mergeableState: pr.mergeable_state,
+      reviewRequired:
+        githubDecision(pr) === "REVIEW_REQUIRED" ||
+        // Merged with the stack it lands on the trunk, under the trunk's rule.
+        (this.trunkReview && pr.base.ref !== pr.base.repo.default_branch && decisionFor(reviews, pr, null) !== "approved"),
     }).map((r) => r.message);
     const trunk = pr.base.repo.default_branch;
     // Open PRs this one is built on, bottom first (never a sibling branch).
@@ -738,6 +1157,7 @@ export class ReviewService {
       throw cleanGitHubError(error);
     } finally {
       this.openPRs = null;
+      this.stackLinks.clear();
       this.memo.clear();
       this.inboxVersion++;
     }
@@ -807,6 +1227,15 @@ export class ReviewService {
     }
   }
 
+  /** GitHub requests made so far and what's left of the hourly rate limit. */
+  usage() {
+    const usage = this.octokit ? apiUsage(this.octokit) : undefined;
+    if (!usage) return null;
+    // How the inbox is being read, for working out why something looks off.
+    const mode = !this.graphql() ? "rest" : this.searchUnreliable ? "graphql, inbox from the PR list (search returned nothing)" : "graphql";
+    return { ...usage, mode, graphqlOffReason: this.graphql() ? null : this.graphqlOffReason };
+  }
+
   /** People and labels a PR can be given; cached for a few minutes. */
   options(): Promise<RepoOptions> {
     this.requireGitHub();
@@ -822,19 +1251,20 @@ export class ReviewService {
     });
   }
 
-  /** Changes reviewers, assignees, labels or draft state, then returns the fresh PR. */
+  /** Changes reviewers, assignees, labels, draft state, title or description, then returns the fresh PR. */
   async update(number: number, change: PRUpdate): Promise<Detail> {
     this.requireGitHub();
     const repo = this.repo!;
     const api = this.octokit!;
     const tasks: Array<Promise<unknown>> = [];
-    const { reviewers, assignees, labels, draft } = change;
+    const { reviewers, assignees, labels, draft, body, title } = change;
     if (reviewers?.add?.length) tasks.push(api.pulls.requestReviewers({ ...repo, pull_number: number, reviewers: reviewers.add }));
     if (reviewers?.remove?.length) tasks.push(api.pulls.removeRequestedReviewers({ ...repo, pull_number: number, reviewers: reviewers.remove }));
     if (assignees?.add?.length) tasks.push(api.issues.addAssignees({ ...repo, issue_number: number, assignees: assignees.add }));
     if (assignees?.remove?.length) tasks.push(api.issues.removeAssignees({ ...repo, issue_number: number, assignees: assignees.remove }));
     // Setting labels creates any that don't exist yet.
     if (labels) tasks.push(api.issues.setLabels({ ...repo, issue_number: number, labels }));
+    if (body !== undefined || title !== undefined) tasks.push(api.pulls.update({ ...repo, pull_number: number, body, title }));
     if (draft !== undefined) tasks.push(draft ? this.github!.prs.convertToDraft(number) : this.github!.prs.markReadyForReview(number));
     try {
       await Promise.all(tasks);
@@ -883,6 +1313,19 @@ export class ReviewService {
       return { status: 400, body: { error: error.message, code: error.code, hint: error.hint } };
     }
     const status = (error as { status?: number }).status;
+    const headers = (error as { response?: { headers?: Record<string, string> } }).response?.headers;
+    if ((status === 403 || status === 429) && (headers?.["x-ratelimit-remaining"] === "0" || /rate limit/i.test(String((error as Error).message)))) {
+      const reset = Number(headers?.["x-ratelimit-reset"]);
+      const at = Number.isFinite(reset) && reset > 0 ? new Date(reset * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : null;
+      return {
+        status: 429,
+        body: {
+          error: at ? `GitHub's API limit for your account is used up until ${at}` : "GitHub's API limit for your account is used up for now",
+          code: "RATE_LIMITED",
+          hint: "Everything signed in as you shares 5,000 requests an hour. pile shows what it already has until then.",
+        },
+      };
+    }
     return {
       status: status && status >= 400 && status < 600 ? status : 500,
       body: { error: error instanceof Error ? error.message : String(error), code: status ? `GITHUB_${status}` : "ERROR" },
@@ -901,7 +1344,47 @@ function decisionFor(
 ): InboxItem["reviewDecision"] {
   const requested = (pr.requested_reviewers?.length ?? 0) + (pr.requested_teams?.length ?? 0);
   const mine = viewer ? latestReviews(reviews).get(viewer) : undefined;
-  return mine && pr.user?.login !== viewer ? reviewStateOf(mine.state) : reviewDecision(reviews, requested);
+  if (mine && pr.user?.login !== viewer) return reviewStateOf(mine.state);
+  const ours = reviewDecision(reviews, requested);
+  // GitHub's own verdict (over GraphQL) wins: approved even while others are still asked.
+  const github = githubDecision(pr);
+  if (github === "APPROVED") return "approved";
+  if (github === "CHANGES_REQUESTED") return "changes_requested";
+  if (github === "REVIEW_REQUIRED" && ours === "approved") return "review_required";
+  return ours;
+}
+
+const githubDecision = (pr: object) => (pr as { review_decision?: string | null }).review_decision;
+
+/**
+ * Whether the trunk's rules want an approving review: GitHub gives a review decision
+ * only where one is required, so any open PR into the trunk with one says so. Unknown
+ * (REST, or no PR into the trunk) counts as no.
+ */
+function trunkNeedsReview(prs: object[], trunk: string): boolean {
+  return prs.some((p) => (p as { base?: { ref: string } }).base?.ref === trunk && githubDecision(p) != null);
+}
+
+/** The stack around `pr`: its bottom, then every PR built on it, breadth first. */
+function stackTree<T extends { number: number; head: { ref: string }; base: { ref: string } }>(pr: T, all: T[]): T[] {
+  const byHead = new Map(all.map((p) => [p.head.ref, p]));
+  let root = pr;
+  const seen = new Set<string>([pr.head.ref]);
+  while (byHead.has(root.base.ref) && !seen.has(root.base.ref)) {
+    seen.add(root.base.ref);
+    root = byHead.get(root.base.ref)!;
+  }
+  const tree: T[] = [];
+  const queue = [root];
+  const visited = new Set<string>();
+  while (queue.length) {
+    const next = queue.shift()!;
+    if (visited.has(next.head.ref)) continue;
+    visited.add(next.head.ref);
+    tree.push(next);
+    queue.push(...all.filter((p) => p.base.ref === next.head.ref).sort((a, b) => a.number - b.number));
+  }
+  return tree;
 }
 
 function reviewStateOf(state: string): InboxItem["reviewDecision"] {

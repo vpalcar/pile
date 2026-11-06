@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Box, Text } from "ink";
 import { createPile } from "@pile/core";
-import { createGitHub } from "@pile/github";
+import { createGitHub, syncStack, type StackLink, type StackSyncResult } from "@pile/github";
 import { Spinner } from "../components/Spinner.js";
 import { Link } from "../components/Link.js";
 import {
@@ -91,6 +91,7 @@ export function SubmitCommand({
   const [queuedResults, setQueuedResults] = useState<QueuedResult[]>([]);
   const [stackPRs, setStackPRs] = useState<StackPR[]>([]);
   const [trunk, setTrunk] = useState<string>("main");
+  const [stackSync, setStackSync] = useState<StackSyncResult | null>(null);
 
   useEffect(() => {
     async function submit() {
@@ -322,6 +323,42 @@ export function SubmitCommand({
           }
         });
 
+        // GitHub's native stack is the source of truth: register the chain from the trunk
+        // up to this branch there (only once every branch in it has an open PR).
+        let synced: StackSyncResult | null = null;
+        if (queued.length === 0) {
+          const known = new Map(plans.map((plan, i) => [plan.branch, { outcome: outcomes[i], pr: plan.existingPR }]));
+          const chain: StackLink[] = [];
+          let complete = true;
+          for (const branch of pile.stack.getAncestry(current)) {
+            const here = known.get(branch);
+            if (here) {
+              if (here.outcome === null) continue; // merged
+              if ("operation" in here.outcome) {
+                complete = false;
+                break;
+              }
+              chain.push({ number: here.outcome.prNumber, branch, stack: here.pr?.stack ?? null });
+              continue;
+            }
+            // Below what this run submitted: its PR as GitHub has it now.
+            const number = pile.state.getBranchRelationship(branch)?.prNumber;
+            const pr = number ? await github.prs.get(number).catch(() => null) : null;
+            if (pr?.merged) continue;
+            if (!pr || pr.state !== "open") {
+              complete = false;
+              break;
+            }
+            chain.push({ number: pr.number, branch, stack: pr.stack ?? null });
+          }
+          if (complete) {
+            synced = await syncStack(github.prs, chain, {
+              isSibling: (branch, parent) => pile.state.getParent(branch) === parent,
+            });
+          }
+        }
+        setStackSync(synced);
+
         setResults(prResults);
         setQueuedResults(queued);
         setTrunk(trunk);
@@ -347,7 +384,7 @@ export function SubmitCommand({
 
         if (options.json) {
           console.log(
-            formatJson(createResult(true, { prs: prResults, queued }))
+            formatJson(createResult(true, { prs: prResults, queued, stack: synced }))
           );
           process.exit(0);
         }
@@ -443,6 +480,7 @@ export function SubmitCommand({
               </Box>
             ))
           )}
+          <StackSyncLine result={stackSync} />
           {queuedResults.length > 0 && (
             <Box flexDirection="column" marginTop={1}>
               <InfoMessage>Queued for later (offline):</InfoMessage>
@@ -499,3 +537,31 @@ export function SubmitCommand({
       return <></>;
   }
 }
+
+/** What happened to the GitHub stack, under the PRs. */
+function StackSyncLine({ result }: { result: StackSyncResult | null }): React.ReactElement | null {
+  if (!result) return null;
+  const list = (numbers: number[]) => numbers.map((n) => `#${n}`).join(" → ");
+  switch (result.action) {
+    case "created":
+      return <Box marginTop={1}><SuccessMessage>GitHub stack #{result.stackNumber} created: {list(result.prs)}</SuccessMessage></Box>;
+    case "extended":
+      return <Box marginTop={1}><SuccessMessage>Added to GitHub stack #{result.stackNumber}: {list(result.prs)}</SuccessMessage></Box>;
+    case "rebuilt":
+      return <Box marginTop={1}><SuccessMessage>GitHub stack #{result.stackNumber} rebuilt in pile's order: {list(result.prs)}</SuccessMessage></Box>;
+    case "unchanged":
+      return <Box marginTop={1}><Text color="gray">  In GitHub stack #{result.stackNumber}: {list(result.prs)}</Text></Box>;
+    case "diverged":
+      return (
+        <Box marginTop={1}>
+          <WarningMessage>
+            GitHub stacks can't branch: {list(result.outside)} stay{result.outside.length === 1 ? "s" : ""} outside GitHub stack #{result.stackNumber}, which holds a sibling branch
+          </WarningMessage>
+        </Box>
+      );
+    case "skipped":
+      // One PR on the trunk is simply not a stack; anything else is worth saying.
+      return result.reason.startsWith("a single") ? null : <Box marginTop={1}><WarningMessage>Not registered as a GitHub stack: {result.reason}</WarningMessage></Box>;
+  }
+}
+

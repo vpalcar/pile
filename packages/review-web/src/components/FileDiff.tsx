@@ -1,5 +1,5 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ChevronDown, ChevronsUpDown, Copy, ExternalLink, FileCode2, Plus } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronsUpDown, Copy, ExternalLink, FileCode2, Plus } from "lucide-react";
 import type { AgentNote, DiffFile, InlineComment } from "../api";
 import { gapLines, gaps, languageFor, parsePatch, toSplitRows, wordDiff, type DiffLine, type Gap, type Hunk } from "../lib/diff";
 import { highlightLines, type Token } from "../lib/highlight";
@@ -44,8 +44,20 @@ export const FileDiff = memo(function FileDiff(props: Props) {
   const [collapsed, setCollapsed] = useState(viewed);
   const [forceLarge, setForceLarge] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-  const visible = useNearViewport(ref);
+  const [visible, setNear] = useNearViewport(ref);
   const toast = useToast();
+
+  // Jumping to a comment: open this file and render its diff now, however it was left.
+  useEffect(() => {
+    const reveal = (e: Event) => {
+      if ((e as CustomEvent<{ path: string }>).detail.path !== file.path) return;
+      setCollapsed(false);
+      setForceLarge(true);
+      setNear(true);
+    };
+    window.addEventListener(REVEAL_EVENT, reveal);
+    return () => window.removeEventListener(REVEAL_EVENT, reveal);
+  }, [file.path, setNear]);
 
   // Collapse when marked viewed, expand when unmarked.
   const wasViewed = useRef(viewed);
@@ -165,8 +177,14 @@ function CheckMark() {
   );
 }
 
+/** Asks the file at `detail.path` to show its diff (expanded, rendered) so a thread can be found. */
+export const REVEAL_EVENT = "pile:reveal-file";
+
+/** Where a GitHub comment thread sits in the diff; outdated ones (no line) by their first comment. */
+export const threadKey = (c: Pick<InlineComment, "side" | "line" | "id" | "inReplyTo">) => (c.line ? `${c.side}:${c.line}` : `none:${c.inReplyTo ?? c.id}`);
+
 /** True once the element comes within ~1000px of the viewport (and stays true). */
-function useNearViewport(ref: React.RefObject<HTMLElement | null>): boolean {
+function useNearViewport(ref: React.RefObject<HTMLElement | null>): [boolean, (near: boolean) => void] {
   const [near, setNear] = useState(false);
   useEffect(() => {
     if (near || !ref.current) return;
@@ -176,7 +194,7 @@ function useNearViewport(ref: React.RefObject<HTMLElement | null>): boolean {
     observer.observe(ref.current);
     return () => observer.disconnect();
   }, [near, ref]);
-  return near;
+  return [near, setNear];
 }
 
 // -----------------------------------------------------------------------------
@@ -272,7 +290,10 @@ function DiffBody(props: Props) {
       if (!map.has(key)) map.set(key, { comments: [], pending: [], notes: [] });
       return map.get(key)!;
     };
-    for (const c of comments) if (c.line) at(c.side, c.line).comments.push(c);
+    for (const c of comments) {
+      if (c.line) at(c.side, c.line).comments.push(c);
+      else (map.get(threadKey(c)) ?? map.set(threadKey(c), { comments: [], pending: [], notes: [] }).get(threadKey(c))!).comments.push(c);
+    }
     for (const p of pending) at(p.side, p.line).pending.push(p);
     for (const n of fileNotes) at(n.side ?? "RIGHT", n.line!).notes.push(n);
     return map;
@@ -308,6 +329,32 @@ function DiffBody(props: Props) {
     pushGap(gapFor(hunks.length), true);
     return result;
   }, [hunks, allGaps, revealed, fileLines]);
+
+  // GitHub threads on lines this diff doesn't show (the code changed since): listed above it.
+  const outdated = useMemo(() => {
+    const shown = new Set<string>();
+    for (const row of rows) {
+      if (row.type !== "line") continue;
+      if (row.line.kind !== "add") shown.add(`LEFT:${row.line.oldNumber}`);
+      if (row.line.kind !== "del") shown.add(`RIGHT:${row.line.newNumber}`);
+    }
+    return [...threads].filter(([key, t]) => t.comments.length > 0 && !shown.has(key));
+  }, [rows, threads]);
+  const outdatedBlock = outdated.length > 0 && (
+    <div className="border-b border-line bg-panel-2/60 px-3 py-2.5" data-outdated>
+      <div className="mb-2 text-[12px] text-fg-3">
+        {outdated.length === 1 ? "A comment" : `${outdated.length} comments`} on code that has changed since
+      </div>
+      <div className="flex flex-col gap-2">
+        {outdated.map(([key, t]) => (
+          <div key={key} data-thread={key} data-resolved={t.comments.every((c) => c.resolved) || undefined}>
+            <div className="mb-1 font-mono text-[11.5px] text-fg-3">{key.startsWith("none:") ? "Outdated" : `${key.startsWith("LEFT") ? "Old" : ""} line ${key.split(":")[1]} · outdated`.trim()}</div>
+            <Thread resolved={t.comments.every((c) => c.resolved)} comments={t.comments} pending={[]} notes={[]} composing={false} readOnly onCancel={() => {}} onSubmit={() => {}} onRemovePending={props.onRemovePending} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 
   const codeFor = (line: DiffLine) => {
     const tk = line.kind === "del" ? tokens.old.get(line.oldNumber!) : tokens.new.get(line.newNumber!);
@@ -349,8 +396,10 @@ function DiffBody(props: Props) {
     const key = `${side}:${line}`;
     const thread = threads.get(key);
     if (!thread && composerAt !== key) return null;
+    const resolved = !!thread?.comments.length && thread.comments.every((c) => c.resolved);
     const content = (
       <Thread
+        resolved={resolved}
         comments={thread?.comments ?? []}
         pending={thread?.pending ?? []}
         notes={thread?.notes ?? []}
@@ -367,7 +416,7 @@ function DiffBody(props: Props) {
     // Split view: the thread sits in the half it belongs to, aligned with that side's code.
     if (mode === "split") {
       return (
-        <tr key={`thread-${key}`} className="thread split-thread">
+        <tr key={`thread-${key}`} className="thread split-thread" data-thread={key} data-resolved={resolved || undefined}>
           <td colSpan={2}>{side === "LEFT" && content}</td>
           <td className="split-divider" />
           <td colSpan={2}>{side === "RIGHT" && content}</td>
@@ -375,7 +424,7 @@ function DiffBody(props: Props) {
       );
     }
     return (
-      <tr key={`thread-${key}`} className="thread">
+      <tr key={`thread-${key}`} className="thread" data-thread={key} data-resolved={resolved || undefined}>
         <td colSpan={colSpan} style={{ "--gutter": hideOld || hideNew ? "60px" : "120px" } as React.CSSProperties}>
           {content}
         </td>
@@ -422,6 +471,7 @@ function DiffBody(props: Props) {
   if (mode === "unified") {
     return (
       <div className="overflow-x-auto rounded-b-xl">
+        {outdatedBlock}
         <table className={cx("diff-table", wrap && "wrap")}>
           <colgroup>
             {!hideOld && <col style={{ width: 60 }} />}
@@ -497,6 +547,7 @@ function DiffBody(props: Props) {
 
   return (
     <div className="overflow-x-auto rounded-b-xl">
+      {outdatedBlock}
       <table className="diff-table split">
         <colgroup>
           <col style={{ width: 60 }} />
@@ -551,6 +602,10 @@ function Seg({ text, color, light }: { text: string; color?: string; light?: str
 }
 
 function Thread(props: {
+  /** Resolved on GitHub: folds to one line until opened. */
+  resolved?: boolean;
+  /** No replies (the line isn't in the diff any more). */
+  readOnly?: boolean;
   comments: InlineComment[];
   pending: PendingComment[];
   notes: AgentNote[];
@@ -560,17 +615,51 @@ function Thread(props: {
   onRemovePending: (id: string) => void;
 }) {
   const [replying, setReplying] = useState(false);
+  const [open, setOpen] = useState(false);
   const notesApi = useNotes();
   const hasComments = props.comments.length + props.pending.length + props.notes.length > 0;
   const toAgent = notesApi?.target === "agent";
+  const folded = props.resolved && !open && !props.composing && props.pending.length + props.notes.length === 0;
+  if (folded) {
+    const authors = [...new Map(props.comments.map((c) => [c.author?.login, c.author])).values()];
+    return (
+      <button
+        className="thread-box flex h-9 w-full max-w-[780px] items-center gap-2 rounded-[10px] border border-line bg-bg px-3 text-left text-[12px] text-fg-3 transition-colors hover:border-line-2 hover:text-fg-2"
+        onClick={() => setOpen(true)}
+        data-folded
+      >
+        <CheckCircle2 size={13} className="shrink-0 text-ok" />
+        <span className="shrink-0 font-medium text-fg-2">Resolved</span>
+        <span className="flex shrink-0 -space-x-1">
+          {authors.slice(0, 3).map((a, i) => (
+            <Avatar key={a?.login ?? i} person={a ?? null} size="sm" />
+          ))}
+        </span>
+        <span className="min-w-0 truncate">{props.comments[0]?.bodyHtml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()}</span>
+        <span className="flex-1" />
+        <span className="shrink-0">
+          {props.comments.length} {props.comments.length === 1 ? "comment" : "comments"}
+        </span>
+      </button>
+    );
+  }
   return (
-    <div className="max-w-[780px] animate-pop-in overflow-hidden rounded-[14px] border border-line-2 bg-bg">
-      {props.comments.map((c) => (
+    <div className="thread-box max-w-[780px] animate-pop-in overflow-hidden rounded-[14px] border border-line-2 bg-bg">
+      {props.comments.map((c, i) => (
         <div className="border-b border-line px-3.5 py-3 last:border-b-0" key={c.id}>
           <div className="mb-1.5 flex h-5 items-center gap-2 leading-none text-fg-3">
             <Avatar person={c.author} size="sm" />
             <b className="font-medium text-fg">{c.author?.login}</b>
             <span>{timeAgo(c.createdAt)}</span>
+            {i === 0 && props.resolved && (
+              <>
+                <span className="flex-1" />
+                <Pill tone="green">Resolved</Pill>
+                <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
+                  Hide
+                </Button>
+              </>
+            )}
           </div>
           <Markdown html={c.bodyHtml} />
         </div>
@@ -610,7 +699,8 @@ function Thread(props: {
           />
         </div>
       ) : (
-        hasComments && (
+        hasComments &&
+        !props.readOnly && (
           <div className="border-t border-line p-1.5">
             <Button variant="ghost" size="sm" onClick={() => setReplying(true)}>
               Reply…
