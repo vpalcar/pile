@@ -18,7 +18,7 @@ interface Props {
 
 export function Palette({ inbox, detail, onClose, onRefresh, onInbox, onShortcuts, onTheme }: Props) {
   const ref = useDismiss(true, onClose);
-  const items = flatItems(inbox);
+  const items = flatItems(inbox, { search: true });
   const run = (fn: () => void) => () => {
     onClose();
     fn();
@@ -120,7 +120,7 @@ const SHORTCUTS: Array<[string, string[]]> = [
   ["Back to the inbox", ["Esc"]],
   ["Go to the inbox", ["g"]],
   ["Move through the inbox", ["j", "k"]],
-  ["Filter the inbox", ["1–5"]],
+  ["Filter the inbox", ["1–4"]],
   ["Filter files", ["/"]],
   ["Comment on the pull request", ["c"]],
   ["Submit a review", ["r"]],

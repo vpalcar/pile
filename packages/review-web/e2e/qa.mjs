@@ -134,7 +134,7 @@ await check("greets the viewer and summarizes", async () => {
 });
 await check("tabs show counts per group", async () => {
   const tabs = await page.locator("[role=tab]").allInnerTexts();
-  expect(tabs.join("|").replace(/\s+/g, " ") === "All 26|Needs review 3|Yours 12|Local 3|Others 8".replace(/\s+/g, " ").replace(/\|/g, "|"), tabs.join(" | "));
+  expect(tabs.join("|").replace(/\s+/g, " ") === "All 18|Needs review 3|Yours 12|Local 3".replace(/\s+/g, " ").replace(/\|/g, "|"), tabs.join(" | "));
 });
 await check("every row shows its readiness", async () => {
   const status = async (id) => (await page.locator(`[data-row="${id}"]`).innerText()).replace(/\s+/g, " ");
@@ -147,8 +147,6 @@ await check("every row shows its readiness", async () => {
     "pr-112": "Draft",
     "pr-113": "Approved",
     "branch-wip": "Local",
-    "pr-130": "Open",
-    "pr-131": "In review",
   };
   for (const [id, label] of Object.entries(expected)) {
     const row = await status(id);
@@ -191,7 +189,25 @@ await check("stack rails pass through every dot", async () => {
   );
   expect(misaligned.length === 0, `misaligned by ${misaligned.join(", ")}px`);
 });
-await check("filters with 1–5 and shows only that group", async () => {
+await check("other people's PRs aren't in the inbox, only in search", async () => {
+  const sections = await page.locator("section h2").allInnerTexts();
+  expect(!sections.some((t) => t.startsWith("Other open pull requests")), sections.join(" | "));
+  expect((await count('[data-row="pr-130"]')) === 0, "dave's PR hidden");
+  const search = page.locator("input[placeholder^='Filter by']");
+  try {
+    await search.fill("dark mode");
+    await page.locator('[data-row="pr-130"]').waitFor();
+    const titles = await page.locator("section h2").allInnerTexts();
+    expect(titles.some((t) => t.startsWith("Other open pull requests")), titles.join(" | "));
+    expect((await page.locator('[data-row="pr-130"]').innerText()).includes("Open"), "status from the list alone");
+    expect((await page.locator('[data-row="pr-130"] .skeleton').count()) === 0, "no loading skeleton on search-only rows");
+    await shot("search finds others");
+  } finally {
+    await search.press("Escape");
+  }
+  await page.locator("body").click({ position: { x: 5, y: 400 } });
+});
+await check("filters with 1–4 and shows only that group", async () => {
   await page.keyboard.press("2");
   expect((await page.locator("section h2").allInnerTexts()).every((t) => t.startsWith("Waiting for your review")), "only needs-review");
   await shot("filter needs review");
@@ -230,9 +246,9 @@ await check("j / k move the selection, Enter opens it", async () => {
   await page.waitForSelector("[data-page=inbox]");
 });
 await check("hover reveals the open arrow", async () => {
-  await page.hover('[data-row="pr-130"]');
+  await page.hover('[data-row="pr-111"]');
   await page.waitForTimeout(300);
-  const opacity = await page.locator('[data-row="pr-130"] svg.lucide-arrow-up-right').evaluate((e) => getComputedStyle(e).opacity);
+  const opacity = await page.locator('[data-row="pr-111"] svg.lucide-arrow-up-right').evaluate((e) => getComputedStyle(e).opacity);
   expect(Number(opacity) > 0.9, `arrow opacity ${opacity}`);
 });
 
@@ -259,7 +275,7 @@ await check("navbar: Inbox › branch on the left, repo in the middle, actions a
   expect(xs.every((x, i) => i === 0 || x > xs[i - 1]), `order ${xs.map(Math.round)}`);
   // The repo name is the bar's one link to GitHub: the repo's default branch.
   expect((await count("nav a")) === 1 && (await page.locator("nav a[data-repo]").getAttribute("href")) === "https://github.com/acme/web", "repo link");
-  expect((await text("nav")).includes("2 of 26"), "position: stacks are listed top first, so #102 comes before #101");
+  expect((await text("nav")).includes("2 of 18"), "position: stacks are listed top first, so #102 comes before #101");
   expect(!(await page.locator("nav button[data-tip=Previous]").isDisabled()), "previous enabled: #102 is listed above #101");
   await shot("breadcrumb");
 });
@@ -973,6 +989,8 @@ await check("merge: higher up, the stack is blocked by the PRs below", async () 
 });
 await check("diverging stack in the inbox: one card, every branch on its own lane", async () => {
   await open();
+  // carol's stack is someone else's: it shows up when searching.
+  await page.locator("input[placeholder^='Filter by']").fill("search");
   const card = page.locator("div.rounded-\\[14px\\]", { hasText: "Index documents for search" });
   const header = (await card.innerText()).replace(/\s+/g, " ");
   expect(header.includes("Stack of 6 on main · 3 branches"), header.slice(0, 80));

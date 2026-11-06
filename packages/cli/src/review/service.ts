@@ -23,6 +23,7 @@ import type {
   StackPosition,
 } from "@pile/review-web/api";
 import {
+  apiUsage,
   enableEtagCache,
   fetchChecks,
   fetchFiles,
@@ -58,6 +59,15 @@ export class ReviewError extends Error {
   }
 }
 
+/** Requests budget knobs: see test/rate-budget.test.ts for what they cost. */
+const SHARED_READ_MS = 10_000;
+const WARM_LIMIT = 8;
+const LOW_QUOTA = 300;
+const PENDING_CHECKS_MS = 60_000;
+/** How often the inbox is rebuilt from GitHub; much less often when the quota runs low. */
+const INBOX_FRESH_MS = 20_000;
+const INBOX_FRESH_LOW_QUOTA_MS = 5 * 60_000;
+
 const prState = (pr: { state: string; draft?: boolean; merged_at?: string | null }): PRState =>
   pr.merged_at ? "merged" : pr.state === "closed" ? "closed" : pr.draft ? "draft" : "open";
 
@@ -69,16 +79,25 @@ export class ReviewService {
   private readonly octokit: Octokit | null;
   private readonly repo: Repo | null;
   private viewerPromise: Promise<{ login: string; avatar_url: string } | null> | null = null;
+  /** GitHub reads shared by the inbox, PR pages and stacks for a few seconds (see `recent`). */
+  private recentReads = new Map<string, { at: number; value: Promise<unknown> }>();
+  /** Each PR as last enriched for the inbox, so unchanged PRs cost no requests. */
+  private enriched = new Map<number, { version: string; item: InboxItem; pending: boolean; at: number }>();
+  /** PR pages already warmed, by version, so each is prepared once per change. */
+  private warmed = new Map<string, string>();
+  private warmedOnce = false;
   private openPRs: { at: number; prs: Promise<ListedPR[]> } | null = null;
   private memo = new Map<string, { at: number; value: Promise<unknown> }>();
 
   constructor(
     private readonly pile: PileInstance,
     private readonly github: GitHubInstance | null,
+    /** Where GitHub responses are cached between runs (.git/pile/review-cache.json). */
+    options: { cacheFile?: string } = {},
   ) {
     this.octokit = github?.client.api ?? null;
     this.repo = github ? { owner: github.client.repoOwner, repo: github.client.repoName } : null;
-    if (this.octokit) enableEtagCache(this.octokit);
+    if (this.octokit) enableEtagCache(this.octokit, options.cacheFile);
   }
 
   private viewer() {
@@ -150,6 +169,11 @@ export class ReviewService {
   /** Forget cached reads, e.g. after a comment or review changes them. */
   invalidate(ref?: ItemRef): void {
     if (ref) this.memo.delete(ref.kind === "pr" ? `pr/${ref.number}` : `branch/${ref.name}`);
+    if (ref?.kind === "pr") {
+      this.recentReads.delete(`pr/${ref.number}`);
+      this.recentReads.delete(`reviews/${ref.number}`);
+      this.enriched.delete(ref.number);
+    }
     // The full inbox is kept and served until its replacement is ready: dropping it
     // would fall back to the quick list, whose missing checks read as "Open".
     this.inboxVersion++;
@@ -161,10 +185,51 @@ export class ReviewService {
   private warming = false;
   /** Prepares every open PR's details in the background, a few at a time, so opening one is instant. */
   private warmDetails(inbox: Inbox): void {
-    if (this.warming) return;
+    // Each warmed page costs a dozen requests: only the likeliest few, once per change,
+    // and not at all when the hourly quota runs low.
+    // Once, after the first full inbox: later pages are fetched when opened.
+    if (this.warming || this.warmedOnce || this.lowOnQuota()) return;
+    this.warmedOnce = true;
+    const order = ["needs_review", "mine", "local"];
+    const items = order
+      .flatMap((id) => inbox.groups.find((g) => g.id === id)?.items ?? [])
+      .filter((i) => !this.warmed.has(i.id))
+      .slice(0, WARM_LIMIT);
+    if (items.length === 0) return;
     this.warming = true;
-    const refs = inbox.groups.flatMap((g) => g.items.map((i) => i.ref)).slice(0, 40);
-    mapLimit(refs, 3, (ref) => this.detail(ref).catch(() => undefined)).finally(() => (this.warming = false));
+    mapLimit(items, 3, (item) =>
+      this.detail(item.ref)
+        .then(() => this.warmed.set(item.id, `${item.updatedAt}`))
+        .catch(() => undefined),
+    ).finally(() => (this.warming = false));
+  }
+
+  /** Under 300 requests left this hour: stop extras and refresh rarely. */
+  private lowOnQuota(): boolean {
+    const remaining = this.usage()?.remaining;
+    return remaining !== null && remaining !== undefined && remaining < LOW_QUOTA;
+  }
+
+  /**
+   * One GitHub read shared for a few seconds by everything that needs it (the inbox,
+   * a PR page, the stacks it appears in), and by concurrent callers.
+   */
+  private recent<T>(key: string, ttlMs: number, load: () => Promise<T>): Promise<T> {
+    const hit = this.recentReads.get(key);
+    if (hit && Date.now() - hit.at < ttlMs) return hit.value as Promise<T>;
+    const value = load();
+    this.recentReads.set(key, { at: Date.now(), value });
+    value.catch(() => this.recentReads.get(key)?.value === value && this.recentReads.delete(key));
+    return value;
+  }
+  private getPR(number: number) {
+    return this.recent(`pr/${number}`, SHARED_READ_MS, () => this.octokit!.pulls.get({ ...this.repo!, pull_number: number }).then(({ data }) => data as FullPR));
+  }
+  private getReviews(number: number) {
+    return this.recent(`reviews/${number}`, SHARED_READ_MS, () => fetchReviews(this.octokit!, this.repo!, number));
+  }
+  private getChecks(sha: string) {
+    return this.recent(`checks/${sha}`, SHARED_READ_MS, () => fetchChecks(this.octokit!, this.repo!, sha));
   }
 
   /** Fetches the inbox and the first item's details ahead of the first page load. */
@@ -187,7 +252,7 @@ export class ReviewService {
       this.refreshInbox();
       return this.cached("inbox-fast", 5_000, () => this.loadInbox(false));
     }
-    const stale = this.inboxBuiltFrom !== this.inboxVersion || Date.now() - full.at > 8_000;
+    const stale = this.inboxBuiltFrom !== this.inboxVersion || Date.now() - full.at > (this.lowOnQuota() ? INBOX_FRESH_LOW_QUOTA_MS : INBOX_FRESH_MS);
     if (fresh) return (await this.refreshInbox()) ?? (full.value as Promise<Inbox>);
     if (stale) this.refreshInbox();
     return full.value as Promise<Inbox>;
@@ -225,8 +290,12 @@ export class ReviewService {
       this.pile.git.getCurrentBranch(),
     ]);
 
+    // Only PRs that are yours or wait on your review are enriched (checks, reviews,
+    // size); everyone else's come from the list alone and only show up in search.
+    const yours = (pr: ListedPR) =>
+      !!viewer && (pr.user?.login === viewer.login || (pr.requested_reviewers ?? []).some((u) => u?.login === viewer.login));
     const prItems = enrich
-      ? await mapPRs(prs, (pr) => this.prItem(pr, viewer?.login ?? null, refs, currentBranch))
+      ? await mapPRs(prs, (pr) => (yours(pr) ? this.inboxItem(pr, viewer?.login ?? null, refs, currentBranch) : Promise.resolve(this.basicPRItem(pr))))
       : prs.map((pr) => this.basicPRItem(pr));
     const positions = chainPositions(prs.map((pr) => ({ head: pr.head.ref, base: pr.base.ref })));
     for (const item of prItems) {
@@ -256,9 +325,16 @@ export class ReviewService {
       { id: "needs_review", title: "Needs your review", items: sortByStack(needsReview) },
       { id: "mine", title: "Your pull requests", items: sortByStack(mine) },
       { id: "local", title: "Local branches", items: sortByStack(localItems) },
-      { id: "others", title: "Other open pull requests", items: sortByStack(others) },
+      // Not shown in the inbox; searched when you look for something specific.
+      { id: "others", title: "Other open pull requests", items: sortByStack(others), searchOnly: true },
     ];
-    return { groups, fetchedAt: new Date().toISOString(), partial: !enrich && !!this.octokit };
+    const quota = this.usage();
+    return {
+      groups,
+      fetchedAt: new Date().toISOString(),
+      partial: !enrich && !!this.octokit,
+      quota: quota?.remaining != null ? { remaining: quota.remaining, limit: quota.limit ?? 5000, resetAt: quota.resetAt } : null,
+    };
   }
 
   /** What the PR list alone tells us; checks, reviews and sizes come later. */
@@ -283,18 +359,45 @@ export class ReviewService {
     };
   }
 
+  /**
+   * A PR's inbox row. Unchanged PRs (same update time and head commit) are reused
+   * without a request; while checks run, only the checks are read again.
+   */
+  private async inboxItem(
+    pr: ListedPR,
+    viewer: string | null,
+    refs: Awaited<ReturnType<PileInstance["git"]["getRefs"]>>,
+    currentBranch: string,
+  ): Promise<InboxItem> {
+    const version = `${pr.updated_at}/${pr.head.sha}/${(pr.requested_reviewers ?? []).map((u) => u?.login).join(",")}`;
+    const known = this.enriched.get(pr.number);
+    let item: InboxItem;
+    let at = Date.now();
+    if (known?.version === version && (!known.pending || Date.now() - known.at < PENDING_CHECKS_MS)) {
+      // Unchanged; running checks are re-read at most once a minute here (the PR page
+      // follows them live).
+      item = { ...known.item, local: await localState(this.pile, pr.head.ref, refs, currentBranch) };
+      at = known.at;
+    } else if (known?.version === version) {
+      const checks = summarizeChecks(await this.getChecks(pr.head.sha));
+      item = { ...known.item, checks, local: await localState(this.pile, pr.head.ref, refs, currentBranch) };
+    } else {
+      item = await this.prItem(pr, viewer, refs, currentBranch);
+    }
+    this.enriched.set(pr.number, { version, item, pending: item.checks?.state === "pending", at });
+    return item;
+  }
+
   private async prItem(
     pr: ListedPR,
     viewer: string | null,
     refs: Awaited<ReturnType<PileInstance["git"]["getRefs"]>>,
     currentBranch: string,
   ): Promise<InboxItem> {
-    const octokit = this.octokit!;
-    const repo = this.repo!;
     const [full, reviews, checks, local] = await Promise.all([
-      octokit.pulls.get({ ...repo, pull_number: pr.number }).then(({ data }) => data as FullPR),
-      octokit.pulls.listReviews({ ...repo, pull_number: pr.number, per_page: 100 }).then(({ data }) => data),
-      fetchChecks(octokit, repo, pr.head.sha),
+      this.getPR(pr.number),
+      this.getReviews(pr.number),
+      this.getChecks(pr.head.sha),
       localState(this.pile, pr.head.ref, refs, currentBranch),
     ]);
     return {
@@ -395,7 +498,7 @@ export class ReviewService {
         throw error;
       });
     const filesP = fetchFiles(octokit, repo, number);
-    const reviewsP = fetchReviews(octokit, repo, number);
+    const reviewsP = this.getReviews(number);
     const inlineP = fetchInlineComments(octokit, repo, number);
     const partsP = fetchTimelineParts(octokit, repo, number);
     const contextP = Promise.all([this.viewer(), this.pile.git.getRefs(), this.pile.git.getCurrentBranch()]);
@@ -406,7 +509,7 @@ export class ReviewService {
       filesP,
       reviewsP,
       inlineP,
-      fetchChecks(octokit, repo, pr.head.sha),
+      this.getChecks(pr.head.sha),
       this.prStack(pr),
       contextP,
     ]);
@@ -472,8 +575,8 @@ export class ReviewService {
       const listed = entry.ref.kind === "pr" ? byNumber.get(entry.ref.number) : undefined;
       if (!listed || entry.state === "merged" || entry.state === "closed") return entry;
       const [checks, reviews] = await Promise.all([
-        fetchChecks(octokit, repo, listed.head.sha).catch(() => null),
-        fetchReviews(octokit, repo, listed.number).catch(() => null),
+        this.getChecks(listed.head.sha).catch(() => null),
+        this.getReviews(listed.number).catch(() => null),
       ]);
       const summary = checks ? summarizeChecks(checks) : null;
       return {
@@ -811,6 +914,11 @@ export class ReviewService {
     }
   }
 
+  /** GitHub requests made so far and what's left of the hourly rate limit. */
+  usage() {
+    return this.octokit ? (apiUsage(this.octokit) ?? null) : null;
+  }
+
   /** People and labels a PR can be given; cached for a few minutes. */
   options(): Promise<RepoOptions> {
     this.requireGitHub();
@@ -887,6 +995,19 @@ export class ReviewService {
       return { status: 400, body: { error: error.message, code: error.code, hint: error.hint } };
     }
     const status = (error as { status?: number }).status;
+    const headers = (error as { response?: { headers?: Record<string, string> } }).response?.headers;
+    if ((status === 403 || status === 429) && (headers?.["x-ratelimit-remaining"] === "0" || /rate limit/i.test(String((error as Error).message)))) {
+      const reset = Number(headers?.["x-ratelimit-reset"]);
+      const at = Number.isFinite(reset) && reset > 0 ? new Date(reset * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : null;
+      return {
+        status: 429,
+        body: {
+          error: at ? `GitHub's API limit for your account is used up until ${at}` : "GitHub's API limit for your account is used up for now",
+          code: "RATE_LIMITED",
+          hint: "Everything signed in as you shares 5,000 requests an hour. pile shows what it already has until then.",
+        },
+      };
+    }
     return {
       status: status && status >= 400 && status < 600 ? status : 500,
       body: { error: error instanceof Error ? error.message : String(error), code: status ? `GITHUB_${status}` : "ERROR" },

@@ -1,3 +1,5 @@
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import type { Octokit } from "@octokit/rest";
 import { mapLimit } from "@pile/core";
 import type {
@@ -21,11 +23,62 @@ import type {
 
 const FULL = { mediaType: { format: "full" } } as const;
 
-export function enableEtagCache(octokit: Octokit): void {
-  const cache = new Map<string, { etag: string; response: unknown }>();
+/** What the review server has asked GitHub for, and how much of the hourly limit is left. */
+export interface ApiUsage {
+  /** Requests that counted against the rate limit. */
+  counted: number;
+  /** Conditional requests GitHub answered with 304 Not Modified: free. */
+  notModified: number;
+  byRoute: Record<string, number>;
+  remaining: number | null;
+  limit: number | null;
+  /** When the limit resets (ISO time). */
+  resetAt: string | null;
+}
+
+const usage = new WeakMap<Octokit, ApiUsage>();
+export const apiUsage = (octokit: Octokit): ApiUsage | undefined => usage.get(octokit);
+
+/**
+ * Conditional requests: GitHub answers unchanged data with 304, which doesn't count
+ * against the rate limit. With `file`, the cache survives restarts, so starting
+ * `pile review` again costs almost nothing.
+ */
+export function enableEtagCache(octokit: Octokit, file?: string): void {
+  const cache = new Map<string, { etag: string; response: unknown }>(file ? loadEtags(file) : []);
+  let dirty = false;
+  const save = () => {
+    if (!file || !dirty) return;
+    dirty = false;
+    saveEtags(file, cache);
+  };
+  if (file) {
+    setInterval(save, 5_000).unref();
+    process.once("exit", save);
+  }
+  const stats: ApiUsage = { counted: 0, notModified: 0, byRoute: {}, remaining: null, limit: null, resetAt: null };
+  usage.set(octokit, stats);
+  const track = (route: string, headers: Record<string, unknown> | undefined, free: boolean) => {
+    if (free) stats.notModified++;
+    else {
+      stats.counted++;
+      stats.byRoute[route] = (stats.byRoute[route] ?? 0) + 1;
+    }
+    const remaining = Number(headers?.["x-ratelimit-remaining"]);
+    if (Number.isFinite(remaining) && headers?.["x-ratelimit-resource"] !== "search") {
+      stats.remaining = remaining;
+      stats.limit = Number(headers?.["x-ratelimit-limit"]) || stats.limit;
+      stats.resetAt = new Date(Number(headers?.["x-ratelimit-reset"]) * 1000).toISOString();
+    }
+  };
   octokit.hook.wrap("request", async (request, options) => {
     const method = (options.method ?? "GET").toUpperCase();
-    if (method !== "GET") return request(options);
+    const route = `${method} ${options.url}`;
+    if (method !== "GET") {
+      const response = await request(options);
+      track(route, response.headers as Record<string, unknown>, false);
+      return response;
+    }
     const key = JSON.stringify([options.url, options.mediaType, ...Object.entries(options).filter(([k]) => !["request", "headers", "mediaType", "method", "baseUrl"].includes(k))]);
     const cached = cache.get(key);
     if (cached) {
@@ -33,16 +86,48 @@ export function enableEtagCache(octokit: Octokit): void {
     }
     try {
       const response = await request(options);
+      track(route, response.headers as Record<string, unknown>, false);
       const etag = response.headers.etag;
-      if (etag) cache.set(key, { etag, response });
+      if (etag) {
+        cache.delete(key); // re-insert: the map's order is least recently used first
+        cache.set(key, { etag, response: { status: response.status, url: response.url, headers: response.headers, data: response.data } });
+        dirty = true;
+      }
       return response;
     } catch (error) {
-      if (cached && (error as { status?: number }).status === 304) {
+      const status = (error as { status?: number }).status;
+      track(route, (error as { response?: { headers?: Record<string, unknown> } }).response?.headers, status === 304);
+      if (cached && status === 304) {
         return cached.response as Awaited<ReturnType<typeof request>>;
       }
       throw error;
     }
   });
+}
+
+const ETAG_ENTRIES = 3000;
+const ETAG_MAX_BYTES = 512 * 1024;
+
+function loadEtags(file: string): Array<[string, { etag: string; response: unknown }]> {
+  try {
+    const data = JSON.parse(readFileSync(file, "utf8"));
+    return data.version === 1 && Array.isArray(data.entries) ? data.entries : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Keeps the most recently used responses, skipping very large ones (big diffs). */
+function saveEtags(file: string, cache: Map<string, { etag: string; response: unknown }>): void {
+  try {
+    const entries = [...cache].slice(-ETAG_ENTRIES).filter(([, v]) => JSON.stringify(v).length < ETAG_MAX_BYTES);
+    mkdirSync(dirname(file), { recursive: true });
+    const temp = `${file}.${process.pid}.tmp`;
+    writeFileSync(temp, JSON.stringify({ version: 1, entries }));
+    renameSync(temp, file);
+  } catch {
+    // A cache: losing it only costs requests.
+  }
 }
 
 export const person = (user: { login: string; avatar_url?: string } | null | undefined): Person | null =>

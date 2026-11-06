@@ -14,19 +14,21 @@ pile review --no-open # print the link instead of opening the browser
 
 ## The inbox
 
-Everything open, grouped by what it needs from you:
+What needs you, grouped:
 
 | Tab | What's in it |
 |-----|--------------|
 | **Needs review** | Pull requests where your review was requested |
 | **Yours** | Pull requests you opened |
 | **Local** | Branches pile tracks that have no pull request yet |
-| **Others** | Everything else that's open |
+
+Everyone else's open pull requests aren't listed, but search finds them: type a title,
+branch, author or number and matches show up under "Other open pull requests".
 
 Every row shows where it stands at a glance: **Draft**, **Local**, **In review**, **Changes
 requested**, **Checks failing**, **Approved**, **Ready to merge**, plus its checks, comments and
 size. Stacks are kept together as one card with a rail through their PRs, top of the stack
-first. Search filters by title, branch, author or number (`/`), `1`–`5` switch tabs and `j` / `k`
+first. Search filters by title, branch, author or number (`/`), `1`–`4` switch tabs and `j` / `k`
 move through the list.
 
 ### Stacks that branch
@@ -119,6 +121,14 @@ saved in `~/.config/pile/review.json` (or `$XDG_CONFIG_HOME/pile/review.json`), 
 across repositories and restarts. Each repository also gets the same port on every run, which
 keeps the files you've marked as viewed and unsent comments in your browser between runs.
 `--port` picks a different one.
+
+## GitHub's rate limit
+
+GitHub allows 5,000 API requests an hour per account, shared by everything signed in as you.
+`pile review` keeps well under it: it only follows your pull requests and the ones waiting on
+you, rereads only what changed, and caches GitHub's responses in `.git/pile/` so restarts are
+nearly free. If you get close to the limit, a banner says so and pile refreshes less often; if
+it runs out, the app keeps showing what it has until the limit resets.
 
 ## Privacy and security
 

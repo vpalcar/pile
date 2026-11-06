@@ -16,14 +16,13 @@ const FILTERS: Array<[Filter, string]> = [
   ["needs_review", "Needs review"],
   ["mine", "Yours"],
   ["local", "Local"],
-  ["others", "Others"],
 ];
 
 const GROUP_TITLES: Record<InboxGroup["id"], string> = {
   needs_review: "Waiting for your review",
   mine: "Your pull requests",
   local: "Local branches",
-  others: "Everyone else",
+  others: "Other open pull requests",
 };
 
 /**
@@ -52,8 +51,10 @@ export function InboxPage({ inbox, session, loading }: { inbox: Inbox | undefine
 
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase();
+    // Other people's PRs aren't part of the inbox; they show up when you search.
+    const shown = FILTERS.some(([id]) => id === filter) ? filter : "all";
     return (inbox?.groups ?? [])
-      .filter((g) => filter === "all" || g.id === filter)
+      .filter((g) => (g.searchOnly ? !!q && shown === "all" : shown === "all" || g.id === shown))
       .map((g) => ({
         ...g,
         items: q
@@ -70,7 +71,8 @@ export function InboxPage({ inbox, session, loading }: { inbox: Inbox | undefine
   const index = Math.max(0, visible.findIndex((i) => i.id === cursor));
   const counts = useMemo(() => {
     const all = inbox?.groups ?? [];
-    return Object.fromEntries([["all", all.reduce((n, g) => n + g.items.length, 0)], ...all.map((g) => [g.id, g.items.length])]) as Record<Filter, number>;
+    const inboxGroups = all.filter((g) => !g.searchOnly);
+    return Object.fromEntries([["all", inboxGroups.reduce((n, g) => n + g.items.length, 0)], ...all.map((g) => [g.id, g.items.length])]) as Record<Filter, number>;
   }, [inbox]);
 
   // Warm the first few so opening them is instant.
@@ -204,9 +206,9 @@ export function InboxPage({ inbox, session, loading }: { inbox: Inbox | undefine
               <div className="flex flex-col gap-2">
                 {clusters(group.items).map((cluster) =>
                   cluster.items.length > 1 ? (
-                    <StackCluster key={cluster.key} cluster={cluster} cursor={visible[index]?.id} onHover={setCursor} />
+                    <StackCluster key={cluster.key} cluster={cluster} cursor={visible[index]?.id} onHover={setCursor} loading={!!inbox?.partial && !group.searchOnly} />
                   ) : (
-                    <Row key={cluster.key} item={cluster.items[0]} active={visible[index]?.id === cluster.items[0].id} onHover={setCursor} />
+                    <Row key={cluster.key} item={cluster.items[0]} active={visible[index]?.id === cluster.items[0].id} onHover={setCursor} loading={!!inbox?.partial && !group.searchOnly} />
                   ),
                 )}
               </div>
@@ -219,7 +221,7 @@ export function InboxPage({ inbox, session, loading }: { inbox: Inbox | undefine
         {[
           [["j", "k"], "move"],
           [["↵"], "open"],
-          [["1–5"], "filter"],
+          [["1–4"], "filter"],
           [[modKey, "K"], "jump anywhere"],
         ].map(([keys, label]) => (
           <span key={label as string} className="inline-flex items-center gap-1">
@@ -239,7 +241,7 @@ function greeting(): string {
   return hour < 5 ? "Working late" : hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
 }
 
-function StackCluster({ cluster, cursor, onHover }: { cluster: Cluster; cursor: string | undefined; onHover: (id: string) => void }) {
+function StackCluster({ cluster, cursor, onHover, loading }: { cluster: Cluster; cursor: string | undefined; onHover: (id: string) => void; loading: boolean }) {
   // Long straight stacks fold to their ends; diverging ones always show every branch.
   const [open, setOpen] = useState(cluster.lanes > 1 || cluster.items.length <= 6 || cluster.items.some((i) => i.id === cursor));
   const top = cluster.items;
@@ -267,7 +269,7 @@ function StackCluster({ cluster, cursor, onHover }: { cluster: Cluster; cursor: 
                 <span>{cluster.items.length - 3} more in this stack</span>
               </button>
             )}
-            <Row item={item} active={cursor === item.id} onHover={onHover} rail={{ row: cluster.rails!.get(item.id)!, lanes: cluster.lanes }} />
+            <Row item={item} active={cursor === item.id} onHover={onHover} loading={loading} rail={{ row: cluster.rails!.get(item.id)!, lanes: cluster.lanes }} />
           </Fragment>
         ))}
       </div>
@@ -293,16 +295,20 @@ const Row = memo(function Row({
   active,
   onHover,
   rail,
+  loading,
 }: {
   item: InboxItem;
   active: boolean;
   onHover: (id: string) => void;
   /** Set for rows in a stack: where this row sits on the stack's rail. */
+  /** The inbox is still the quick first pass. */
+  loading?: boolean;
   rail?: { row: RailRow; lanes: number };
 }) {
   const stacked = !!rail;
   const total = (item.additions ?? 0) + (item.deletions ?? 0);
-  const loadingSignals = item.checks === null && item.state !== "local" && item.state !== "draft";
+  // Skeletons only while the full inbox is on its way; search-only rows never get checks.
+  const loadingSignals = loading && item.checks === null && item.state !== "local" && item.state !== "draft";
   return (
     <a
       data-row={item.id}

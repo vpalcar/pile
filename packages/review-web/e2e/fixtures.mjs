@@ -145,6 +145,7 @@ export const inbox = {
     {
       id: "others",
       title: "Other open pull requests",
+      searchOnly: true,
       items: [
         pr(130, "Dark mode for the dashboard", "ui/dark-mode", { author: person("dave"), reviewDecision: null, checks: checks("none", 0, 0, 0) }),
         pr(131, "Speed up CI with remote caching", "ci/cache", { author: person("erin"), reviewDecision: "commented", comments: 3 }),

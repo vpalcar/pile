@@ -49,7 +49,8 @@ export const useInbox = () =>
     queryKey: keys.inbox,
     queryFn: () => fetchInbox(invalidated(keys.inbox)),
     // The first answer may be the quick list; ask again until the full one is ready.
-    refetchInterval: (query) => (query.state.data?.partial ? 1200 : 30_000),
+    // Each refresh costs GitHub requests (see the server's request budget): once a minute.
+    refetchInterval: (query) => (query.state.data?.partial ? 1200 : 60_000),
   });
 
 // -----------------------------------------------------------------------------
@@ -68,7 +69,7 @@ export const useDetail = (ref: ItemRef | null) =>
       // While checks run, poll past the server's cache so progress shows up live.
       return api.detail(ref!, invalidated(key) || checksRunning(queryClient.getQueryData(key)));
     },
-    refetchInterval: (query) => (checksRunning(query.state.data) ? 8_000 : 60_000),
+    refetchInterval: (query) => (checksRunning(query.state.data) ? 15_000 : 60_000),
   });
 
 /** Warms a detail in the background (hover, neighbors), so opening it is instant. */

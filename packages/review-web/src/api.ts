@@ -111,12 +111,16 @@ export interface InboxItem {
 }
 
 export interface InboxGroup {
+  /** Listed only when searching (other people's PRs): not enriched, not in the inbox. */
+  searchOnly?: boolean;
   id: "needs_review" | "mine" | "local" | "others";
   title: string;
   items: InboxItem[];
 }
 
 export interface Inbox {
+  /** GitHub's hourly API quota for your account, as last reported. */
+  quota?: { remaining: number; limit: number; resetAt: string | null } | null;
   groups: InboxGroup[];
   fetchedAt: string;
   /** Checks, reviews and sizes are still loading; ask again shortly. */

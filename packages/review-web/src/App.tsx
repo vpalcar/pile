@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { ChevronLeft, ChevronRight, CircleAlert, CircleHelp, Inbox as InboxIcon, Keyboard, KeyRound, Monitor, Moon, RefreshCw, Search, Settings, Sun } from "lucide-react";
-import type { InboxItem, Person } from "./api";
+import { ChevronLeft, ChevronRight, CircleAlert, CircleHelp, Gauge, Inbox as InboxIcon, Keyboard, KeyRound, Monitor, Moon, RefreshCw, Search, Settings, Sun } from "lucide-react";
+import type { Inbox, InboxItem, Person } from "./api";
 import { api, RequestError } from "./lib/client";
 import { keys, prefetchDetail, queryClient, refKey, useDetail, useInbox, usePreference, useSession } from "./lib/queries";
 import { modKey, navigate, sameRef, useRoute, useShortcuts } from "./lib/util";
@@ -200,6 +200,7 @@ function Shell() {
         {refreshing && <div className="refreshing top-full" />}
       </nav>
 
+      <QuotaBanner quota={inbox.data?.quota ?? null} errors={[inbox.error, detail.error]} />
       <main className="relative flex-1 overflow-y-auto overflow-x-hidden scroll-smooth" ref={setScrollEl}>
         <div className="glow pointer-events-none absolute inset-x-0 top-0 h-[440px]" aria-hidden />
         <div className="relative">
@@ -291,6 +292,32 @@ function AccountMenu({ viewer, theme, onTheme, onShortcuts }: { viewer: Person |
             </span>
           </button>
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * GitHub allows 5,000 API requests an hour per account, shared by everything signed
+ * in as you. Says so when pile is close to the limit, or past it.
+ */
+function QuotaBanner({ quota, errors }: { quota: Inbox["quota"]; errors: Array<Error | null | undefined> }) {
+  const limited = errors.find((e): e is RequestError => e instanceof RequestError && e.body.code === "RATE_LIMITED");
+  const low = quota && quota.remaining < Math.max(300, quota.limit * 0.1);
+  if (!limited && !low) return null;
+  const reset = quota?.resetAt ? new Date(quota.resetAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : null;
+  return (
+    <div className="flex min-h-9 shrink-0 items-center justify-center gap-2 border-b border-warn/25 bg-warn-soft px-4 text-xs text-fg" role="status" data-quota-banner>
+      <Gauge size={14} className="shrink-0 text-warn" />
+      {limited ? (
+        <span>
+          {limited.message}. Showing what pile already has. <span className="text-fg-3">{limited.body.hint}</span>
+        </span>
+      ) : (
+        <span>
+          GitHub API: {quota!.remaining.toLocaleString()} of {quota!.limit.toLocaleString()} requests left this hour{reset ? ` (resets ${reset})` : ""}. pile is
+          refreshing less often until then.
+        </span>
       )}
     </div>
   );
