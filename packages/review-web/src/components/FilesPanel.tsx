@@ -149,7 +149,7 @@ export function FilesPanel({ detail, itemKey, scrollEl, pending, onAddPending, o
       </div>
       <div className={cx("grid items-start transition-[grid-template-columns] duration-200", treeOpen ? "grid-cols-[264px_minmax(0,1fr)]" : "grid-cols-[0_minmax(0,1fr)]")}>
         <FileTree files={files} active={files[index]?.path ?? null} isViewed={isViewed} onSelect={(p) => scrollTo(p)} />
-        <div className="flex min-w-0 flex-col gap-3.5 px-4 pb-[40vh] pt-3.5">
+        <div className="flex min-w-0 flex-col gap-3.5 px-4 pb-10 pt-3.5">
           {files.map((file) => (
             <FileDiff
               key={file.path}
