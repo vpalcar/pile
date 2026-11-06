@@ -399,6 +399,15 @@ section = "detail";
 log("\nPR page");
 await page.click('[data-row="pr-101"]');
 await detailReady();
+await check("the tab is named after the page: Review inbox, or the PR's title", async () => {
+  expect((await page.title()) === "Rate limit the public API", await page.title());
+  await page.keyboard.press("g");
+  await page.waitForSelector("[data-page=inbox]");
+  expect((await page.title()) === "Review inbox", await page.title());
+  expect((await page.locator("nav button").first().innerText()).includes("Inbox"), "no logo before Inbox");
+  await page.goBack();
+  await detailReady();
+});
 await check("header: status, number, title, branches, size", async () => {
   const header = (await text("[data-page=detail] header")).replace(/\s+/g, " ");
   for (const part of ["Checks failing", "#101", "Rate limit the public API", "alice", "api/rate-limit", "main", "7 files", "+1,511", "−7"]) {
@@ -449,6 +458,31 @@ await check("description shows GitHub's attached videos", async () => {
   const summary = page.locator(".markdown details.details-reset > summary");
   expect((await summary.evaluate((el) => getComputedStyle(el).display)) === "flex", "file name and icon on one line");
   expect((await summary.boundingBox()).height < 48, "summary is one short row");
+});
+await check("title: full width, edited in place (Enter saves, Escape cancels)", async () => {
+  const h1 = page.locator("[data-page=detail] header h1");
+  expect((await h1.evaluate((e) => getComputedStyle(e).textWrap ?? getComputedStyle(e).textWrapStyle)) !== "balance", "not balanced into halves");
+  await h1.hover();
+  await h1.getByRole("button", { name: "Edit title" }).click();
+  const input = page.locator("[data-title-editor] textarea");
+  expect((await input.inputValue()) === "Rate limit the public API", await input.inputValue());
+  await page.keyboard.press("Escape");
+  expect((await page.locator("[data-title-editor]").count()) === 0, "escape cancels");
+  await h1.hover();
+  await h1.getByRole("button", { name: "Edit title" }).click();
+  await input.fill("Rate limit the public API per key");
+  await shot("title editing");
+  await page.keyboard.press("Enter");
+  await toast("Title saved");
+  const call = (await calls()).filter((c) => c.type === "update" && c.title !== undefined).at(-1);
+  expect(call?.title === "Rate limit the public API per key", JSON.stringify(call));
+  expect((await h1.innerText()).includes("per key"), await h1.innerText());
+  // Put it back for the checks below.
+  await h1.hover();
+  await h1.getByRole("button", { name: "Edit title" }).click();
+  await input.fill("Rate limit the public API");
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => !document.querySelector("[data-title-editor]") && document.querySelector("[data-page=detail] header h1")?.textContent?.startsWith("Rate limit the public API") && !document.querySelector("[data-page=detail] header h1")?.textContent?.includes("per key"));
 });
 await check("description: edit as markdown, ⌘Enter saves to GitHub", async () => {
   const section = page.locator("section", { hasText: "Description" }).first();

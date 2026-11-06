@@ -289,6 +289,7 @@ export interface PRUpdate {
   draft?: boolean;
   /** The new description, in markdown. */
   body?: string;
+  title?: string;
 }
 
 /** Re-runs one check (by its Actions job) or, without `jobId`, every failed one. */

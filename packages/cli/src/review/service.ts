@@ -1251,20 +1251,20 @@ export class ReviewService {
     });
   }
 
-  /** Changes reviewers, assignees, labels, draft state or description, then returns the fresh PR. */
+  /** Changes reviewers, assignees, labels, draft state, title or description, then returns the fresh PR. */
   async update(number: number, change: PRUpdate): Promise<Detail> {
     this.requireGitHub();
     const repo = this.repo!;
     const api = this.octokit!;
     const tasks: Array<Promise<unknown>> = [];
-    const { reviewers, assignees, labels, draft, body } = change;
+    const { reviewers, assignees, labels, draft, body, title } = change;
     if (reviewers?.add?.length) tasks.push(api.pulls.requestReviewers({ ...repo, pull_number: number, reviewers: reviewers.add }));
     if (reviewers?.remove?.length) tasks.push(api.pulls.removeRequestedReviewers({ ...repo, pull_number: number, reviewers: reviewers.remove }));
     if (assignees?.add?.length) tasks.push(api.issues.addAssignees({ ...repo, issue_number: number, assignees: assignees.add }));
     if (assignees?.remove?.length) tasks.push(api.issues.removeAssignees({ ...repo, issue_number: number, assignees: assignees.remove }));
     // Setting labels creates any that don't exist yet.
     if (labels) tasks.push(api.issues.setLabels({ ...repo, issue_number: number, labels }));
-    if (body !== undefined) tasks.push(api.pulls.update({ ...repo, pull_number: number, body }));
+    if (body !== undefined || title !== undefined) tasks.push(api.pulls.update({ ...repo, pull_number: number, body, title }));
     if (draft !== undefined) tasks.push(draft ? this.github!.prs.convertToDraft(number) : this.github!.prs.markReadyForReview(number));
     try {
       await Promise.all(tasks);

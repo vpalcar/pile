@@ -164,7 +164,7 @@ export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems, c
 
       <div data-page="detail" className="mx-auto grid max-w-[1240px] grid-cols-[minmax(0,1fr)_272px] gap-10 px-9 pb-2 pt-9 max-[1080px]:grid-cols-1">
         <div className="min-w-0">
-          <Header detail={detail} status={status} />
+          <Header detail={detail} status={status} onSaveTitle={(title) => update.mutateAsync({ change: { title }, optimistic: (d) => ({ ...d, title }), done: "Title saved" })} />
           {detail.state === "local" && (
             <Banner>
               Local branch{detail.local?.unpushed ? ", not on GitHub yet" : ""}. Run <code>pile submit</code> to open a pull request.
@@ -228,7 +228,7 @@ function Banner({ children }: { children: ReactNode }) {
 
 // -----------------------------------------------------------------------------
 
-function Header({ detail, status }: { detail: DetailData; status: Readiness }) {
+function Header({ detail, status, onSaveTitle }: { detail: DetailData; status: Readiness; onSaveTitle: (title: string) => Promise<unknown> }) {
   const toast = useToast();
   // Branch names are often long: they shrink (with an ellipsis) so the row never wraps;
   // short ones like main keep their own width.
@@ -245,7 +245,7 @@ function Header({ detail, status }: { detail: DetailData; status: Readiness }) {
           </>
         )}
       </div>
-      <h1 className="mb-3.5 mt-3 text-[27px] font-semibold leading-[34px] tracking-[-0.028em] text-balance">{detail.title}</h1>
+      <Title detail={detail} onSave={onSaveTitle} />
       <div className="flex min-w-0 items-center gap-x-2.5 text-fg-2" data-header-meta>
         <Avatar person={detail.author} />
         <b className="shrink-0 whitespace-nowrap font-medium leading-none text-fg">{detail.author?.login ?? "unknown"}</b>
@@ -279,6 +279,96 @@ function Header({ detail, status }: { detail: DetailData; status: Readiness }) {
         </span>
       </div>
     </header>
+  );
+}
+
+/** The PR's title, full width; editable in place where GitHub allows (Enter saves, Esc cancels). */
+function Title({ detail, onSave }: { detail: DetailData; onSave: (title: string) => Promise<unknown> }) {
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState("");
+  const [saving, setSaving] = useState(false);
+  const input = useRef<HTMLTextAreaElement>(null);
+  const type = "text-[27px] font-semibold leading-[34px] tracking-[-0.028em]";
+  useLayoutEffect(() => {
+    const el = input.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [text, editing]);
+  useEffect(() => {
+    if (editing) input.current?.select();
+  }, [editing]);
+  const save = async () => {
+    const title = text.replace(/\s+/g, " ").trim();
+    if (!title || title === detail.title) return setEditing(false);
+    setSaving(true);
+    try {
+      await onSave(title);
+      setEditing(false);
+    } catch {
+      // The toast says why; keep the text to try again.
+    } finally {
+      setSaving(false);
+    }
+  };
+  const editable = detail.can.edit && detail.number !== null;
+
+  if (editing) {
+    return (
+      <div className="mb-3.5 mt-3" data-title-editor>
+        <textarea
+          ref={input}
+          value={text}
+          rows={1}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void save();
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              e.stopPropagation();
+              setEditing(false);
+            }
+          }}
+          aria-label="Pull request title"
+          disabled={saving}
+          className={cx(type, "-mx-2 -my-1 block w-[calc(100%+16px)] resize-none overflow-hidden rounded-lg border border-line-2 bg-panel px-2 py-1 text-fg outline-none focus:border-accent")}
+        />
+        <div className="mt-2 flex items-center gap-2 text-[12px] text-fg-3">
+          <span>
+            <Kbd>↵</Kbd> save · <Kbd>esc</Kbd> cancel
+          </span>
+          <span className="flex-1" />
+          <Button variant="ghost" size="sm" onClick={() => setEditing(false)} disabled={saving}>
+            Cancel
+          </Button>
+          <Button variant="primary" size="sm" onClick={() => void save()} disabled={saving}>
+            {saving && <Spinner size={12} />}
+            Save
+          </Button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <h1 className={cx(type, "group mb-3.5 mt-3 text-pretty")}>
+      {detail.title}
+      {editable && (
+        <button
+          className="ml-2 inline-grid size-7 translate-y-[-3px] place-items-center rounded-md align-middle text-fg-3 opacity-0 transition-opacity hover:bg-hover hover:text-fg focus-visible:opacity-100 group-hover:opacity-100"
+          onClick={() => {
+            setText(detail.title);
+            setEditing(true);
+          }}
+          aria-label="Edit title"
+          data-tip="Edit title"
+        >
+          <Pencil size={15} />
+        </button>
+      )}
+    </h1>
   );
 }
 

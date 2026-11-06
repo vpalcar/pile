@@ -102,6 +102,12 @@ function Shell() {
     { always: ["mod+k"] },
   );
 
+  // The tab says where you are: the inbox, or the pull request's title.
+  const pageTitle = route.ref ? (detail.data?.title ?? current?.title ?? (route.ref.kind === "branch" ? route.ref.name : `#${route.ref.number}`)) : "Review inbox";
+  useEffect(() => {
+    document.title = pageTitle;
+  }, [pageTitle]);
+
   if (!api.hasToken()) {
     return (
       <Centered icon={<KeyRound size={22} />} title="Open the link from your terminal">
@@ -133,10 +139,7 @@ function Shell() {
       {/* Left: where you are. Middle: which repo. Right: this page's actions, then app tools. */}
       <nav className="relative z-30 grid h-[var(--topbar-h)] shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 border-b border-line bg-bg/80 px-3 backdrop-blur-xl backdrop-saturate-150">
         <div className="flex min-w-0 items-center gap-1">
-          <button className="grid size-7 shrink-0 place-items-center rounded-lg hover:bg-hover" onClick={goInbox} aria-label="Inbox" data-tip="Inbox" data-kbd="g">
-            <BrandMark />
-          </button>
-          <button className={cx(navLink, !route.ref && "bg-active text-fg")} onClick={goInbox}>
+          <button className={cx(navLink, !route.ref && "bg-active text-fg")} onClick={goInbox} data-tip="Inbox" data-kbd="g">
             <InboxIcon size={14} />
             Inbox
             {waiting > 0 && <span className="grid h-[18px] min-w-[18px] place-items-center rounded-full bg-accent px-1.5 text-[11px] font-semibold leading-none text-white tabular">{waiting}</span>}
@@ -322,18 +325,6 @@ function QuotaBanner({ quota, errors }: { quota: Inbox["quota"]; errors: Array<E
         </span>
       )}
     </div>
-  );
-}
-
-function BrandMark() {
-  return (
-    <span className="grid size-[22px] shrink-0 place-items-center rounded-[7px] bg-gradient-to-br from-accent to-merged shadow-[inset_0_0_0_1px_rgba(255,255,255,.12),0_4px_14px_-4px_var(--accent)]">
-      <span className="flex flex-col gap-[2px]">
-        <i className="block h-[2px] w-2.5 rounded-full bg-white/40" />
-        <i className="block h-[2px] w-2.5 rounded-full bg-white/70" />
-        <i className="block h-[2px] w-2.5 rounded-full bg-white" />
-      </span>
-    </span>
   );
 }
 

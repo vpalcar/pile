@@ -97,6 +97,7 @@ export function startMockServer(port = 0) {
           }
           if (change.labels) edit.labels = change.labels.map((name) => options.labels.find((l) => l.name === name) ?? { name, color: "ededed", description: null });
           if (change.draft !== undefined) edit.state = change.draft ? "draft" : "open";
+          if (change.title !== undefined) edit.title = change.title;
           if (change.body !== undefined) {
             edit.body = change.body;
             edit.bodyHtml = change.body.trim() ? change.body.split(/\n{2,}/).map((p) => `<p>${p.replace(/[&<>]/g, (c) => `&#${c.charCodeAt(0)};`)}</p>`).join("") : null;
