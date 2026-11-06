@@ -2,8 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 import { ChevronLeft, ChevronRight, CircleAlert, CircleHelp, Inbox as InboxIcon, Keyboard, KeyRound, Monitor, Moon, RefreshCw, Search, Settings, Sun } from "lucide-react";
 import type { InboxItem, Person } from "./api";
 import { api, RequestError } from "./lib/client";
-import { keys, prefetchDetail, queryClient, refKey, useDetail, useInbox, useSession } from "./lib/queries";
-import { modKey, navigate, sameRef, useRoute, useShortcuts, usePersisted } from "./lib/util";
+import { keys, prefetchDetail, queryClient, refKey, useDetail, useInbox, usePreference, useSession } from "./lib/queries";
+import { modKey, navigate, sameRef, useRoute, useShortcuts } from "./lib/util";
 import { DetailView } from "./components/Detail";
 import { flatItems } from "./components/Inbox";
 import { InboxPage } from "./components/InboxPage";
@@ -28,7 +28,8 @@ function Shell() {
   const detailKey = route.ref ? refKey(route.ref) : null;
   const detail = useDetail(route.ref ?? null);
 
-  const [theme, setTheme] = usePersisted<Theme>("pile:theme", "system");
+  // The server writes the saved theme into the page, so start from that.
+  const [theme, setTheme] = usePreference("theme", (document.documentElement.dataset.theme as Theme | undefined) ?? "system");
   const [palette, setPalette] = useState(false);
   const [shortcuts, setShortcuts] = useState(false);
   const [scrollEl, setScrollEl] = useState<HTMLElement | null>(null);
@@ -131,7 +132,7 @@ function Shell() {
       <nav className="relative z-30 grid h-[var(--topbar-h)] shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 border-b border-line bg-bg/80 px-3 backdrop-blur-xl backdrop-saturate-150">
         <div className="flex min-w-0 items-center gap-1">
           <button className="grid size-7 shrink-0 place-items-center rounded-lg hover:bg-hover" onClick={goInbox} aria-label="Inbox" data-tip="Inbox" data-kbd="g">
-            <RepoMark src={repo?.avatarUrl ?? null} />
+            <BrandMark />
           </button>
           <button className={cx(navLink, !route.ref && "bg-active text-fg")} onClick={goInbox}>
             <InboxIcon size={14} />
@@ -153,17 +154,24 @@ function Shell() {
           )}
         </div>
 
-        <span className="truncate text-[13px] font-medium text-fg-2 max-[760px]:hidden" data-repo>
-          {repo ? (
-            <>
-              {repo.owner}
-              <span className="mx-1 text-fg-4">/</span>
-              <span className="text-fg">{repo.name}</span>
-            </>
-          ) : (
-            "pile review"
-          )}
-        </span>
+        {repo ? (
+          <a
+            className="truncate rounded-md px-2 py-1 text-[13px] font-medium text-fg-2 no-underline transition-colors hover:bg-hover hover:text-fg max-[760px]:hidden"
+            href={repo.url}
+            target="_blank"
+            rel="noreferrer"
+            data-repo
+            data-tip="Open on GitHub"
+          >
+            {repo.owner}
+            <span className="mx-1 text-fg-4">/</span>
+            <span className="text-fg">{repo.name}</span>
+          </a>
+        ) : (
+          <span className="text-[13px] font-medium text-fg-2 max-[760px]:hidden" data-repo>
+            pile review
+          </span>
+        )}
 
         <div className="flex items-center justify-end gap-1">
           {route.ref && index >= 0 && (
@@ -231,13 +239,6 @@ function Shell() {
   );
 }
 
-/** The repo owner's picture, or pile's mark when there isn't one (or it won't load). */
-function RepoMark({ src }: { src: string | null }) {
-  const [failed, setFailed] = useState(false);
-  if (!src || failed) return <BrandMark />;
-  return <img src={src} alt="" className="size-[22px] rounded-[7px] shadow-[inset_0_0_0_1px_var(--border-2)]" onError={() => setFailed(true)} />;
-}
-
 /** The viewer's avatar; opens app settings (theme, shortcuts). */
 function AccountMenu({ viewer, theme, onTheme, onShortcuts }: { viewer: Person | null; theme: Theme; onTheme: (t: Theme) => void; onShortcuts: () => void }) {
   const [open, setOpen] = useState(false);
@@ -253,22 +254,22 @@ function AccountMenu({ viewer, theme, onTheme, onShortcuts }: { viewer: Person |
         {viewer ? <Avatar person={viewer} size="lg" /> : <Settings size={15} className="text-fg-2" />}
       </button>
       {open && (
-        <div role="menu" className="popover absolute right-0 top-[calc(100%+10px)] z-50 w-56 origin-top-right animate-pop-in rounded-xl bg-panel p-1.5 shadow-pop">
+        <div role="menu" className="popover absolute right-0 top-[calc(100%+10px)] z-50 w-[272px] origin-top-right animate-pop-in rounded-xl bg-panel p-2 shadow-pop">
           {viewer && (
-            <div className="flex items-center gap-2 px-2 pb-2 pt-1.5">
+            <div className="mb-1 flex items-center gap-2.5 border-b border-line px-2 pb-2.5 pt-1">
               <Avatar person={viewer} />
               <span className="min-w-0 truncate text-[13px] font-medium">{viewer.login}</span>
             </div>
           )}
-          <div className="px-2 pb-1 pt-1.5 text-[11px] font-medium text-fg-3">Theme</div>
-          <div className="mx-1 mb-1.5 grid grid-cols-3 gap-1 rounded-lg bg-bg p-[3px]" role="radiogroup" aria-label="Theme">
+          <div className="px-2 pb-1.5 pt-2 text-[11.5px] font-medium text-fg-3">Theme</div>
+          <div className="mx-1 mb-2 grid grid-cols-3 gap-1 rounded-[10px] border border-line bg-bg p-1" role="radiogroup" aria-label="Theme">
             {themes.map(([value, label, icon]) => (
               <button
                 key={value}
                 role="radio"
                 aria-checked={theme === value}
                 onClick={() => onTheme(value)}
-                className={cx("flex h-7 items-center justify-center gap-1.5 rounded-md text-xs", theme === value ? "bg-panel-3 text-fg shadow-sm" : "text-fg-3 hover:text-fg-2")}
+                className={cx("flex h-8 items-center justify-center gap-1.5 rounded-md px-2 text-[12.5px]", theme === value ? "bg-panel-3 text-fg shadow-sm" : "text-fg-3 hover:bg-hover hover:text-fg-2")}
               >
                 {icon}
                 {label}
@@ -277,7 +278,7 @@ function AccountMenu({ viewer, theme, onTheme, onShortcuts }: { viewer: Person |
           </div>
           <button
             role="menuitem"
-            className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-[13px] text-fg-2 hover:bg-hover hover:text-fg"
+            className="flex h-9 w-full items-center gap-2 rounded-md border-t border-line px-2 pt-0.5 text-[13px] text-fg-2 hover:bg-hover hover:text-fg"
             onClick={() => {
               setOpen(false);
               onShortcuts();

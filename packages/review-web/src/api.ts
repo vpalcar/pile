@@ -9,8 +9,7 @@ export interface Person {
 }
 
 export interface Session {
-  /** `avatarUrl` is the owner's picture, shown as the app's mark. */
-  repo: { owner: string; name: string; url: string; avatarUrl: string | null } | null;
+  repo: { owner: string; name: string; url: string } | null;
   viewer: Person | null;
   trunk: string;
   currentBranch: string;
@@ -18,6 +17,14 @@ export interface Session {
   github: boolean;
   /** The PR or branch `pile review <target>` was opened on. */
   initial: ItemRef | null;
+}
+
+/** Personal settings, kept in ~/.config/pile/review.json so they survive restarts. */
+export interface Preferences {
+  theme?: "system" | "light" | "dark";
+  diffMode?: "split" | "unified";
+  diffWrap?: boolean;
+  treeOpen?: boolean;
 }
 
 /** Identifies something reviewable: a pull request, or a local branch without one. */
@@ -36,8 +43,9 @@ export interface ChecksSummary {
 }
 
 export interface StackPosition {
-  /** 1-based, bottom first. */
+  /** 1-based depth from the bottom; siblings in a diverging stack share it. */
   index: number;
+  /** Every PR in the stack, all branches of it included. */
   size: number;
   /** Native GitHub stack number, if any. */
   nativeStack: number | null;
@@ -85,10 +93,16 @@ export interface Inbox {
   partial?: boolean;
 }
 
+/**
+ * One PR (or local branch) in a stack. Stacks can diverge: several entries may share
+ * a `base`, so together they form a tree rooted on the trunk.
+ */
 export interface StackEntry {
   ref: ItemRef;
   title: string;
   branch: string;
+  /** The branch this one is based on: another entry's branch, or the trunk. */
+  base: string;
   state: PRState | "local";
   reviewDecision: InboxItem["reviewDecision"];
   /** The entry's own checks, so the stack shows real statuses without the inbox. */

@@ -49,6 +49,21 @@ const longStack = Array.from({ length: 8 }, (_, i) =>
   }),
 );
 
+// A diverging stack: #140 on main, then two branches built on it, each with more on top.
+//   main <- 140 <- 141 <- 143
+//               <- 142 <- 144
+//                      <- 145
+const searchTree = [
+  [140, "Index documents for search", "search/index", "main", 1, "approved"],
+  [141, "Search API endpoint", "search/api", "search/index", 2, "changes_requested"],
+  [142, "Search page", "search/ui", "search/index", 2, "approved"],
+  [143, "Tests for the search API", "search/api-tests", "search/api", 3, "review_required"],
+  [144, "Filters on the search page", "search/ui-filters", "search/ui", 3, "approved"],
+  [145, "Empty and error states for search", "search/ui-empty", "search/ui", 3, "review_required"],
+].map(([number, title, branch, base, index, reviewDecision]) =>
+  pr(number, title, branch, { author: person("carol"), base, reviewDecision, stack: { index, size: 6, nativeStack: null }, updatedAt: ago(90 + number) }),
+);
+
 const local = (name, title, base, extra = {}) => ({
   ref: { kind: "branch", name },
   id: `branch-${name}`,
@@ -133,6 +148,7 @@ export const inbox = {
       items: [
         pr(130, "Dark mode for the dashboard", "ui/dark-mode", { author: person("dave"), reviewDecision: null, checks: checks("none", 0, 0, 0) }),
         pr(131, "Speed up CI with remote caching", "ci/cache", { author: person("erin"), reviewDecision: "commented", comments: 3 }),
+        ...searchTree,
       ],
     },
   ],
@@ -248,8 +264,13 @@ function blockersFor(item) {
 function mergeInfo(item, stack) {
   if (item.state !== "open" && item.state !== "draft") return null;
   const own = blockersFor(item);
-  const index = stack.findIndex((e) => e.isCurrent);
-  const below = index > 0 ? stack.slice(0, index) : [];
+  // What this PR is built on, bottom first: never a sibling branch.
+  const byBranch = new Map(stack.map((e) => [e.branch, e]));
+  const below = [];
+  for (let e = stack.find((x) => x.isCurrent); e && byBranch.has(e.base); ) {
+    e = byBranch.get(e.base);
+    below.unshift(e);
+  }
   return {
     method: "squash",
     single: { possible: item.base === "main", blockers: own },
@@ -305,17 +326,18 @@ function buildDetail(number) {
     can: { review: item.author?.login !== VIEWER.login, comment: true, merge: true, draft: item.author?.login === VIEWER.login },
     merge: null,
   };
-  const billing = longStack.findIndex((p) => p.ref.number === number);
-  if (billing >= 0) {
-    base.stack = longStack.map((p, i) => ({
+  const stack = [longStack, searchTree].find((s) => s.some((p) => p.ref.number === number));
+  if (stack) {
+    base.stack = stack.map((p) => ({
       ref: p.ref,
       title: p.title,
       branch: p.branch,
+      base: p.base,
       state: p.state,
       reviewDecision: p.reviewDecision,
       checks: p.checks,
       blockers: blockersFor(p),
-      isCurrent: i === billing,
+      isCurrent: p.ref.number === number,
     }));
   }
 
@@ -324,8 +346,8 @@ function buildDetail(number) {
       ...base,
       bodyHtml: BODY,
       stack: [
-        { ref: { kind: "pr", number: 101 }, title: "Rate limit the public API", branch: "api/rate-limit", state: "open", reviewDecision: "review_required", isCurrent: true },
-        { ref: { kind: "pr", number: 102 }, title: "Expose rate-limit headers to clients", branch: "api/rate-limit-headers", state: "open", reviewDecision: "review_required", isCurrent: false },
+        { ref: { kind: "pr", number: 101 }, title: "Rate limit the public API", branch: "api/rate-limit", base: "main", state: "open", reviewDecision: "review_required", isCurrent: true },
+        { ref: { kind: "pr", number: 102 }, title: "Expose rate-limit headers to clients", branch: "api/rate-limit-headers", base: "api/rate-limit", state: "open", reviewDecision: "review_required", isCurrent: false },
       ],
       timeline: [
         commit("a1b2c3d", "Add the token bucket", 400),
@@ -395,8 +417,8 @@ export function branchDetail(name) {
     stack:
       name.startsWith("spike/")
         ? [
-            { ref: { kind: "branch", name: "spike/parser" }, title: "Try a hand-written parser", branch: "spike/parser", state: "local", reviewDecision: null, isCurrent: name === "spike/parser" },
-            { ref: { kind: "branch", name: "spike/parser-errors" }, title: "Better parser errors", branch: "spike/parser-errors", state: "local", reviewDecision: null, isCurrent: name === "spike/parser-errors" },
+            { ref: { kind: "branch", name: "spike/parser" }, title: "Try a hand-written parser", branch: "spike/parser", base: "main", state: "local", reviewDecision: null, isCurrent: name === "spike/parser" },
+            { ref: { kind: "branch", name: "spike/parser-errors" }, title: "Better parser errors", branch: "spike/parser-errors", base: "spike/parser", state: "local", reviewDecision: null, isCurrent: name === "spike/parser-errors" },
           ]
         : [],
     timeline: name === "wip" ? [] : [commit("f00ba12", "Parse expressions by hand", 50), commit("f00ba13", "Error recovery", 20)],

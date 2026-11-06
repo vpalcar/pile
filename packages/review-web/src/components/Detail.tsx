@@ -12,6 +12,8 @@ import { FilesPanel } from "./FilesPanel";
 import type { PendingComment } from "./FileDiff";
 import { Markdown } from "./Markdown";
 import { Picker, type PickerItem } from "./Picker";
+import { RailCell, railWidth } from "./StackRail";
+import { layoutTree, type TreeNode } from "../lib/stack-tree";
 import { Avatar, Button, buttonClass, CheckIcon, cx, DiffStat, Kbd, Label, Pill, RichText, Spinner, StatusBadge, useDismiss, useToast } from "./ui";
 
 interface Props {
@@ -381,58 +383,89 @@ export function windowed<T>(items: T[], current: number, expanded: boolean, radi
   return out;
 }
 
+/** Every entry with the entry it's built on (null: the trunk), for the rail layout. */
+export function stackTree(stack: StackEntry[]): TreeNode[] {
+  const byBranch = new Map(stack.map((e) => [e.branch, e]));
+  return stack.map((e) => ({ id: refKey(e.ref), parent: byBranch.has(e.base) ? refKey(byBranch.get(e.base)!.ref) : null }));
+}
+
 function StackSection({ stack, trunk, items, current }: { stack: StackEntry[]; trunk: string; items: InboxItem[]; current: Readiness }) {
-  const currentIndex = stack.findIndex((s) => s.isCurrent);
   const [expanded, setExpanded] = useState(false);
-  const top = [...stack].reverse();
-  const parts = windowed(top, top.findIndex((e) => e.isCurrent), expanded);
-  const row = "grid h-9 grid-cols-[22px_minmax(0,1fr)_auto] items-center gap-3 rounded-lg pr-2";
+  const { rows, lanes } = useMemo(() => layoutTree(stackTree(stack)), [stack]);
+  const byId = new Map(stack.map((e) => [refKey(e.ref), e]));
+  const entryRows = rows.filter((r) => r.id !== null);
+  const trunkRow = rows[rows.length - 1];
+  const currentRow = entryRows.findIndex((r) => byId.get(r.id!)?.isCurrent);
+  // Long straight stacks fold around the current PR; diverging ones show every branch.
+  const parts = lanes === 1 ? windowed(entryRows, currentRow, expanded) : entryRows.map((entry) => ({ entry }));
+  const depth = (entry: StackEntry): number => {
+    let n = 1;
+    for (let e = byId.get(stackTree([entry])[0].id); e && byId.has(refKey(e.ref)); ) {
+      const parent = stack.find((p) => p.branch === e!.base);
+      if (!parent) break;
+      n++;
+      e = parent;
+    }
+    return n;
+  };
+  const me = stack.find((e) => e.isCurrent);
+  const row = "grid h-9 items-center gap-3 rounded-lg pr-2";
+  const cols = { gridTemplateColumns: `${railWidth(lanes)}px minmax(0,1fr) auto` };
+  const dot = (entry: StackEntry) => (
+    <i
+      className={cx(
+        "block size-[9px] rounded-full border-[1.5px]",
+        entry.isCurrent ? "border-accent bg-accent shadow-[0_0_0_3px_var(--accent-soft)]" : entry.state === "merged" ? "border-merged bg-merged" : "border-fg-3 bg-bg",
+      )}
+    />
+  );
 
   return (
     <Section
       title={
         <>
-          <Layers size={13} /> Stack <span className="font-normal text-fg-3 tabular">{currentIndex + 1} of {stack.length}</span>
+          <Layers size={13} /> Stack{" "}
+          <span className="font-normal text-fg-3 tabular">
+            {lanes > 1 ? `${stack.length} PRs · ${lanes} branches` : me ? `${depth(me)} of ${stack.length}` : stack.length}
+          </span>
         </>
       }
     >
-      <div className="flex flex-col">
+      <div className="flex flex-col" data-stack-lanes={lanes}>
         {parts.map((part, i) =>
           "hidden" in part ? (
-            <button key={`more-${i}`} className={cx(row, "text-left text-xs text-fg-3 hover:bg-hover hover:text-fg-2")} onClick={() => setExpanded(true)}>
-              <span className="rail-node rail-dashed" />
+            <button key={`more-${i}`} className={cx(row, "text-left text-xs text-fg-3 hover:bg-hover hover:text-fg-2")} style={cols} onClick={() => setExpanded(true)}>
+              <RailCell row={{ id: null, lane: 0, up: true, down: true, joins: [], through: [] }} lanes={lanes} node={null} dashed />
               <span>{part.hidden} more</span>
               <span />
             </button>
           ) : (
-            <div
-              key={refKey(part.entry.ref)}
-              role="link"
-              tabIndex={0}
-              onClick={() => !part.entry.isCurrent && navigate(part.entry.ref)}
-              onKeyDown={(e) => e.key === "Enter" && navigate(part.entry.ref)}
-              className={cx(row, i === 0 && "rail-first", part.entry.isCurrent ? "bg-active text-fg" : "cursor-pointer text-fg-2 hover:bg-hover hover:text-fg")}
-            >
-              <span className="rail-node">
-                <i
-                  className={cx(
-                    "block size-[9px] rounded-full border-[1.5px]",
-                    part.entry.isCurrent ? "border-accent bg-accent shadow-[0_0_0_3px_var(--accent-soft)]" : part.entry.state === "merged" ? "border-merged bg-merged" : "border-fg-3 bg-bg",
-                  )}
-                />
-              </span>
-              <span className="truncate leading-5">
-                {part.entry.ref.kind === "pr" && <span className="mr-1.5 text-fg-3 tabular">#{part.entry.ref.number}</span>}
-                {part.entry.title}
-              </span>
-              <StatusBadge status={part.entry.isCurrent ? current : entryReadiness(part.entry, items)} size="sm" />
-            </div>
+            (() => {
+              const entry = byId.get(part.entry.id!)!;
+              return (
+                <div
+                  key={part.entry.id}
+                  role="link"
+                  tabIndex={0}
+                  data-stack-entry={entry.branch}
+                  onClick={() => !entry.isCurrent && navigate(entry.ref)}
+                  onKeyDown={(e) => e.key === "Enter" && navigate(entry.ref)}
+                  className={cx(row, entry.isCurrent ? "bg-active text-fg" : "cursor-pointer text-fg-2 hover:bg-hover hover:text-fg")}
+                  style={cols}
+                >
+                  <RailCell row={part.entry} lanes={lanes} node={dot(entry)} />
+                  <span className="truncate leading-5">
+                    {entry.ref.kind === "pr" && <span className="mr-1.5 text-fg-3 tabular">#{entry.ref.number}</span>}
+                    {entry.title}
+                  </span>
+                  <StatusBadge status={entry.isCurrent ? current : entryReadiness(entry, items)} size="sm" />
+                </div>
+              );
+            })()
           ),
         )}
-        <div className={cx(row, "rail-last font-mono text-[11.5px] text-fg-3")}>
-          <span className="rail-node">
-            <i className="block size-[9px] rounded-sm border-[1.5px] border-fg-3 bg-bg" />
-          </span>
+        <div className={cx(row, "font-mono text-[11.5px] text-fg-3")} style={cols}>
+          <RailCell row={trunkRow} lanes={lanes} node={<i className="block size-[9px] rounded-sm border-[1.5px] border-fg-3 bg-bg" />} />
           <span>{trunk}</span>
           <span />
         </div>

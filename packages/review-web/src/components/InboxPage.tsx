@@ -1,10 +1,13 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUpRight, GitBranch, Layers, MessageSquare, Search, Sparkles } from "lucide-react";
 import type { Inbox, InboxGroup, InboxItem, Session } from "../api";
 import { prefetchDetail } from "../lib/queries";
 import { itemReadiness } from "../lib/status";
 import { modKey, navigate, plural, timeAgo, useNow, useShortcuts, usePersisted } from "../lib/util";
 import { ChecksDot, cx, Kbd, Pill, PRStateIcon, StatusBadge } from "./ui";
+import { clusters, type Cluster } from "./Inbox";
+import { RailCell, railWidth } from "./StackRail";
+import type { RailRow } from "../lib/stack-tree";
 
 type Filter = "all" | InboxGroup["id"];
 
@@ -28,23 +31,8 @@ const GROUP_TITLES: Record<InboxGroup["id"], string> = {
  * icon · title · status · checks · comments · size · time · arrow
  */
 const ROW_GRID = "grid grid-cols-[22px_minmax(0,1fr)_136px_10px_40px_96px_44px_14px] items-center gap-x-3";
-
-/** A stack of related items (bottom first) or a single item. */
-interface Cluster {
-  key: string;
-  items: InboxItem[];
-}
-
-function clusters(items: InboxItem[]): Cluster[] {
-  const out: Cluster[] = [];
-  for (const item of items) {
-    const last = out[out.length - 1];
-    const prev = last?.items[last.items.length - 1];
-    if (prev && item.stack && prev.stack && item.base === prev.branch) last.items.push(item);
-    else out.push({ key: item.id, items: [item] });
-  }
-  return out;
-}
+/** The same columns with a wider rail for diverging stacks; everything else stays aligned. */
+const rowColumns = (lanes: number) => ({ gridTemplateColumns: `${railWidth(lanes)}px minmax(0,1fr) 136px 10px 40px 96px 44px 14px` });
 
 export function InboxPage({ inbox, session, loading }: { inbox: Inbox | undefined; session: Session | undefined; loading: boolean }) {
   useNow();
@@ -77,7 +65,8 @@ export function InboxPage({ inbox, session, loading }: { inbox: Inbox | undefine
       .filter((g) => g.items.length > 0 || (g.id === "needs_review" && !q));
   }, [inbox, filter, query]);
 
-  const visible = useMemo(() => groups.flatMap((g) => g.items), [groups]);
+  // Display order: stacks top first, as drawn, so j / k move the way the rows read.
+  const visible = useMemo(() => groups.flatMap((g) => clusters(g.items).flatMap((c) => c.items)), [groups]);
   const index = Math.max(0, visible.findIndex((i) => i.id === cursor));
   const counts = useMemo(() => {
     const all = inbox?.groups ?? [];
@@ -251,32 +240,35 @@ function greeting(): string {
 }
 
 function StackCluster({ cluster, cursor, onHover }: { cluster: Cluster; cursor: string | undefined; onHover: (id: string) => void }) {
-  const [open, setOpen] = useState(cluster.items.length <= 6 || cluster.items.some((i) => i.id === cursor));
-  const top = [...cluster.items].reverse();
+  // Long straight stacks fold to their ends; diverging ones always show every branch.
+  const [open, setOpen] = useState(cluster.lanes > 1 || cluster.items.length <= 6 || cluster.items.some((i) => i.id === cursor));
+  const top = cluster.items;
   const shown = open ? top : [...top.slice(0, 2), ...top.slice(-1)];
-  const bottom = cluster.items[0];
+  const bottom = top[top.length - 1];
+  const branches = cluster.lanes > 1 ? ` · ${cluster.lanes} branches` : "";
   return (
     <div className="overflow-hidden rounded-[14px] border border-line bg-panel/60">
       <div className="flex h-10 items-center gap-2 border-b border-line px-4 text-xs leading-none text-fg-2">
         <Layers size={13} className="shrink-0" />
         <span className="inline-flex items-center gap-1">
           Stack of {cluster.items.length} on <code className="text-[11.5px] text-fg">{bottom.base}</code>
+          {branches}
         </span>
         {bottom.stack?.nativeStack && <Pill>GitHub stack #{bottom.stack.nativeStack}</Pill>}
         <span className="flex-1" />
         <StackMap items={cluster.items} />
       </div>
-      <div className="flex flex-col gap-1 p-1.5">
+      <div className="flex flex-col gap-1 p-1.5" data-stack-lanes={cluster.lanes}>
         {shown.map((item, i) => (
-          <div key={item.id} className={cx(i === 0 && "rail-first", i === shown.length - 1 && "rail-last")}>
+          <Fragment key={item.id}>
             {!open && i === 2 && (
-              <button className={cx(ROW_GRID, "mb-1 h-8 w-full rounded-lg px-[9px] text-left text-xs text-fg-3 hover:bg-hover hover:text-fg-2")} onClick={() => setOpen(true)}>
-                <span className="rail-node rail-dashed" />
+              <button className={cx(ROW_GRID, "h-8 w-full rounded-lg px-[9px] text-left text-xs text-fg-3 hover:bg-hover hover:text-fg-2")} onClick={() => setOpen(true)}>
+                <RailCell row={{ id: null, lane: 0, up: true, down: true, joins: [], through: [] }} lanes={1} node={null} gap={4} dashed />
                 <span>{cluster.items.length - 3} more in this stack</span>
               </button>
             )}
-            <Row item={item} active={cursor === item.id} onHover={onHover} stacked />
-          </div>
+            <Row item={item} active={cursor === item.id} onHover={onHover} rail={{ row: cluster.rails!.get(item.id)!, lanes: cluster.lanes }} />
+          </Fragment>
         ))}
       </div>
     </div>
@@ -288,7 +280,7 @@ function StackMap({ items }: { items: InboxItem[] }) {
   const tone = { green: "bg-ok", red: "bg-bad", amber: "bg-warn/80", blue: "bg-accent", purple: "bg-merged", gray: "bg-line-3" } as const;
   return (
     <span className="inline-flex items-center gap-[3px]">
-      {[...items].reverse().slice(0, 12).map((i) => {
+      {items.slice(0, 12).map((i) => {
         const status = itemReadiness(i);
         return <i key={i.id} className={cx("h-1.5 w-3.5 rounded-full", tone[status.tone])} data-tip={`${i.ref.kind === "pr" ? `#${i.ref.number}` : i.branch}: ${status.label}`} />;
       })}
@@ -296,13 +288,26 @@ function StackMap({ items }: { items: InboxItem[] }) {
   );
 }
 
-const Row = memo(function Row({ item, active, onHover, stacked }: { item: InboxItem; active: boolean; onHover: (id: string) => void; stacked?: boolean }) {
+const Row = memo(function Row({
+  item,
+  active,
+  onHover,
+  rail,
+}: {
+  item: InboxItem;
+  active: boolean;
+  onHover: (id: string) => void;
+  /** Set for rows in a stack: where this row sits on the stack's rail. */
+  rail?: { row: RailRow; lanes: number };
+}) {
+  const stacked = !!rail;
   const total = (item.additions ?? 0) + (item.deletions ?? 0);
   const loadingSignals = item.checks === null && item.state !== "local" && item.state !== "draft";
   return (
     <a
       data-row={item.id}
       href={item.ref.kind === "pr" ? `#/pr/${item.ref.number}` : `#/branch/${encodeURIComponent(item.ref.name)}`}
+      style={rail && rail.lanes > 1 ? rowColumns(rail.lanes) : undefined}
       className={cx(
         ROW_GRID,
         "group relative min-h-[58px] py-2.5 text-fg no-underline transition-[background,border-color] duration-150",
@@ -324,10 +329,14 @@ const Row = memo(function Row({ item, active, onHover, stacked }: { item: InboxI
         prefetchDetail(item.ref);
       }}
     >
-      {stacked ? (
-        <span className="rail-node">
-          <i className={cx("block size-2.5 rounded-full border-2 bg-bg", active ? "border-accent bg-accent shadow-[0_0_0_4px_var(--accent-soft)]" : "border-fg-3")} />
-        </span>
+      {rail ? (
+        <RailCell
+          row={rail.row}
+          lanes={rail.lanes}
+          // Lines bridge the row's 10px padding and 1px border on each side, plus half the 4px gap.
+          gap={26}
+          node={<i className={cx("block size-2.5 rounded-full border-2 bg-bg", active ? "border-accent bg-accent shadow-[0_0_0_4px_var(--accent-soft)]" : "border-fg-3")} />}
+        />
       ) : (
         <span className="grid place-items-center">{item.state === "local" ? <GitBranch size={15} className="shrink-0 text-fg-3" /> : <PRStateIcon state={item.state} />}</span>
       )}
