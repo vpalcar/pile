@@ -1,6 +1,6 @@
 {
   "name": "pile-cli",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "description": "The AI-native stacked PR CLI for humans",
   "type": "module",
   "license": "MIT",
@@ -39,7 +39,7 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "scripts": {
     "build": "tsup && node scripts/copy-review-web.mjs",
