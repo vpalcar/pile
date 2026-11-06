@@ -24,6 +24,7 @@ export const keys = {
   detail: (ref: ItemRef) => ["detail", refKey(ref)] as const,
   options: ["options"] as const,
   preferences: ["preferences"] as const,
+  notes: (branch: string) => ["notes", branch] as const,
 };
 
 /**

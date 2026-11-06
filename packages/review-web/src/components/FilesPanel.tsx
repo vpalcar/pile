@@ -164,7 +164,8 @@ export function FilesPanel({ detail, itemKey, scrollEl, pending, onAddPending, o
               active={file.path === files[index]?.path}
               comments={commentsByPath.get(file.path) ?? EMPTY}
               pending={pendingByPath.get(file.path) ?? EMPTY}
-              canComment={detail.can.comment && detail.number !== null}
+              // GitHub review comments on PRs; notes for the agent everywhere (see Notes).
+              canComment={(detail.can.comment && detail.number !== null) || detail.state === "local" || detail.can.draft}
               webUrl={fileUrl(file)}
               onToggleViewed={() => toggleViewed(file)}
               onAddPending={onAddPending}

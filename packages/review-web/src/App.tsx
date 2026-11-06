@@ -206,7 +206,7 @@ function Shell() {
           {!route.ref ? (
             <InboxPage inbox={inbox.data} session={session.data} loading={inbox.isPending} />
           ) : detail.data ? (
-            <DetailView key={detailKey} detail={detail.data} scrollEl={scrollEl} initialFile={route.file} trunk={session.data?.trunk ?? "main"} inboxItems={items} />
+            <DetailView key={detailKey} detail={detail.data} scrollEl={scrollEl} initialFile={route.file} trunk={session.data?.trunk ?? "main"} inboxItems={items} currentBranch={session.data?.currentBranch ?? null} />
           ) : detail.error ? (
             <div className="h-[70vh]">
               <Centered icon={<CircleAlert size={22} />} title="Couldn't load this">
