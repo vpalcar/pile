@@ -23,7 +23,7 @@ What needs you, grouped:
 | **Local** | Branches pile tracks that have no pull request yet |
 
 Below "Waiting for your review", **Recently in review** lists the five pull requests with the
-latest activity that are in review, one row each (with where they sit in their stack), so
+latest activity that are open (not drafts), one row each (with where they sit in their stack), so
 what's moving is easy to spot without opening whole stacks.
 
 Every row shows its readiness: **Draft**, **Local**, **In review**, **Changes requested**,

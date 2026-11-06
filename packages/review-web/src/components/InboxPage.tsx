@@ -63,7 +63,8 @@ export function InboxPage({ inbox, session, loading, onSearch }: { inbox: Inbox 
       (inbox?.groups ?? [])
         .filter((g) => g.id === "needs_review" || g.id === "mine")
         .flatMap((g) => g.items)
-        .filter((i) => itemReadiness(i).label === "In review")
+        // In review: open on GitHub and not a draft, whatever the verdict or checks.
+        .filter((i) => i.state === "open")
         .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""))
         .slice(0, RECENT),
     [inbox],
@@ -186,18 +187,9 @@ export function InboxPage({ inbox, session, loading, onSearch }: { inbox: Inbox 
       ) : (
         groups.map((group) => (
           <Fragment key={group.id}>
-          {group.id !== "needs_review" && group === groups.find((g) => g.id !== "needs_review") && filter === "all" && recent.length > 0 && (
-            <section className="mt-7" data-recent>
-              <h2 className="mb-2.5 ml-0.5 flex h-5 items-center gap-2 text-[13px] font-semibold leading-none tracking-[-0.005em]">
-                Recently in review
-                <span className="font-normal text-fg-3">latest activity first</span>
-              </h2>
-              <div className="flex flex-col gap-2">
-                {recent.map((item) => (
-                  <Row key={item.id} item={item} active={false} onHover={() => {}} showStack recent />
-                ))}
-              </div>
-            </section>
+          {/* Under All, right after what waits for your review (or first, if nothing does). */}
+          {filter === "all" && recent.length > 0 && group === (groups.find((g) => g.id !== "needs_review") ?? groups[groups.length - 1]) && group.id !== "needs_review" && (
+            <RecentSection items={recent} />
           )}
           <section className="mt-7">
             <h2 className="mb-2.5 ml-0.5 flex h-5 items-center gap-2 text-[13px] font-semibold leading-none tracking-[-0.005em]">
@@ -224,6 +216,9 @@ export function InboxPage({ inbox, session, loading, onSearch }: { inbox: Inbox 
           </Fragment>
         ))
       )}
+      {!(loading && !inbox) && filter === "all" && recent.length > 0 && groups.every((g) => g.id === "needs_review") && (
+        <RecentSection items={recent} />
+      )}
 
       <footer className="mt-10 flex justify-center gap-5 text-xs text-fg-3">
         {[
@@ -241,6 +236,23 @@ export function InboxPage({ inbox, session, loading, onSearch }: { inbox: Inbox 
         ))}
       </footer>
     </div>
+  );
+}
+
+/** The latest open PRs among yours and those waiting on you, one row each. */
+function RecentSection({ items }: { items: InboxItem[] }) {
+  return (
+    <section className="mt-7" data-recent>
+      <h2 className="mb-2.5 ml-0.5 flex h-5 items-center gap-2 text-[13px] font-semibold leading-none tracking-[-0.005em]">
+        Recently in review
+        <span className="font-normal text-fg-3">latest activity first</span>
+      </h2>
+      <div className="flex flex-col gap-2">
+        {items.map((item) => (
+          <Row key={item.id} item={item} active={false} onHover={() => {}} showStack recent />
+        ))}
+      </div>
+    </section>
   );
 }
 

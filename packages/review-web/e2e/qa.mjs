@@ -196,12 +196,16 @@ await check("the inbox is your work: no search box, nobody else's PRs", async ()
   expect((await count('[data-row="pr-130"]')) === 0, "dave's PR isn't listed");
   expect(await page.getByRole("button", { name: /Search all PRs/ }).isVisible(), "a way to search everything");
 });
-await check("Recently in review: the latest PRs in review, one row each", async () => {
+await check("Recently in review, under All: the latest open PRs, one row each", async () => {
+  expect((await page.locator("section h2").allInnerTexts()).slice(0, 2).join(" | ").includes("Recently in review"), "right after Waiting for your review");
   const section = page.locator("[data-recent]");
   const rows = section.locator("[data-recent-row]");
   const n = await rows.count();
   expect(n > 0 && n <= 5, `rows: ${n}`);
-  for (const text of await rows.allInnerTexts()) expect(text.includes("In review"), text.slice(0, 80));
+  // Every open PR counts (any verdict or checks), drafts and local branches don't.
+  for (const text of await rows.allInnerTexts()) expect(!text.includes("Draft") && !text.includes("Local"), text.slice(0, 80));
+  const order = await rows.evaluateAll((r) => r.map((x) => x.querySelector("[data-tip]:last-of-type")?.getAttribute("data-tip") ?? ""));
+  expect(order.length === n, "rows have times");
   expect((await section.innerText()).includes("in a stack"), "says where a stacked PR sits");
   // Shortcut rows aren't part of j / k (they repeat PRs listed below).
   expect((await section.locator("[data-row]").count()) === 0, "not in the keyboard list");
