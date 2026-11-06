@@ -52,6 +52,26 @@ describe("notes", () => {
   });
 });
 
+describe("replies", () => {
+  it("the agent resolves with a reply; a reviewer's reply reopens", async () => {
+    const repo = createTestRepo();
+    const { notes } = await repo.pile();
+    const note = notes.add(line());
+    expect(notes.reply(note.id, "agent", "Renamed to subtotal and tax.", { done: true })).toMatchObject({ done: true, replies: [{ author: "agent", body: "Renamed to subtotal and tax." }] });
+    const reopened = notes.reply(note.id, "reviewer", "Tax should be taxRate.");
+    expect(reopened.done).toBe(false);
+    expect(reopened.replies!.map((r) => r.author)).toEqual(["agent", "reviewer"]);
+    expect(notes.reply(note.id, "agent", "Is it a rate or an amount?").done).toBe(false);
+    expect(() => notes.reply(note.id, "agent", " ")).toThrow(/text/);
+  });
+
+  it("shows the conversation to the agent", () => {
+    const text = formatNotes([{ ...line(), id: "a1b2c3", createdAt: "", done: false, replies: [{ author: "agent", body: "Done.", createdAt: "" }, { author: "reviewer", body: "Not quite.", createdAt: "" }] }]);
+    expect(text).toContain("> **You (agent):** Done.");
+    expect(text).toContain("> **Reviewer:** Not quite.");
+  });
+});
+
 describe("formatNotes", () => {
   const note = (extra: Partial<NewNote> = {}) => ({ ...line(extra), id: "a1b2c3", createdAt: "", done: false });
 
@@ -60,7 +80,8 @@ describe("formatNotes", () => {
     expect(text).toContain("## src/api.ts:12 (id `a1b2c3`)");
     expect(text).toContain("```ts\n  11 |   const a = 1;\n> 12 |   const b = 2;\n  13 |   return a + b;\n```");
     expect(text).toContain("Name these after what they mean.");
-    expect(text).toContain("pile notes done <id>");
+    expect(text).toContain('pile notes done <id> -m "what you changed"');
+    expect(text).toContain("pile notes reply <id>");
   });
 
   it("says when a note is about the old code", () => {

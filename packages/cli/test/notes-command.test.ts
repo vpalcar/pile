@@ -19,7 +19,10 @@ describe("pile notes", () => {
     const all = repo.pile(["notes", "--all", "--json"]);
     expect(all.json.data.notes).toHaveLength(2);
 
-    expect(repo.pile(["notes", "done", note.id]).stdout).toContain(`Done: ${note.id} feature.txt:1`);
+    expect(repo.pile(["notes", "reply", note.id, "-m", "Rename it to what?"]).stdout).toContain(`Replied: ${note.id}`);
+    expect(repo.pile(["notes"]).stdout).toContain("> **You (agent):** Rename it to what?");
+    expect(repo.pile(["notes", "done", note.id, "-m", "Renamed to feature-flag.txt."]).stdout).toContain(`Done: ${note.id} feature.txt:1`);
+    expect((await createPile(repo.dir)).notes.get(note.id)!.replies!.at(-1)).toMatchObject({ author: "agent", body: "Renamed to feature-flag.txt." });
     expect(repo.pile(["notes"]).stdout).toContain("No open review notes.");
     expect(repo.pile(["notes", "clear", "--json"]).json).toMatchObject({ success: true, data: { removed: 1 } });
   });
@@ -31,5 +34,6 @@ describe("pile notes", () => {
     expect(missing.json).toMatchObject({ success: false, code: "NEEDS_INPUT" });
     expect(repo.pile(["notes", "done", "zzzzzz", "--json"]).json).toMatchObject({ success: false, code: "NOTE_NOT_FOUND" });
     expect(repo.pile(["notes", "bogus", "--json"]).json).toMatchObject({ success: false, code: "INVALID_ARGUMENT" });
+    expect(repo.pile(["notes", "reply", "abc123", "--json"]).json).toMatchObject({ success: false, code: "NEEDS_INPUT" });
   });
 });
