@@ -31,7 +31,9 @@ export function clusters(items: InboxItem[]): Cluster[] {
 
   return [...groups].map(([key, group]) => {
     if (group.length === 1) return { key, items: group, rails: null, lanes: 1 };
-    const { rows, lanes } = layoutTree(group.map((i) => ({ id: i.id, parent: byBranch.get(i.base)?.id ?? null })));
+    // Siblings in PR order, the same as on the PR page, so a stack looks the same in both.
+    const ordered = [...group].sort((a, b) => sortKey(a).localeCompare(sortKey(b), undefined, { numeric: true }));
+    const { rows, lanes } = layoutTree(ordered.map((i) => ({ id: i.id, parent: byBranch.get(i.base)?.id ?? null })));
     const rails = new Map<string, RailRow>();
     for (const row of rows) {
       // The trunk row isn't drawn here, so the bottom PR's line stops at its dot.
@@ -43,6 +45,8 @@ export function clusters(items: InboxItem[]): Cluster[] {
 }
 
 /** Every inbox item in display order, for stepping with j / k and [ / ]. */
+const sortKey = (item: InboxItem) => (item.ref.kind === "pr" ? String(item.ref.number).padStart(9, "0") : `~${item.branch}`);
+
 export function flatItems(inbox: Inbox | undefined): InboxItem[] {
   return inbox?.groups.flatMap((g) => clusters(g.items).flatMap((c) => c.items)) ?? [];
 }

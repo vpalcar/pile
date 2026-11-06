@@ -381,7 +381,7 @@ const Row = memo(function Row({
         )}
       </span>
       <span className="text-right text-xs leading-none text-fg-3 tabular" data-tip={item.updatedAt ?? undefined}>
-        {timeAgo(item.updatedAt).replace(" ago", "")}
+        {timeAgo(item.updatedAt).replace(" ago", "").replace("just now", "now")}
       </span>
       <ArrowUpRight
         size={14}
