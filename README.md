@@ -32,6 +32,7 @@ Pile is a command-line tool for managing stacked pull requests on GitHub. It hel
 - **Automatic rebasing** - Keep your stack in sync with `pile sync`
 - **GitHub integration** - Create and update PRs with `pile submit`, merge stacks with `pile merge`
 - **A review app** - `pile review` opens an inbox and diff viewer for every open PR and local branch
+- **Notes for your agent** - Review an agent's work in the app, hand it over with `pile notes`
 - **Offline support** - Queue operations when offline, sync when back online
 - **AI-friendly** - JSON output and non-interactive mode for every command
 
@@ -92,6 +93,11 @@ browser. Local branches show up too, so you can look over work before opening a 
 ![pile review](https://raw.githubusercontent.com/vpalcar/pile/main/docs/images/review-pr.png)
 
 See [docs/review.md](docs/review.md) for the full guide and keyboard shortcuts.
+
+Reviewing work an agent wrote? Leave **notes for your agent** on any line instead of GitHub
+comments, then hand them over with `pile notes` (`claude "$(pile notes)"`). The agent resolves
+each one with a reply, which shows up live in the app. See
+[docs/agent-notes.md](docs/agent-notes.md).
 
 ## Commands
 
