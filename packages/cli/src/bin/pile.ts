@@ -24,6 +24,7 @@ import { EditCommand } from "../commands/edit.js";
 import { RequestCommand } from "../commands/request.js";
 import { ReviewCommand } from "../commands/review.js";
 import { DiffCommand } from "../commands/diff.js";
+import { ReviewWebCommand } from "../commands/review-web.js";
 import { NavCommand } from "../commands/nav.js";
 import { TrackCommand, UntrackCommand } from "../commands/track.js";
 import { getSecretPileMessage, getPileWisdom } from "../utils/fun.js";
@@ -408,19 +409,33 @@ program
 
 // review command
 program
-  .command("review")
-  .description("Submit a review on the current branch's PR")
+  .command("review [target]")
+  .description("Open the review app for open pull requests and local branches; with --approve, --request-changes or -m, review the current branch's PR")
   .option("--approve", "Approve the PR")
   .option("--request-changes", "Request changes on the PR")
   .option("-m, --message <message>", "Review comment/message")
-  .action((opts) => {
+  .option("--port <port>", "Port for the review app (default: any free port)")
+  .option("--no-open", "Don't open the browser")
+  .action((target, opts) => {
     const globalOpts = program.opts();
+    const options = resolveOptions(globalOpts);
+    if (opts.approve || opts.requestChanges || opts.message) {
+      render(
+        React.createElement(ReviewCommand, {
+          approve: opts.approve,
+          requestChanges: opts.requestChanges,
+          message: opts.message,
+          options,
+        }),
+      );
+      return;
+    }
     render(
-      React.createElement(ReviewCommand, {
-        approve: opts.approve,
-        requestChanges: opts.requestChanges,
-        message: opts.message,
-        options: resolveOptions(globalOpts),
+      React.createElement(ReviewWebCommand, {
+        target,
+        port: opts.port ? Number(opts.port) : undefined,
+        open: opts.open !== false,
+        options,
       }),
     );
   });

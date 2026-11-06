@@ -42,7 +42,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && node scripts/copy-review-web.mjs",
     "dev": "tsup --watch",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
@@ -65,6 +65,7 @@
     "@types/react": "^18.3.28",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^5.1.0"
+    "vitest": "^5.1.0",
+    "@pile/review-web": "workspace:*"
   }
 }
