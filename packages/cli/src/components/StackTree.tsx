@@ -1,6 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { StackNode } from "@pile/core";
+import { layoutTree, type RailRow } from "@pile/review-web/stack-tree";
 
 export type PRStatusType =
   | "draft"
@@ -37,7 +38,7 @@ const STATUS_COLORS: Record<PRStatusType, string> = {
 
 interface FlatBranch {
   name: string;
-  depth: number;
+  parent: string | null;
   isCurrent: boolean;
   prNumber?: number;
   prStatus?: PRStatusType;
@@ -45,33 +46,39 @@ interface FlatBranch {
   reviews?: number;
 }
 
-function flattenTree(
-  node: StackNode,
-  depth: number,
-  prCache?: Record<string, CachedPRInfo>
-): FlatBranch[] {
-  const result: FlatBranch[] = [];
+function flattenTree(node: StackNode, parent: string | null, prCache?: Record<string, CachedPRInfo>): FlatBranch[] {
   const { branch, isCurrentBranch, children } = node;
-  const hasMultipleChildren = children.length > 1;
-
-  // Process children first (they appear above in the tree)
-  children.forEach((child, index) => {
-    const childDepth = hasMultipleChildren && index > 0 ? depth + 1 : depth;
-    result.push(...flattenTree(child, childDepth, prCache));
-  });
-
   const cachedPR = prCache?.[branch.name];
-  result.push({
-    name: branch.name,
-    depth,
-    isCurrent: isCurrentBranch,
-    prNumber: cachedPR?.number ?? branch.prNumber,
-    prStatus: cachedPR?.status,
-    syncStatus: branch.syncStatus,
-    reviews: cachedPR?.reviews,
-  });
+  return [
+    {
+      name: branch.name,
+      parent,
+      isCurrent: isCurrentBranch,
+      prNumber: cachedPR?.number ?? branch.prNumber,
+      prStatus: cachedPR?.status,
+      syncStatus: branch.syncStatus,
+      reviews: cachedPR?.reviews,
+    },
+    ...children.flatMap((child) => flattenTree(child, branch.name, prCache)),
+  ];
+}
 
-  return result;
+/**
+ * The rail for one row, two characters per lane: the dot in its lane, │ for lanes
+ * passing by, and ─┘ (─┴─┘ for several) where branches join this row.
+ */
+export function railText(row: RailRow, lanes: number, dot: string): string {
+  const lastJoin = Math.max(-1, ...row.joins);
+  let text = "";
+  for (let lane = 0; lane < lanes; lane++) {
+    const joining = lane > row.lane && lane <= lastJoin;
+    let cell = row.through.includes(lane) ? "│" : " ";
+    if (lane === row.lane) cell = dot;
+    else if (row.joins.includes(lane)) cell = lane === lastJoin ? "┘" : "┴";
+    else if (joining) cell = row.through.includes(lane) ? "┼" : "─";
+    text += cell + (lane >= row.lane && lane < lastJoin ? "─" : " ");
+  }
+  return text;
 }
 
 export interface StackTreeProps {
@@ -81,12 +88,8 @@ export interface StackTreeProps {
   prCache?: Record<string, CachedPRInfo>;
 }
 
-export function StackTree({
-  tree,
-  trees,
-  trunk,
-  prCache,
-}: StackTreeProps): React.ReactElement {
+/** Stacks as a graph, like `git log --graph`: stacks that branch get a lane per branch. */
+export function StackTree({ tree, trees, trunk, prCache }: StackTreeProps): React.ReactElement {
   const allTrees = trees ?? (tree ? [tree] : []);
 
   if (allTrees.length === 0) {
@@ -97,53 +100,39 @@ export function StackTree({
     );
   }
 
-  const flatBranches: FlatBranch[] = [];
-  allTrees.forEach((rootTree, treeIndex) => {
-    const treeBranches = flattenTree(rootTree, treeIndex, prCache);
-    flatBranches.push(...treeBranches);
-  });
-
-  const maxDepth = Math.max(...flatBranches.map((b) => b.depth), 0);
+  const branches = allTrees.flatMap((root) => flattenTree(root, null, prCache));
+  const byName = new Map(branches.map((b) => [b.name, b]));
+  const { rows, lanes } = layoutTree(branches.map((b) => ({ id: b.name, parent: b.parent })));
 
   return (
     <Box flexDirection="column">
-      {flatBranches.map((branch) => {
-        let prefix = "";
-        for (let d = 0; d < branch.depth; d++) {
-          prefix += "│ ";
+      {rows.map((row) => {
+        if (row.id === null) {
+          return (
+            <Box key="trunk">
+              <Text color="gray">{railText(row, lanes, "○")}</Text>
+              <Text color="white">{trunk}</Text>
+            </Box>
+          );
         }
-
+        const branch = byName.get(row.id)!;
+        const rail = railText(row, lanes, "\0");
+        const [before, after] = rail.split("\0");
         return (
           <Box key={branch.name}>
-            <Text color="gray">{prefix}</Text>
-            <Text
-              color={branch.isCurrent ? "yellow" : "white"}
-              bold={branch.isCurrent}
-            >
+            <Text color="gray">{before}</Text>
+            <Text color={branch.isCurrent ? "yellow" : "white"} bold={branch.isCurrent}>
               {branch.isCurrent ? "◉" : "○"}
             </Text>
-            <Text color="gray">{" ".repeat(maxDepth - branch.depth + 1)}</Text>
-            <Text
-              color={branch.isCurrent ? "yellow" : "white"}
-              bold={branch.isCurrent}
-            >
+            <Text color="gray">{after}</Text>
+            <Text color={branch.isCurrent ? "yellow" : "white"} bold={branch.isCurrent}>
               {branch.name}
             </Text>
-            {branch.prNumber !== undefined && (
-              <Text color="gray">{`  #${branch.prNumber}`}</Text>
-            )}
-            {branch.prStatus && (
-              <Text color={STATUS_COLORS[branch.prStatus]}>{` ${STATUS_LABELS[branch.prStatus]}`}</Text>
-            )}
+            {branch.prNumber !== undefined && <Text color="gray">{`  #${branch.prNumber}`}</Text>}
+            {branch.prStatus && <Text color={STATUS_COLORS[branch.prStatus]}>{` ${STATUS_LABELS[branch.prStatus]}`}</Text>}
           </Box>
         );
       })}
-      <Box>
-        <Text color="gray">○</Text>
-        {maxDepth > 0 && <Text color="gray">─┘</Text>}
-        <Text color="gray">{maxDepth === 0 ? "  " : " "}</Text>
-        <Text color="white">{trunk}</Text>
-      </Box>
     </Box>
   );
 }
