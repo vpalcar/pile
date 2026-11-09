@@ -2,7 +2,7 @@ import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } 
 import { CheckCircle2, ChevronDown, ChevronsUpDown, Copy, ExternalLink, FileCode2, Plus } from "lucide-react";
 import type { AgentNote, DiffFile, InlineComment } from "../api";
 import { gapLines, gaps, languageFor, parsePatch, toSplitRows, wordDiff, type DiffLine, type Gap, type Hunk } from "../lib/diff";
-import { highlightLines, type Token } from "../lib/highlight";
+import { highlightBlocks, highlightLines, type Token } from "../lib/highlight";
 import { api } from "../lib/client";
 import { copy, timeAgo } from "../lib/util";
 import { Avatar, Button, buttonClass, cx, DiffStat, Pill, StatusLetter, useToast } from "./ui";
@@ -222,22 +222,24 @@ function DiffBody(props: Props) {
   const wholeFile = file.status === "added" || file.status === "removed";
   const allGaps = useMemo(() => (wholeFile ? [] : gaps(hunks, fileLines?.length ?? null)), [hunks, fileLines, wholeFile]);
 
-  // Syntax tokens: each side highlighted as one block; the full file when loaded.
+  // Syntax tokens: each hunk highlighted on its own (the lines between hunks aren't here, so
+  // a comment closed in a hidden gap mustn't color what follows); the whole new file once loaded.
   const [tokens, setTokens] = useState<{ old: Map<number, Token[]>; new: Map<number, Token[]> }>({ old: new Map(), new: new Map() });
   useEffect(() => {
     let cancelled = false;
-    const oldLines = hunks.flatMap((h) => h.lines.filter((l) => l.kind !== "add"));
-    const newLines = hunks.flatMap((h) => h.lines.filter((l) => l.kind !== "del"));
+    const oldBlocks = hunks.map((h) => h.lines.filter((l) => l.kind !== "add"));
+    const newBlocks = hunks.map((h) => h.lines.filter((l) => l.kind !== "del"));
     Promise.all([
-      highlightLines(oldLines.map((l) => l.text), lang),
-      fileLines ? highlightLines(fileLines, lang) : highlightLines(newLines.map((l) => l.text), lang),
-    ]).then(([oldTokens, newTokens]) => {
+      highlightBlocks(oldBlocks.map((b) => b.map((l) => l.text)), lang),
+      fileLines ? highlightLines(fileLines, lang) : null,
+      fileLines ? null : highlightBlocks(newBlocks.map((b) => b.map((l) => l.text)), lang),
+    ]).then(([oldTokens, wholeNew, newTokens]) => {
       if (cancelled) return;
       const oldMap = new Map<number, Token[]>();
       const newMap = new Map<number, Token[]>();
-      oldTokens?.forEach((t, i) => oldMap.set(oldLines[i].oldNumber!, t));
-      if (fileLines) newTokens?.forEach((t, i) => newMap.set(i + 1, t));
-      else newTokens?.forEach((t, i) => newMap.set(newLines[i].newNumber!, t));
+      oldTokens.forEach((block, b) => block?.forEach((t, i) => oldMap.set(oldBlocks[b][i].oldNumber!, t)));
+      if (wholeNew) wholeNew.forEach((t, i) => newMap.set(i + 1, t));
+      newTokens?.forEach((block, b) => block?.forEach((t, i) => newMap.set(newBlocks[b][i].newNumber!, t)));
       setTokens({ old: oldMap, new: newMap });
     });
     return () => {
