@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { AttachButton, AttachmentStrip, useAttachments } from "./Attachments";
 import { Button, cx, Kbd, Spinner } from "./ui";
 import { modKey } from "../lib/util";
 
@@ -7,7 +8,10 @@ interface Props {
   submitLabel: string;
   /** Replaces the "Markdown supported" hint at the start of the footer. */
   footerStart?: React.ReactNode;
-  onSubmit: (body: string) => Promise<void> | void;
+  /** Gets the uploads the body refers to when `attachments` is on. */
+  onSubmit: (body: string, attachments: string[]) => Promise<void> | void;
+  /** Images and videos can be pasted, dropped or picked (uploaded with gh on submit). */
+  attachments?: boolean;
   onCancel?: () => void;
   autoFocus?: boolean;
   /** Footer hidden until focused or typed in. */
@@ -22,7 +26,7 @@ interface Props {
   inputRef?: React.RefObject<HTMLTextAreaElement | null>;
 }
 
-export function Composer({ placeholder, submitLabel, footerStart, onSubmit, onCancel, autoFocus, compact, inset, draftKey, inputRef }: Props) {
+export function Composer({ placeholder, submitLabel, footerStart, onSubmit, onCancel, autoFocus, compact, inset, draftKey, inputRef, attachments: canAttach }: Props) {
   const [text, setText] = useState(() => (draftKey ? readDraft(draftKey) : ""));
   const [busy, setBusy] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -50,12 +54,14 @@ export function Composer({ placeholder, submitLabel, footerStart, onSubmit, onCa
     if (draftKey) writeDraft(draftKey, text);
   }, [draftKey, text]);
 
+  const files = useAttachments(ref, setText);
   const submit = async () => {
     const body = text.trim();
-    if (!body || busy) return;
+    if (!body || busy || files.uploading > 0) return;
     setBusy(true);
     try {
-      await onSubmit(body);
+      await onSubmit(body, files.used(body));
+      files.reset();
       setText("");
       if (draftKey) writeDraft(draftKey, "");
     } catch {
@@ -65,7 +71,7 @@ export function Composer({ placeholder, submitLabel, footerStart, onSubmit, onCa
     }
   };
 
-  const showFooter = !compact || focused || !!text;
+  const showFooter = !compact || focused || !!text || files.items.length > 0;
 
   return (
     <div
@@ -73,7 +79,9 @@ export function Composer({ placeholder, submitLabel, footerStart, onSubmit, onCa
       className={cx(
         "scroll-my-6 border border-line bg-panel transition-[border-color,box-shadow] duration-150 focus-within:border-line-3 focus-within:shadow-[0_0_0_3px_var(--accent-soft)]",
         inset ? "rounded-lg" : "rounded-xl",
+        files.dragging && "border-accent shadow-[0_0_0_3px_var(--accent-soft)]",
       )}
+      {...(canAttach ? files.handlers : {})}
     >
       <textarea
         ref={ref}
@@ -95,16 +103,18 @@ export function Composer({ placeholder, submitLabel, footerStart, onSubmit, onCa
         }}
         className="block max-h-80 min-h-10 w-full resize-none bg-transparent px-3 py-2.5 leading-[1.55] text-fg outline-none placeholder:text-fg-3"
       />
+      {canAttach && <AttachmentStrip attachments={files} />}
       {showFooter && (
-        <div className="flex h-10 items-center gap-2 pl-3 pr-2 text-[11.5px] leading-none text-fg-3">
-          {footerStart ?? <span>Markdown supported</span>}
+        <div className={cx("flex h-10 items-center gap-2 pr-2 text-[11.5px] leading-none text-fg-3", canAttach ? "pl-1.5" : "pl-3")}>
+          {canAttach && <AttachButton attachments={files} />}
+          {footerStart ?? <span>{canAttach ? "Markdown · paste or drop images and videos" : "Markdown supported"}</span>}
           <span className="flex-1" />
           {onCancel && (
             <Button variant="ghost" size="sm" onMouseDown={(e) => e.preventDefault()} onClick={onCancel}>
               Cancel
             </Button>
           )}
-          <Button variant="primary" size="sm" onMouseDown={(e) => e.preventDefault()} onClick={submit} disabled={!text.trim() || busy}>
+          <Button variant="primary" size="sm" onMouseDown={(e) => e.preventDefault()} onClick={submit} disabled={!text.trim() || busy || files.uploading > 0}>
             {busy && <Spinner size={12} />}
             {submitLabel}
             <span className="ml-0.5 inline-flex gap-0.5 opacity-60 [&_kbd]:border-current/30 [&_kbd]:bg-transparent [&_kbd]:text-current">

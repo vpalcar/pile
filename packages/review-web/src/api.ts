@@ -289,6 +289,8 @@ export interface PRUpdate {
   draft?: boolean;
   /** The new description, in markdown. */
   body?: string;
+  /** Uploaded files the new body refers to as `./name`; gh uploads them with the body. */
+  attachments?: string[];
   title?: string;
 }
 
@@ -318,3 +320,13 @@ export interface FileContent {
   ref: string;
   lines: string[];
 }
+
+/** An image or video waiting to be uploaded with a description or comment. */
+export interface Attachment {
+  id: string;
+  /** What the markdown refers to, as `./name`. */
+  name: string;
+  kind: "image" | "video";
+  size: number;
+}
+

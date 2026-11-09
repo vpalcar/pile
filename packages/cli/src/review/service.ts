@@ -51,16 +51,9 @@ type FullPR = Awaited<ReturnType<Octokit["pulls"]["get"]>>["data"] & {
   stack?: { number: number; position: number; size: number } | null;
 };
 
-export class ReviewError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string,
-    message: string,
-    readonly hint?: string,
-  ) {
-    super(message);
-  }
-}
+import { ReviewError } from "./errors.js";
+import { AttachmentStore, ghWithAttachments, videosAsPlayers, type Attachment } from "./attachments.js";
+export { ReviewError };
 
 /** Requests budget knobs: see test/rate-budget.test.ts for what they cost. */
 const SHARED_READ_MS = 10_000;
@@ -110,6 +103,7 @@ export class ReviewService {
   private stackExtras = new Map<number, ListedPR>();
   /** Open PRs based on a branch (`c:branch`) or with it as head (`p:branch`), as last asked. */
   private stackLinks = new Map<string, { at: number; prs: ListedPR[] }>();
+  private attachmentStore: AttachmentStore | null = null;
   /** Whether the trunk requires an approving review, as last seen in a PR's stack. */
   private trunkReview = false;
   /** The nodes behind those: reviews and check counts for others' stack entries. */
@@ -1040,10 +1034,11 @@ export class ReviewService {
     return { path, ref, lines: text.replace(/\r?\n$/, "").split("\n") };
   }
 
-  async comment(number: number, body: string): Promise<void> {
+  async comment(number: number, body: string, attachments: string[] = []): Promise<void> {
     this.requireGitHub();
-    if (!body.trim()) throw new ReviewError(400, "EMPTY_COMMENT", "Write something before commenting");
-    await this.octokit!.issues.createComment({ ...this.repo!, issue_number: number, body });
+    if (!body.trim() && attachments.length === 0) throw new ReviewError(400, "EMPTY_COMMENT", "Write something before commenting");
+    if (attachments.length > 0) await this.withAttachments(["pr", "comment", String(number)], body, attachments);
+    else await this.octokit!.issues.createComment({ ...this.repo!, issue_number: number, body });
     this.invalidate({ kind: "pr", number });
   }
 
@@ -1251,20 +1246,51 @@ export class ReviewService {
     });
   }
 
+  /** Keeps an uploaded image or video until the description or comment using it is saved. */
+  addAttachment(fileName: string, req: import("node:http").IncomingMessage): Promise<Attachment> {
+    this.requireGitHub();
+    return (this.attachmentStore ??= new AttachmentStore()).save(fileName, req);
+  }
+
+  /** Runs `gh` with the body and its attachments (GitHub has no API for uploads). */
+  private async withAttachments(command: string[], body: string, ids: string[]): Promise<void> {
+    const files = (this.attachmentStore ??= new AttachmentStore()).get(ids);
+    const url = await ghWithAttachments({ repo: `${this.repo!.owner}/${this.repo!.repo}`, command, body, files });
+    // Videos: gh leaves a link; GitHub plays only a bare URL. Fix the saved body up.
+    const labels = files.filter((f) => f.kind === "video").flatMap((f) => [...body.matchAll(new RegExp(`!\\[([^\\]]*)\\]\\(\\./${f.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`, "g"))].map((m) => m[1]));
+    if (labels.length === 0) return;
+    const repo = this.repo!;
+    if (command[1] === "comment") {
+      const id = Number(url.match(/issuecomment-(\d+)/)?.[1]);
+      if (!id) return;
+      const { data } = await this.octokit!.issues.getComment({ ...repo, comment_id: id });
+      const fixed = videosAsPlayers(data.body ?? "", labels);
+      if (fixed !== data.body) await this.octokit!.issues.updateComment({ ...repo, comment_id: id, body: fixed });
+    } else {
+      const number = Number(command[2]);
+      const { data } = await this.octokit!.pulls.get({ ...repo, pull_number: number });
+      const fixed = videosAsPlayers(data.body ?? "", labels);
+      if (fixed !== data.body) await this.octokit!.pulls.update({ ...repo, pull_number: number, body: fixed });
+    }
+  }
+
   /** Changes reviewers, assignees, labels, draft state, title or description, then returns the fresh PR. */
   async update(number: number, change: PRUpdate): Promise<Detail> {
     this.requireGitHub();
     const repo = this.repo!;
     const api = this.octokit!;
     const tasks: Array<Promise<unknown>> = [];
-    const { reviewers, assignees, labels, draft, body, title } = change;
+    const { reviewers, assignees, labels, draft, body, title, attachments } = change;
+    // A description with images or videos goes through gh, which uploads them.
+    const viaGh = body !== undefined && !!attachments?.length;
+    if (viaGh) tasks.push(this.withAttachments(["pr", "edit", String(number)], body, attachments));
     if (reviewers?.add?.length) tasks.push(api.pulls.requestReviewers({ ...repo, pull_number: number, reviewers: reviewers.add }));
     if (reviewers?.remove?.length) tasks.push(api.pulls.removeRequestedReviewers({ ...repo, pull_number: number, reviewers: reviewers.remove }));
     if (assignees?.add?.length) tasks.push(api.issues.addAssignees({ ...repo, issue_number: number, assignees: assignees.add }));
     if (assignees?.remove?.length) tasks.push(api.issues.removeAssignees({ ...repo, issue_number: number, assignees: assignees.remove }));
     // Setting labels creates any that don't exist yet.
     if (labels) tasks.push(api.issues.setLabels({ ...repo, issue_number: number, labels }));
-    if (body !== undefined || title !== undefined) tasks.push(api.pulls.update({ ...repo, pull_number: number, body, title }));
+    if ((body !== undefined && !viaGh) || title !== undefined) tasks.push(api.pulls.update({ ...repo, pull_number: number, body: viaGh ? undefined : body, title }));
     if (draft !== undefined) tasks.push(draft ? this.github!.prs.convertToDraft(number) : this.github!.prs.markReadyForReview(number));
     try {
       await Promise.all(tasks);

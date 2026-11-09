@@ -230,6 +230,7 @@ await check("sections fold away, and stay folded after a reload", async () => {
   expect((await page.locator('[data-section="needs_review"] [data-row]').count()) === 3, "unfolded");
 });
 await check("long sections show about ten PRs, then Show all", async () => {
+  await page.waitForSelector("[data-page=inbox]:not([data-partial])");
   const mine = page.locator('[data-section="mine"]');
   const before = await mine.locator("[data-row]").count();
   expect(before >= 10 && before < 18, `rows before: ${before}`);
@@ -504,6 +505,36 @@ await check("description: edit as markdown, ⌘Enter saves to GitHub", async () 
   await page.reload();
   await detailReady();
 });
+await check("description: paste, drop or pick images and videos; gh uploads them on save", async () => {
+  const section = page.locator("section", { hasText: "Description" }).first();
+  await section.locator("[data-edit-description]").click();
+  const input = section.locator("[data-description-editor] textarea");
+  await input.press("End");
+  await section.locator("[data-attach-input]").setInputFiles([
+    { name: "login error.png", mimeType: "image/png", buffer: Buffer.from("89504e470d0a1a0a", "hex") },
+    { name: "demo.mp4", mimeType: "video/mp4", buffer: Buffer.alloc(64) },
+  ]);
+  await section.locator("[data-attachment]").nth(1).waitFor();
+  const text = await input.inputValue();
+  expect(/!\[login error\]\(\.\/login-error-a\d+\.png\)/.test(text) && /\n\n!\[demo\]\(\.\/demo-a\d+\.mp4\)\n\n/.test(text), text);
+  expect((await section.locator("[data-attachment] img").count()) === 1 && (await section.locator("[data-attachment] video").count()) === 1, "thumbnails");
+  // Removing one takes its reference out too.
+  await section.locator("[data-attachment]").nth(0).hover();
+  await section.getByRole("button", { name: "Remove login error" }).click();
+  expect(!(await input.inputValue()).includes("login error"), await input.inputValue());
+  // Something gh can't attach is refused before anything is sent.
+  await section.locator("[data-attach-input]").setInputFiles([{ name: "notes.pdf", mimeType: "application/pdf", buffer: Buffer.alloc(8) }]);
+  await toast("can't be attached");
+  await shot("description attachments");
+  await page.keyboard.press("Meta+Enter");
+  await toast("Description saved");
+  const call = (await calls()).filter((c) => c.type === "update" && c.attachments).at(-1);
+  expect(call?.attachments?.length === 1 && call.body.includes("./demo-a"), JSON.stringify(call));
+  expect((await section.locator(".markdown").innerText()).length > 0, "shows the saved description");
+  await fetch(`${server.url}/__undo-description?pr=101`);
+  await page.reload();
+  await detailReady();
+});
 await check("header: long branch names shrink, the row never wraps", async () => {
   const meta = page.locator("[data-header-meta]");
   const before = (await meta.boundingBox()).height;
@@ -541,6 +572,26 @@ await check("composer: footer appears on focus; posting adds a comment", async (
   const last = (await calls()).at(-1);
   expect(last.type === "comment" && last.pr === 101 && last.body === "Thanks, the bucket logic reads well.", JSON.stringify(last));
   expect((await input.inputValue()) === "", "cleared after posting");
+});
+await check("composer: a discussion comment can carry an image", async () => {
+  const input = page.locator("textarea[placeholder='Add to the discussion…']");
+  const composer = input.locator("xpath=..");
+  await input.focus();
+  await page.keyboard.type("Here's what I see:");
+  await composer.locator("[data-attach-input]").setInputFiles([{ name: "screenshot.png", mimeType: "image/png", buffer: Buffer.from("89504e470d0a1a0a", "hex") }]);
+  await composer.locator("[data-attachment]").waitFor();
+  expect(/Here's what I see:\n!\[screenshot\]\(\.\/screenshot-a\d+\.png\)/.test(await input.inputValue()), await input.inputValue());
+  const before = (await calls()).filter((c) => c.type === "comment").length;
+  await input.focus();
+  await page.keyboard.press("Meta+Enter");
+  let comments = [];
+  for (let i = 0; i < 50 && comments.length <= before; i++) {
+    await page.waitForTimeout(100);
+    comments = (await calls()).filter((c) => c.type === "comment");
+  }
+  const last = comments.at(-1);
+  expect(last.attachments?.length === 1 && last.body.includes("./screenshot-a"), JSON.stringify(last));
+  expect((await composer.locator("[data-attachment]").count()) === 0, "strip cleared after posting");
 });
 await check("composer: a failed post keeps the text and shows the error", async () => {
   const input = page.locator("textarea[placeholder='Add to the discussion…']");

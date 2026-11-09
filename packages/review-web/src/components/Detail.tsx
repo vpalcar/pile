@@ -9,6 +9,7 @@ import { afterReview } from "../lib/inbox";
 import { detailReadiness, entryReadiness, type Readiness } from "../lib/status";
 import { absoluteTime, copy, modKey, navigate, plural, timeAgo, useNow, useShortcuts } from "../lib/util";
 import { Composer } from "./Composer";
+import { AttachButton, AttachmentStrip, useAttachments } from "./Attachments";
 import { FilesPanel } from "./FilesPanel";
 import type { PendingComment } from "./FileDiff";
 import { Markdown } from "./Markdown";
@@ -176,7 +177,7 @@ export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems, c
             </Banner>
           )}
           {detail.stack.length > 1 && <StackSection stack={detail.stack} native={detail.nativeStack} trunk={trunk} items={inboxItems} current={status} />}
-          {detail.number !== null && <DescriptionSection detail={detail} onSave={(body) => update.mutateAsync({ change: { body }, optimistic: (d) => d, done: "Description saved" })} />}
+          {detail.number !== null && <DescriptionSection detail={detail} onSave={(body, attachments) => update.mutateAsync({ change: { body, attachments }, optimistic: (d) => d, done: "Description saved" })} />}
           <DiscussionSection detail={detail} inputRef={discussionInput} onCommented={refresh} />
           <NotesSection local={detail.state === "local"} />
         </div>
@@ -598,19 +599,22 @@ function StackSection({ stack, native, trunk, items, current }: { stack: StackEn
   );
 }
 
-function DescriptionSection({ detail, onSave }: { detail: DetailData; onSave: (body: string) => Promise<unknown> }) {
+function DescriptionSection({ detail, onSave }: { detail: DetailData; onSave: (body: string, attachments: string[]) => Promise<unknown> }) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState("");
   const [saving, setSaving] = useState(false);
   const input = useRef<HTMLTextAreaElement>(null);
+  const attachments = useAttachments(input, setText);
   const start = () => {
     setText(detail.body ?? "");
     setEditing(true);
   };
   const save = async () => {
+    if (attachments.uploading > 0) return;
     setSaving(true);
     try {
-      await onSave(text);
+      await onSave(text, attachments.used(text));
+      attachments.reset();
       setEditing(false);
     } catch {
       // The toast says why; keep the text to try again.
@@ -649,7 +653,7 @@ function DescriptionSection({ detail, onSave }: { detail: DetailData; onSave: (b
       }
     >
       {editing ? (
-        <div className="rounded-xl border border-line-2 bg-panel focus-within:border-accent" data-description-editor>
+        <div className={cx("rounded-xl border border-line-2 bg-panel focus-within:border-accent", attachments.dragging && "border-accent shadow-[0_0_0_3px_var(--accent-soft)]")} data-description-editor {...attachments.handlers}>
           <textarea
             ref={input}
             value={text}
@@ -670,15 +674,17 @@ function DescriptionSection({ detail, onSave }: { detail: DetailData; onSave: (b
             aria-label="Description, in markdown"
             className="block min-h-40 w-full resize-none rounded-t-xl bg-transparent px-4 py-3.5 font-mono text-[12.5px] leading-relaxed text-fg outline-none placeholder:text-fg-4"
           />
+          <AttachmentStrip attachments={attachments} />
           <div className="flex items-center gap-2 border-t border-line px-3 py-2">
-            <span className="text-[12px] text-fg-3">Markdown</span>
+            <AttachButton attachments={attachments} />
+            <span className="text-[12px] text-fg-3">Markdown · paste or drop images and videos</span>
             <span className="flex-1" />
             <Button variant="ghost" size="sm" onClick={() => setEditing(false)} disabled={saving}>
               Cancel
             </Button>
-            <Button variant="primary" size="sm" onClick={() => void save()} disabled={saving || text === (detail.body ?? "")}>
+            <Button variant="primary" size="sm" onClick={() => void save()} disabled={saving || attachments.uploading > 0 || text === (detail.body ?? "")}>
               {saving ? <Spinner size={12} /> : null}
-              Save <Kbd>{modKey}↵</Kbd>
+              {saving && attachments.used(text).length > 0 ? "Uploading…" : "Save"} <Kbd>{modKey}↵</Kbd>
             </Button>
           </div>
         </div>
@@ -727,9 +733,10 @@ function DiscussionSection({ detail, inputRef, onCommented }: { detail: DetailDa
             draftKey={`discussion:${detail.number}`}
             placeholder="Add to the discussion…"
             submitLabel="Comment"
-            onSubmit={async (body) => {
+            attachments
+            onSubmit={async (body, attachments) => {
               try {
-                await api.comment(detail.number!, body);
+                await api.comment(detail.number!, body, attachments);
                 toast(
                   <>
                     <MessageSquare size={14} className="text-ok" /> Comment posted

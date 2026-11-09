@@ -70,6 +70,19 @@ On the right:
 - **Reviewers**, **Labels** and **Assignees**: click the icon next to each to change them. Changes
   apply when you close the picker. Typing a label that doesn't exist creates it.
 
+### Images and videos
+
+Paste, drop or pick (📎) images and videos in the description editor or the discussion box.
+Each one goes in at the cursor as `![name](./file.png)` with a thumbnail below; removing the
+thumbnail takes the reference out. On save, pile hands the text and the files to the GitHub CLI
+(`gh pr edit` / `gh pr comment --attach`), which uploads them to GitHub, so they show inline
+there just like files dropped in on github.com, videos with GitHub's player.
+
+This needs [`gh`](https://cli.github.com) 2.99 or later, signed in with `gh auth login`, and
+push access to the repository. PNG, JPEG, GIF, WebP and SVG images up to 10 MB; MP4, MOV and
+WebM videos up to 100 MB (10 MB on free plans). Inline comments on code lines are text only:
+`gh` can't attach to those.
+
 ### Commenting on code
 
 Hover a line number and click **+** to comment on that line, on either side of the diff: on new

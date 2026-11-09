@@ -1,4 +1,4 @@
-import type { AgentNote, ApiError, Detail, InboxItem, NewNoteRequest, FileContent, Inbox, ItemRef, MergeRequest, MergeResult, Preferences, PRUpdate, RepoOptions, RerunRequest, ReviewRequest, Session } from "../api";
+import type { AgentNote, ApiError, Attachment, Detail, FileContent, Inbox, InboxItem, ItemRef, MergeRequest, MergeResult, NewNoteRequest, PRUpdate, Preferences, RepoOptions, RerunRequest, ReviewRequest, Session } from "../api";
 
 /**
  * The server prints a URL with `#token=…`. The token moves to sessionStorage and the
@@ -64,7 +64,18 @@ export const api = {
     ),
   file: (ref: string, path: string) =>
     request<FileContent>("GET", `/file?ref=${encodeURIComponent(ref)}&path=${encodeURIComponent(path)}`),
-  comment: (number: number, body: string) => request<{ ok: true }>("POST", `/pr/${number}/comments`, { body }),
+  comment: (number: number, body: string, attachments?: string[]) => request<{ ok: true }>("POST", `/pr/${number}/comments`, { body, attachments }),
+  /** Uploads an image or video to the local server; gh sends it to GitHub when the body is saved. */
+  attach: async (file: File) => {
+    const response = await fetch("/api/attachments", {
+      method: "POST",
+      headers: { "x-pile-token": token, "x-file-name": encodeURIComponent(file.name), "content-type": file.type || "application/octet-stream" },
+      body: file,
+    });
+    const data = await response.json().catch(() => ({ error: response.statusText, code: "ERROR" }));
+    if (!response.ok) throw new RequestError(response.status, data as ApiError);
+    return data as Attachment;
+  },
   review: (number: number, review: ReviewRequest) => request<{ ok: true }>("POST", `/pr/${number}/reviews`, review),
   options: () => request<RepoOptions>("GET", "/options"),
   search: (q: string) => request<InboxItem[]>("GET", `/search?q=${encodeURIComponent(q)}`),

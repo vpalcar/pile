@@ -99,6 +99,7 @@ export function startMockServer(port = 0) {
           if (change.draft !== undefined) edit.state = change.draft ? "draft" : "open";
           if (change.title !== undefined) edit.title = change.title;
           if (change.body !== undefined) {
+            if (change.attachments?.length) change.body = change.body.replace(/\]\(\.\/([^)]+)\)/g, "](https://github.com/user-attachments/assets/$1)");
             edit.body = change.body;
             edit.bodyHtml = change.body.trim() ? change.body.split(/\n{2,}/).map((p) => `<p>${p.replace(/[&<>]/g, (c) => `&#${c.charCodeAt(0)};`)}</p>`).join("") : null;
           }
@@ -107,6 +108,20 @@ export function startMockServer(port = 0) {
         return detail ? json(res, 200, detail) : json(res, 404, { error: `Pull request #${m[1]} doesn't exist`, code: "PR_NOT_FOUND" });
       }
       if (api === "/options") return json(res, 200, options);
+      // Uploads wait here; a body that refers to them gets GitHub-style asset URLs on save.
+      if (api === "/attachments" && req.method === "POST") {
+        const name = decodeURIComponent(String(req.headers["x-file-name"] ?? ""));
+        let size = 0;
+        for await (const chunk of req) size += chunk.length;
+        const ext = (name.match(/\.[^.]+$/)?.[0] ?? "").toLowerCase();
+        if (![".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".mp4", ".mov", ".webm"].includes(ext)) {
+          return json(res, 415, { error: `${name} can't be attached: use PNG, JPEG, GIF, WebP, SVG, MP4, MOV or WebM`, code: "UNSUPPORTED_ATTACHMENT" });
+        }
+        const id = `a${(state.attachments = (state.attachments ?? 0) + 1)}`;
+        const attachment = { id, name: `${name.slice(0, -ext.length).replace(/[^a-zA-Z0-9._-]+/g, "-")}-${id}${ext}`, kind: [".mp4", ".mov", ".webm"].includes(ext) ? "video" : "image", size };
+        state.calls.push({ type: "attachment", ...attachment });
+        return json(res, 201, attachment);
+      }
       // GitHub's search across the repo: here, one PR that isn't in the inbox at all.
       if (api === "/search") {
         const q = (url.searchParams.get("q") ?? "").toLowerCase();
