@@ -70,6 +70,7 @@ export const api = {
   notes: (branch: string) => request<AgentNote[]>("GET", `/notes?branch=${encodeURIComponent(branch)}`),
   addNote: (note: NewNoteRequest) => request<AgentNote>("POST", "/notes", note),
   updateNote: (id: string, change: { done?: boolean; body?: string }) => request<AgentNote>("PATCH", `/notes/${id}`, change),
+  replyToNote: (id: string, body: string) => request<AgentNote>("POST", `/notes/${id}/replies`, { body }),
   removeNote: (id: string) => request<{ ok: true }>("DELETE", `/notes/${id}`),
   preferences: () => request<Preferences>("GET", "/preferences"),
   setPreferences: (change: Preferences) => request<Preferences>("PATCH", "/preferences", change),

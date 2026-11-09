@@ -789,6 +789,16 @@ export class ReviewService {
     }
   }
 
+  /** The reviewer answers the agent; replying to a finished note reopens it. */
+  replyToNote(id: string, body: string): AgentNote {
+    try {
+      return this.pile.notes.reply(id, "reviewer", body);
+    } catch (error) {
+      const message = (error as Error).message;
+      throw /No note/.test(message) ? new ReviewError(404, "NOTE_NOT_FOUND", message) : new ReviewError(400, "EMPTY_REPLY", message);
+    }
+  }
+
   removeNote(id: string): void {
     try {
       this.pile.notes.remove(id);

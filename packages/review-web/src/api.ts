@@ -36,6 +36,8 @@ export interface AgentNote {
   body: string;
   createdAt: string;
   done: boolean;
+  /** The agent's answers (`pile notes done/reply -m`) and the reviewer's follow-ups. */
+  replies?: Array<{ author: "agent" | "reviewer"; body: string; createdAt: string }>;
 }
 
 /** Where a new note goes; the server fills in the branch, commit and code. */
