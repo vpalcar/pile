@@ -19,6 +19,14 @@ export interface Session {
   initial: ItemRef | null;
 }
 
+/** Personal settings, kept in ~/.config/pile/review.json so they survive restarts. */
+export interface Preferences {
+  theme?: "system" | "light" | "dark";
+  diffMode?: "split" | "unified";
+  diffWrap?: boolean;
+  treeOpen?: boolean;
+}
+
 /** Identifies something reviewable: a pull request, or a local branch without one. */
 export type ItemRef = { kind: "pr"; number: number } | { kind: "branch"; name: string };
 
@@ -35,8 +43,9 @@ export interface ChecksSummary {
 }
 
 export interface StackPosition {
-  /** 1-based, bottom first. */
+  /** 1-based depth from the bottom; siblings in a diverging stack share it. */
   index: number;
+  /** Every PR in the stack, all branches of it included. */
   size: number;
   /** Native GitHub stack number, if any. */
   nativeStack: number | null;
@@ -84,14 +93,22 @@ export interface Inbox {
   partial?: boolean;
 }
 
+/**
+ * One PR (or local branch) in a stack. Stacks can diverge: several entries may share
+ * a `base`, so together they form a tree rooted on the trunk.
+ */
 export interface StackEntry {
   ref: ItemRef;
   title: string;
   branch: string;
+  /** The branch this one is based on: another entry's branch, or the trunk. */
+  base: string;
   state: PRState | "local";
   reviewDecision: InboxItem["reviewDecision"];
   /** The entry's own checks, so the stack shows real statuses without the inbox. */
   checks?: ChecksSummary | null;
+  /** Why pile wouldn't merge this entry now (empty when nothing blocks it). */
+  blockers?: string[];
   isCurrent: boolean;
 }
 
@@ -185,7 +202,28 @@ export interface Detail {
   files: DiffFile[];
   local: LocalState | null;
   /** Things the viewer can do. */
-  can: { review: boolean; comment: boolean; merge: boolean };
+  can: { review: boolean; comment: boolean; merge: boolean; draft: boolean };
+  /** What merging from here would do; null for local branches and finished PRs. */
+  merge: MergeInfo | null;
+}
+
+export interface MergeInfo {
+  method: "merge" | "squash" | "rebase";
+  /** Merging only this PR: possible when it's based on the trunk. */
+  single: { possible: boolean; blockers: string[] };
+  /** Merging every open PR from the bottom of the stack up to this one. */
+  stack: { count: number; blockers: string[] } | null;
+}
+
+export interface MergeRequest {
+  /** Merge the whole stack up to this PR instead of only this PR. */
+  stack?: boolean;
+}
+
+export interface MergeResult {
+  merged: number[];
+  /** GitHub accepted the merge but finishes it later (native stacks). */
+  queued: boolean;
 }
 
 export interface Label {

@@ -414,7 +414,7 @@ program
   .option("--approve", "Approve the PR")
   .option("--request-changes", "Request changes on the PR")
   .option("-m, --message <message>", "Review comment/message")
-  .option("--port <port>", "Port for the review app (default: any free port)")
+  .option("--port <port>", "Port for the review app (default: the same port for each repo, or any free one)")
   .option("--no-open", "Don't open the browser")
   .action((target, opts) => {
     const globalOpts = program.opts();

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Box, Text } from "ink";
 import { PileInstance } from "@pile/core";
-import { GitHubInstance, PullRequest, getPRStatus, parsePRNumber } from "@pile/github";
+import { GitHubInstance, PullRequest, getBlockingReasons, parsePRNumber, type BlockingReason } from "@pile/github";
 import { Spinner } from "../components/Spinner.js";
 import { SuccessMessage, WarningMessage } from "../components/Message.js";
 import {
@@ -18,17 +18,13 @@ import {
   resolveTargetPR,
 } from "../utils/pr-target.js";
 import { getMergeSuccessMessage, getRiskyTimeWarning } from "../utils/fun.js";
+import { cleanupMergedBranch } from "../utils/merge-cleanup.js";
 
 export interface MergeCommandProps {
   /** Branch, PR number, #number or PR URL. Default: current branch. */
   target?: string;
   force?: boolean;
   options: OutputOptions;
-}
-
-interface BlockingReason {
-  type: "checks" | "reviews" | "conflicts" | "blocked" | "draft";
-  message: string;
 }
 
 interface MergedPR {
@@ -45,67 +41,6 @@ interface BlockedPR {
 }
 
 type State = "checking" | "merging" | "cleaning" | "success" | "queued" | "blocked" | "no_pr" | "error";
-
-function getBlockingReasons(pr: PullRequest): BlockingReason[] {
-  const reasons: BlockingReason[] = [];
-
-  // Check if draft
-  if (pr.draft) {
-    reasons.push({
-      type: "draft",
-      message: "PR is still a draft",
-    });
-  }
-
-  // Check CI status
-  if (pr.checks.state === "failure") {
-    reasons.push({
-      type: "checks",
-      message: `CI checks failing (${pr.checks.failed}/${pr.checks.total} failed)`,
-    });
-  } else if (pr.checks.state === "pending") {
-    reasons.push({
-      type: "checks",
-      message: `CI checks in progress (${pr.checks.pending}/${pr.checks.total} pending)`,
-    });
-  }
-
-  // Check reviews
-  const status = getPRStatus(pr);
-  if (status === "changes_requested") {
-    reasons.push({
-      type: "reviews",
-      message: "Changes requested by reviewer",
-    });
-  }
-
-  // Check mergeable state
-  if (pr.mergeable === false) {
-    if (pr.mergeable_state === "dirty") {
-      reasons.push({
-        type: "conflicts",
-        message: "Has merge conflicts",
-      });
-    } else if (pr.mergeable_state === "blocked") {
-      reasons.push({
-        type: "blocked",
-        message: "Blocked by branch protection rules",
-      });
-    } else if (pr.mergeable_state === "behind") {
-      reasons.push({
-        type: "blocked",
-        message: "Branch is behind base branch",
-      });
-    } else {
-      reasons.push({
-        type: "blocked",
-        message: `Cannot merge: ${pr.mergeable_state}`,
-      });
-    }
-  }
-
-  return reasons;
-}
 
 function getReasonIcon(type: BlockingReason["type"]): { icon: string; color: string } {
   switch (type) {
@@ -479,68 +414,5 @@ export function MergeCommand({
       return failure ? <FailureMessage failure={failure} /> : <></>;
     default:
       return <></>;
-  }
-}
-
-async function cleanupMergedBranch(
-  pile: PileInstance,
-  github: GitHubInstance,
-  branch: string,
-  trunk: string,
-  retargetPRs = true,
-): Promise<void> {
-  // Get children before cleaning up
-  const children = pile.state.getChildren(branch);
-  const parent = pile.state.getParent(branch);
-  const newParent = parent ?? trunk;
-
-  // Update children's parent and PR bases
-  for (const child of children) {
-    const childRel = pile.state.getBranchRelationship(child);
-    if (childRel) {
-      pile.state.setBranchRelationship(child, {
-        ...childRel,
-        parent: newParent,
-      });
-
-      // Update the child's PR base on GitHub (native stacks do this themselves)
-      if (retargetPRs && childRel.prNumber) {
-        try {
-          await github.prs.update({
-            number: childRel.prNumber,
-            base: newParent,
-          });
-        } catch {
-          // If retargeting to parent fails, try retargeting to trunk as fallback
-          if (newParent !== trunk) {
-            try {
-              await github.prs.update({
-                number: childRel.prNumber,
-                base: trunk,
-              });
-              pile.state.setBranchRelationship(child, {
-                ...childRel,
-                parent: trunk,
-              });
-            } catch {
-              // PR update failed entirely, will need manual fix
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // Remove tracking
-  pile.state.removeBranchRelationship(branch);
-
-  // Delete the local branch (if not currently on it)
-  try {
-    const current = await pile.git.getCurrentBranch();
-    if (current !== branch) {
-      await pile.git.deleteBranch(branch, true);
-    }
-  } catch {
-    // Branch might not exist or other issue
   }
 }

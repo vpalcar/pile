@@ -3,8 +3,9 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ItemRef, PRUpdate, RerunRequest, ReviewRequest } from "@pile/review-web/api";
+import type { ItemRef, MergeRequest, Preferences, PRUpdate, RerunRequest, ReviewRequest } from "@pile/review-web/api";
 import { ReviewService } from "./service.js";
+import { readPreferences, writePreferences } from "./preferences.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -35,7 +36,11 @@ export async function startReviewServer(options: {
   service: ReviewService;
   initial: ItemRef | null;
   port?: number;
+  /** Tried when `port` isn't given; a random free port is used if it's taken. */
+  preferredPort?: number;
   host?: string;
+  /** Where preferences are kept (tests); ~/.config/pile/review.json otherwise. */
+  preferences?: { read(): Preferences; write(change: unknown): Preferences };
   /** Fixed token (tests); random otherwise. */
   token?: string;
   /** Directory of the built web app (tests); found next to the bundle otherwise. */
@@ -46,6 +51,7 @@ export async function startReviewServer(options: {
   const token = options.token ?? randomBytes(24).toString("base64url");
   const webRoot = options.webRoot ?? findWebRoot();
   let port = options.port ?? 0;
+  const preferences = options.preferences ?? { read: () => readPreferences(), write: (change: unknown) => writePreferences(change) };
 
   const allowedHost = (value: string | undefined) =>
     !!value && [`127.0.0.1:${port}`, `localhost:${port}`].includes(value);
@@ -118,9 +124,14 @@ export async function startReviewServer(options: {
       await service.review(Number(match[1]), (await readBody(req)) as ReviewRequest);
       return send(res, 201, { ok: true });
     }
+    if (method === "GET" && path === "/preferences") return send(res, 200, preferences.read());
+    if (method === "PATCH" && path === "/preferences") return send(res, 200, preferences.write(await readBody(req)));
     if (method === "GET" && path === "/options") return send(res, 200, await service.options());
     if (method === "PATCH" && (match = path.match(/^\/pr\/(\d+)$/))) {
       return send(res, 200, await service.update(Number(match[1]), (await readBody(req)) as PRUpdate));
+    }
+    if (method === "POST" && (match = path.match(/^\/pr\/(\d+)\/merge$/))) {
+      return send(res, 200, await service.merge(Number(match[1]), (await readBody(req)) as MergeRequest));
     }
     if (method === "POST" && (match = path.match(/^\/pr\/(\d+)\/checks\/rerun$/))) {
       return send(res, 200, await service.rerun(Number(match[1]), (await readBody(req)) as RerunRequest));
@@ -148,6 +159,13 @@ export async function startReviewServer(options: {
           }
         : {}),
     });
+    if (file.endsWith("index.html")) {
+      // The saved theme goes straight into the page, so it never flashes the other one.
+      const theme = preferences.read().theme;
+      const html = readFileSync(file, "utf8");
+      res.end(theme === "light" || theme === "dark" ? html.replace("<html", `<html data-theme="${theme}"`) : html);
+      return;
+    }
     res.end(readFileSync(file));
   };
 
@@ -167,10 +185,20 @@ export async function startReviewServer(options: {
     }
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(port, host, () => resolve());
-  });
+  const listen = (at: number) =>
+    new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(at, host, () => {
+        server.off("error", reject);
+        resolve();
+      });
+    });
+  if (!options.port && options.preferredPort) {
+    // A stable port keeps the page's origin, and with it viewed files and drafts.
+    await listen(options.preferredPort).catch(() => listen(0));
+  } else {
+    await listen(port);
+  }
   port = (server.address() as { port: number }).port;
 
   return {

@@ -51,6 +51,7 @@ describe("entryReadiness", () => {
     ref: { kind: "pr", number: 1 },
     title: "PR 1",
     branch: "b1",
+    base: "main",
     state: "open",
     reviewDecision: "review_required",
     isCurrent: false,

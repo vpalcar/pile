@@ -3,7 +3,7 @@ import { FileCode2, GitBranch, Inbox as InboxIcon, Keyboard, Moon, RefreshCw, Su
 import type { Detail, Inbox } from "../api";
 import { flatItems } from "./Inbox";
 import { Avatar, Kbd, PRStateIcon, useDismiss } from "./ui";
-import { navigate } from "../lib/util";
+import { modKey, navigate } from "../lib/util";
 import { fileAnchor } from "./FileDiff";
 
 interface Props {
@@ -110,7 +110,7 @@ export function Palette({ inbox, detail, onClose, onRefresh, onInbox, onShortcut
 }
 
 const SHORTCUTS: Array<[string, string[]]> = [
-  ["Command palette", ["⌘", "K"]],
+  ["Command palette", [modKey, "K"]],
   ["Next / previous file", ["j", "k"]],
   ["Next / previous pull request", ["]", "["]],
   ["Mark file viewed, go to next", ["v"]],
@@ -118,8 +118,9 @@ const SHORTCUTS: Array<[string, string[]]> = [
   ["Wrap long lines", ["w"]],
   ["Toggle file tree", ["t"]],
   ["Back to the inbox", ["Esc"]],
+  ["Go to the inbox", ["g"]],
   ["Move through the inbox", ["j", "k"]],
-  ["Filter the inbox", ["1", "5"]],
+  ["Filter the inbox", ["1–5"]],
   ["Filter files", ["/"]],
   ["Comment on the pull request", ["c"]],
   ["Submit a review", ["r"]],

@@ -3,7 +3,8 @@ import { Check, ChevronDown, Columns2, PanelLeft, Rows3, Search, WrapText } from
 import type { Detail, DiffFile } from "../api";
 import { FileDiff, fileAnchor, type PendingComment } from "./FileDiff";
 import { Button, cx, DiffStat, StatusLetter } from "./ui";
-import { useShortcuts, usePersisted, useViewed } from "../lib/util";
+import { useShortcuts, useViewed } from "../lib/util";
+import { usePreference } from "../lib/queries";
 import { treeOrder } from "../lib/diff";
 
 interface Props {
@@ -20,9 +21,9 @@ interface Props {
 export function FilesPanel({ detail, itemKey, scrollEl, pending, onAddPending, onRemovePending, initialFile, onFileChange }: Props) {
   // Same order as the tree (folders first, then files, alphabetically), so j/k follow it.
   const files = useMemo(() => [...detail.files].sort((a, b) => treeOrder(a.path, b.path)), [detail.files]);
-  const [mode, setMode] = usePersisted<"split" | "unified">("pile:diff-mode", "split");
-  const [wrap, setWrap] = usePersisted("pile:diff-wrap", false);
-  const [treeOpen, setTreeOpen] = usePersisted("pile:tree-open", true);
+  const [mode, setMode] = usePreference("diffMode", "split");
+  const [wrap, setWrap] = usePreference("diffWrap", false);
+  const [treeOpen, setTreeOpen] = usePreference("treeOpen", true);
   const [viewed, setViewed] = useViewed(itemKey);
   const [active, setActive] = useState<string | null>(initialFile ?? files[0]?.path ?? null);
 
