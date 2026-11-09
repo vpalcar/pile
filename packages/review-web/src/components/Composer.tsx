@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Kbd, Spinner } from "./ui";
+import { Button, cx, Kbd, Spinner } from "./ui";
 import { modKey } from "../lib/util";
 
 interface Props {
@@ -8,16 +8,24 @@ interface Props {
   onSubmit: (body: string) => Promise<void> | void;
   onCancel?: () => void;
   autoFocus?: boolean;
+  /** Footer hidden until focused or typed in. */
   compact?: boolean;
+  /**
+   * Sits inside another rounded container (an inline thread): uses the smaller
+   * radius so the corners stay concentric with the container's.
+   */
+  inset?: boolean;
   /** Persist the unsent text under this key. */
   draftKey?: string;
   inputRef?: React.RefObject<HTMLTextAreaElement | null>;
 }
 
-export function Composer({ placeholder, submitLabel, onSubmit, onCancel, autoFocus, compact, draftKey, inputRef }: Props) {
+export function Composer({ placeholder, submitLabel, onSubmit, onCancel, autoFocus, compact, inset, draftKey, inputRef }: Props) {
   const [text, setText] = useState(() => (draftKey ? readDraft(draftKey) : ""));
   const [busy, setBusy] = useState(false);
+  const [focused, setFocused] = useState(false);
   const local = useRef<HTMLTextAreaElement>(null);
+  const box = useRef<HTMLDivElement>(null);
   const ref = inputRef ?? local;
 
   useLayoutEffect(() => {
@@ -28,8 +36,13 @@ export function Composer({ placeholder, submitLabel, onSubmit, onCancel, autoFoc
   }, [text, ref]);
 
   useEffect(() => {
-    if (autoFocus) ref.current?.focus();
+    if (autoFocus) ref.current?.focus({ preventScroll: true });
   }, [autoFocus, ref]);
+
+  // Once the footer has rendered, bring the whole composer (buttons included) into view.
+  useEffect(() => {
+    if (focused) box.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [focused]);
 
   useEffect(() => {
     if (draftKey) writeDraft(draftKey, text);
@@ -43,18 +56,30 @@ export function Composer({ placeholder, submitLabel, onSubmit, onCancel, autoFoc
       await onSubmit(body);
       setText("");
       if (draftKey) writeDraft(draftKey, "");
+    } catch {
+      // The caller reports the error; keep the text so nothing is lost.
     } finally {
       setBusy(false);
     }
   };
 
+  const showFooter = !compact || focused || !!text;
+
   return (
-    <div className={`composer ${compact ? "compact" : ""} ${text ? "has-text" : ""}`}>
+    <div
+      ref={box}
+      className={cx(
+        "scroll-my-6 border border-line bg-panel transition-[border-color,box-shadow] duration-150 focus-within:border-line-3 focus-within:shadow-[0_0_0_3px_var(--accent-soft)]",
+        inset ? "rounded-lg" : "rounded-xl",
+      )}
+    >
       <textarea
         ref={ref}
         rows={1}
         value={text}
         placeholder={placeholder}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -66,22 +91,27 @@ export function Composer({ placeholder, submitLabel, onSubmit, onCancel, autoFoc
             onCancel?.();
           }
         }}
+        className="block max-h-80 min-h-10 w-full resize-none bg-transparent px-3 py-2.5 leading-[1.55] text-fg outline-none placeholder:text-fg-3"
       />
-      <div className="composer-foot">
-        <span>Markdown supported</span>
-        <span className="spacer" />
-        {onCancel && (
-          <button className="btn ghost sm" onClick={onCancel}>
-            Cancel
-          </button>
-        )}
-        <button className="btn primary sm" onClick={submit} disabled={!text.trim() || busy}>
-          {busy ? <Spinner size={12} /> : null}
-          {submitLabel}
-          <Kbd>{modKey}</Kbd>
-          <Kbd>↵</Kbd>
-        </button>
-      </div>
+      {showFooter && (
+        <div className="flex h-10 items-center gap-2 pl-3 pr-2 text-[11.5px] leading-none text-fg-3">
+          <span>Markdown supported</span>
+          <span className="flex-1" />
+          {onCancel && (
+            <Button variant="ghost" size="sm" onMouseDown={(e) => e.preventDefault()} onClick={onCancel}>
+              Cancel
+            </Button>
+          )}
+          <Button variant="primary" size="sm" onMouseDown={(e) => e.preventDefault()} onClick={submit} disabled={!text.trim() || busy}>
+            {busy && <Spinner size={12} />}
+            {submitLabel}
+            <span className="ml-0.5 inline-flex gap-0.5 opacity-60 [&_kbd]:border-current/30 [&_kbd]:bg-transparent [&_kbd]:text-current">
+              <Kbd>{modKey}</Kbd>
+              <Kbd>↵</Kbd>
+            </span>
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

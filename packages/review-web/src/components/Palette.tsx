@@ -24,8 +24,8 @@ export function Palette({ inbox, detail, onClose, onRefresh, onInbox, onShortcut
     fn();
   };
   return (
-    <div className="overlay">
-      <div ref={ref} className="palette">
+    <div className="fixed inset-0 z-[80] flex animate-fade-in items-start justify-center bg-scrim px-4 pt-[14vh]">
+      <div ref={ref} className="palette w-full max-w-[640px] animate-pop-in overflow-hidden rounded-2xl bg-panel shadow-pop [&_svg]:shrink-0">
         <Command label="Command palette" loop>
           <Command.Input autoFocus placeholder="Jump to a pull request, branch or file…" />
           <Command.List>
@@ -39,11 +39,12 @@ export function Palette({ inbox, detail, onClose, onRefresh, onInbox, onShortcut
                     onSelect={run(() => document.getElementById(fileAnchor(f.path))?.scrollIntoView({ behavior: "smooth", block: "start" }))}
                   >
                     <FileCode2 size={14} />
-                    <span className="grow mono" style={{ fontSize: 12 }}>
+                    <span className="min-w-0 flex-1 truncate font-mono text-xs">
                       {f.path}
                     </span>
-                    <span className="hint num">
-                      <span style={{ color: "var(--green)" }}>+{f.additions}</span> <span style={{ color: "var(--red)" }}>−{f.deletions}</span>
+                    <span className="flex shrink-0 gap-1.5 font-mono text-[11px] tabular">
+                      {f.additions > 0 && <span className="text-ok">+{f.additions.toLocaleString()}</span>}
+                      {f.deletions > 0 && <span className="text-bad">−{f.deletions.toLocaleString()}</span>}
                     </span>
                   </Command.Item>
                 ))}
@@ -57,41 +58,41 @@ export function Palette({ inbox, detail, onClose, onRefresh, onInbox, onShortcut
                   onSelect={run(() => navigate(item.ref))}
                 >
                   {item.state === "local" ? <GitBranch size={14} /> : <PRStateIcon state={item.state} size={14} />}
-                  <span className="grow">{item.title}</span>
-                  <span className="hint">{item.ref.kind === "pr" ? `#${item.ref.number}` : item.branch}</span>
+                  <span className="min-w-0 flex-1 truncate">{item.title}</span>
+                  <span className="inline-flex shrink-0 items-center gap-0.5 text-[11.5px] text-fg-3">{item.ref.kind === "pr" ? `#${item.ref.number}` : item.branch}</span>
                   {item.author && <Avatar person={item.author} size="sm" />}
                 </Command.Item>
               ))}
             </Command.Group>
             <Command.Group heading="Actions">
-              <Command.Item value="refresh reload" onSelect={run(onRefresh)}>
-                <RefreshCw size={14} /> <span className="grow">Refresh</span>
+              <Command.Item value="Refresh" keywords={["reload", "update"]} onSelect={run(onRefresh)}>
+                <RefreshCw size={14} /> <span className="min-w-0 flex-1 truncate">Refresh</span>
               </Command.Item>
-              <Command.Item value="go to inbox home" onSelect={run(onInbox)}>
-                <InboxIcon size={14} /> <span className="grow">Go to inbox</span>
-                <span className="hint">
+              <Command.Item value="Go to inbox" keywords={["home", "back"]} onSelect={run(onInbox)}>
+                <InboxIcon size={14} /> <span className="min-w-0 flex-1 truncate">Go to inbox</span>
+                <span className="inline-flex shrink-0 items-center gap-0.5 text-[11.5px] text-fg-3">
                   <Kbd>G</Kbd>
                 </span>
               </Command.Item>
-              <Command.Item value="keyboard shortcuts help" onSelect={run(onShortcuts)}>
-                <Keyboard size={14} /> <span className="grow">Keyboard shortcuts</span>
-                <span className="hint">
+              <Command.Item value="Keyboard shortcuts" keywords={["help", "keys"]} onSelect={run(onShortcuts)}>
+                <Keyboard size={14} /> <span className="min-w-0 flex-1 truncate">Keyboard shortcuts</span>
+                <span className="inline-flex shrink-0 items-center gap-0.5 text-[11.5px] text-fg-3">
                   <Kbd>?</Kbd>
                 </span>
               </Command.Item>
-              <Command.Item value="theme dark" onSelect={run(() => onTheme("dark"))}>
-                <Moon size={14} /> <span className="grow">Dark theme</span>
+              <Command.Item value="Dark theme" keywords={["theme", "appearance", "night"]} onSelect={run(() => onTheme("dark"))}>
+                <Moon size={14} /> <span className="min-w-0 flex-1 truncate">Dark theme</span>
               </Command.Item>
-              <Command.Item value="theme light" onSelect={run(() => onTheme("light"))}>
-                <Sun size={14} /> <span className="grow">Light theme</span>
+              <Command.Item value="Light theme" keywords={["theme", "appearance", "day"]} onSelect={run(() => onTheme("light"))}>
+                <Sun size={14} /> <span className="min-w-0 flex-1 truncate">Light theme</span>
               </Command.Item>
-              <Command.Item value="theme system" onSelect={run(() => onTheme("system"))}>
-                <Monitor size={14} /> <span className="grow">System theme</span>
+              <Command.Item value="System theme" keywords={["theme", "appearance", "auto"]} onSelect={run(() => onTheme("system"))}>
+                <Monitor size={14} /> <span className="min-w-0 flex-1 truncate">System theme</span>
               </Command.Item>
             </Command.Group>
           </Command.List>
         </Command>
-        <div className="palette-foot">
+        <div className="flex h-9 items-center gap-4 border-t border-line px-3.5 text-[11.5px] text-fg-3 [&>span]:inline-flex [&>span]:items-center [&>span]:gap-1">
           <span>
             <Kbd>↑</Kbd>
             <Kbd>↓</Kbd> Navigate
@@ -130,14 +131,14 @@ const SHORTCUTS: Array<[string, string[]]> = [
 export function ShortcutsSheet({ onClose }: { onClose: () => void }) {
   const ref = useDismiss(true, onClose);
   return (
-    <div className="overlay">
-      <div className="sheet" ref={ref} role="dialog" aria-label="Keyboard shortcuts">
-        <h3>Keyboard shortcuts</h3>
-        <div className="shortcut-grid">
+    <div className="fixed inset-0 z-[80] flex animate-fade-in items-start justify-center bg-scrim px-4 pt-[14vh]">
+      <div className="w-full max-w-[580px] animate-pop-in rounded-2xl bg-panel p-5 shadow-pop" ref={ref} role="dialog" aria-label="Keyboard shortcuts">
+        <h3 className="mb-3 text-sm font-semibold">Keyboard shortcuts</h3>
+        <div className="grid grid-cols-2 gap-x-6">
           {SHORTCUTS.map(([label, keys]) => (
-            <div className="shortcut" key={label}>
+            <div className="flex h-9 items-center justify-between border-b border-line text-fg-2" key={label}>
               <span>{label}</span>
-              <span>
+              <span className="flex gap-1">
                 {keys.map((k) => (
                   <Kbd key={k}>{k}</Kbd>
                 ))}

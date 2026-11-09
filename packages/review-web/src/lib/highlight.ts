@@ -59,8 +59,8 @@ function getHighlighter(): Promise<HighlighterCore> {
   highlighter ??= Promise.all([
     import("shiki/core"),
     import("shiki/engine/javascript"),
-    import("@shikijs/themes/github-dark-default"),
-    import("@shikijs/themes/github-light-default"),
+    import("@shikijs/themes/one-dark-pro"),
+    import("@shikijs/themes/one-light"),
   ]).then(([{ createHighlighterCore }, { createJavaScriptRegexEngine }, dark, light]) =>
     createHighlighterCore({
       themes: [
@@ -91,6 +91,22 @@ async function ensureLanguage(lang: string): Promise<boolean> {
   return loaded.get(lang)!;
 }
 
+/**
+ * In a diff, red means "deleted". Syntax themes color properties, tags and headings
+ * red too, which reads as deletions on added lines, so those become amber.
+ */
+function calm(color: string | undefined, replacement: string): string | undefined {
+  const m = color?.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i);
+  if (!m) return color;
+  const [r, g, b] = m.slice(1).map((h) => parseInt(h, 16) / 255);
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  if (max === min || max !== r) return color;
+  const saturation = (max - min) / (1 - Math.abs(max + min - 1));
+  const hue = (60 * ((g - b) / (max - min)) + 360) % 360;
+  return saturation > 0.35 && (hue < 22 || hue > 335) ? replacement : color;
+}
+
 export type Token = { content: string; dark?: string; light?: string };
 
 /**
@@ -109,8 +125,8 @@ export async function highlightLines(lines: string[], lang: string | null): Prom
     return result.tokens.map((line: ThemedToken[]) =>
       line.map((token) => ({
         content: token.content,
-        dark: token.htmlStyle?.["--shiki-dark"] ?? token.color,
-        light: token.htmlStyle?.["--shiki-light"],
+        dark: calm(token.htmlStyle?.["--shiki-dark"] ?? token.color, "#e5a56b"),
+        light: calm(token.htmlStyle?.["--shiki-light"], "#a35f0a"),
       })),
     );
   } catch {

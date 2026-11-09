@@ -5,7 +5,7 @@ import { gapLines, gaps, languageFor, parsePatch, toSplitRows, wordDiff, type Di
 import { highlightLines, type Token } from "../lib/highlight";
 import { api } from "../lib/client";
 import { copy, timeAgo } from "../lib/util";
-import { Avatar, DiffStat, useToast } from "./ui";
+import { Avatar, Button, buttonClass, cx, DiffStat, Pill, StatusLetter, useToast } from "./ui";
 import { Composer } from "./Composer";
 import { Markdown } from "./Markdown";
 
@@ -58,69 +58,89 @@ export const FileDiff = memo(function FileDiff(props: Props) {
   const slash = file.path.lastIndexOf("/");
 
   return (
-    <div ref={ref} id={fileAnchor(file.path)} className={`file ${collapsed ? "collapsed" : ""} ${active ? "active" : ""}`} data-path={file.path}>
-      <div className="file-head">
-        <button className="btn ghost sm icon chev-btn" onClick={() => setCollapsed((c) => !c)} aria-label={collapsed ? "Expand file" : "Collapse file"}>
-          <ChevronDown size={14} />
-        </button>
-        <span className={`file-status ${file.status}`} data-tip={file.status}>
-          {statusLetter(file.status)}
-        </span>
-        <div className="file-path" title={file.path}>
-          <span>
-            {file.previousPath && file.previousPath !== file.path && (
-              <span className="dir">{file.previousPath} → </span>
-            )}
-            <span className="dir">{slash >= 0 ? file.path.slice(0, slash + 1) : ""}</span>
+    <div
+      ref={ref}
+      id={fileAnchor(file.path)}
+      data-path={file.path}
+      className={cx("file scroll-mt-14 rounded-xl border bg-panel transition-[border-color] duration-150", active ? "border-line-3" : "border-line")}
+    >
+      <div className={cx("sticky top-11 z-[5] flex h-10 items-center gap-2 bg-panel pl-2 pr-2", collapsed ? "rounded-xl" : "rounded-t-xl border-b border-line")}>
+        <Button variant="ghost" size="sm" icon onClick={() => setCollapsed((c) => !c)} aria-label={collapsed ? "Expand file" : "Collapse file"}>
+          <ChevronDown size={14} className={cx("transition-transform duration-150", collapsed && "-rotate-90")} />
+        </Button>
+        <StatusLetter status={file.status} />
+        <div className="min-w-0 truncate font-mono text-xs leading-none [direction:rtl] text-left" title={file.path}>
+          <span className="[direction:ltr] [unicode-bidi:plaintext]">
+            {file.previousPath && file.previousPath !== file.path && <span className="text-fg-3">{file.previousPath} → </span>}
+            <span className="text-fg-3">{slash >= 0 ? file.path.slice(0, slash + 1) : ""}</span>
             {file.path.slice(slash + 1)}
           </span>
         </div>
         <DiffStat additions={file.additions} deletions={file.deletions} />
-        <span className="spacer" />
-        <button
-          className="btn ghost sm icon"
+        <span className="flex-1" />
+        <Button
+          variant="ghost"
+          size="sm"
+          icon
           data-tip="Copy path"
-          onClick={() => copy(file.path).then((ok) => ok && toast(<>Copied <code>{file.path}</code></>))}
+          onClick={() =>
+            copy(file.path).then(
+              (ok) =>
+                ok &&
+                toast(
+                  <>
+                    <Copy size={14} className="text-fg-3" /> Copied <code>{file.path}</code>
+                  </>,
+                  { key: "copy" },
+                ),
+            )
+          }
         >
           <Copy size={13} />
-        </button>
+        </Button>
         {props.webUrl && (
-          <a className="btn ghost sm icon" data-tip="Open on GitHub" href={props.webUrl} target="_blank" rel="noreferrer">
+          <a className={buttonClass({ variant: "ghost", size: "sm", icon: true })} data-tip="Open on GitHub" href={props.webUrl} target="_blank" rel="noreferrer">
             <ExternalLink size={13} />
           </a>
         )}
-        <button className={`viewed-toggle ${viewed ? "on" : ""}`} onClick={props.onToggleViewed} data-tip="Mark as viewed" data-kbd="v">
-          <span className={`box ${viewed ? "pop" : ""}`}>{viewed && <CheckMark />}</span>
+        <button
+          onClick={props.onToggleViewed}
+          data-tip="Mark as viewed"
+          data-kbd="v"
+          className={cx(
+            "inline-flex h-6 items-center gap-1.5 rounded-md border pl-1.5 pr-2 text-xs font-medium leading-none transition-colors",
+            viewed ? "border-ok/40 bg-ok-soft text-fg" : "border-line-2 text-fg-2 hover:border-line-3 hover:text-fg",
+          )}
+        >
+          <span className={cx("grid size-3.5 place-items-center rounded-[4px] border-[1.5px] transition-colors", viewed ? "animate-check border-ok bg-ok text-bg" : "border-fg-3")}>
+            {viewed && <CheckMark />}
+          </span>
           Viewed
         </button>
       </div>
       {!collapsed &&
         (file.binary || !file.patch ? (
-          <div className="file-note">
-            <FileCode2 size={16} style={{ verticalAlign: -3, marginRight: 6 }} />
+          <div className="flex h-14 items-center justify-center gap-2 text-[12.5px] text-fg-3">
+            <FileCode2 size={16} className="shrink-0" />
             {file.binary ? "Binary file not shown" : file.status === "renamed" ? "File renamed without changes" : "This diff is too large for GitHub to show here"}
           </div>
         ) : tooLarge ? (
-          <div className="file-note">
-            Large diff ({lineCount.toLocaleString()} lines).{" "}
-            <button className="btn sm" style={{ marginLeft: 8 }} onClick={() => setForceLarge(true)}>
+          <div className="flex h-14 items-center justify-center gap-3 text-[12.5px] text-fg-3">
+            Large diff ({(file.additions + file.deletions).toLocaleString()} changed lines)
+            <Button size="sm" onClick={() => setForceLarge(true)}>
               Load diff
-            </button>
+            </Button>
           </div>
         ) : visible ? (
           <DiffBody {...props} />
         ) : (
-          <div className="file-placeholder" style={{ height: Math.min(lineCount, 400) * 20 }} />
+          <div className="rounded-b-xl opacity-40 [background:repeating-linear-gradient(transparent_0_20px,var(--hover)_20px_21px)]" style={{ height: Math.min(lineCount, 400) * 20 }} />
         ))}
     </div>
   );
 });
 
 export const fileAnchor = (path: string) => `file-${path.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
-
-function statusLetter(status: DiffFile["status"]): string {
-  return { added: "A", removed: "D", modified: "M", renamed: "R", copied: "C", changed: "M", unchanged: "·" }[status];
-}
 
 function CheckMark() {
   return (
@@ -281,12 +301,8 @@ function DiffBody(props: Props) {
       <td className={`ln ${cls}`}>
         {number}
         {commentable && (
-          <button
-            className="add-comment-btn"
-            aria-label={`Comment on line ${number}`}
-            onClick={() => setComposerAt(`${side}:${number}`)}
-          >
-            <Plus size={12} strokeWidth={2.5} />
+          <button className="add-comment" aria-label={`Comment on line ${number}`} onClick={() => setComposerAt(`${side}:${number}`)}>
+            <Plus size={12} strokeWidth={2.75} />
           </button>
         )}
       </td>
@@ -298,43 +314,57 @@ function DiffBody(props: Props) {
     const key = `${side}:${line}`;
     const thread = threads.get(key);
     if (!thread && composerAt !== key) return null;
+    const content = (
+      <Thread
+        comments={thread?.comments ?? []}
+        pending={thread?.pending ?? []}
+        composing={composerAt === key}
+        onCancel={() => setComposerAt(null)}
+        onSubmit={(body) => {
+          props.onAddPending({ path: file.path, line, side, body });
+          setComposerAt(null);
+        }}
+        onRemovePending={props.onRemovePending}
+      />
+    );
+    // Split view: the thread sits in the half it belongs to, aligned with that side's code.
+    if (mode === "split") {
+      return (
+        <tr key={`thread-${key}`} className="thread split-thread">
+          <td colSpan={2}>{side === "LEFT" && content}</td>
+          <td className="split-divider" />
+          <td colSpan={2}>{side === "RIGHT" && content}</td>
+        </tr>
+      );
+    }
     return (
-      <tr key={`thread-${key}`}>
-        <td colSpan={colSpan}>
-          <Thread
-            comments={thread?.comments ?? []}
-            pending={thread?.pending ?? []}
-            composing={composerAt === key}
-            onCancel={() => setComposerAt(null)}
-            onSubmit={(body) => {
-              props.onAddPending({ path: file.path, line, side, body });
-              setComposerAt(null);
-            }}
-            onRemovePending={props.onRemovePending}
-          />
-        </td>
+      <tr key={`thread-${key}`} className="thread">
+        <td colSpan={colSpan}>{content}</td>
       </tr>
     );
   };
 
+  const expandButton = "inline-flex h-6 items-center gap-1.5 rounded-md px-2 font-sans text-[11.5px] leading-none text-[var(--hunk-text)] hover:bg-accent-soft hover:text-accent disabled:opacity-60 [&_svg]:shrink-0";
   const gapRow = (row: Extract<Row, { type: "gap" }>) => (
     <tr className="hunk" key={row.key}>
       <td colSpan={colSpan}>
-        <button className="expand-btn" onClick={() => expand(row.key, row.gap, false)} disabled={loadingGap === row.key}>
-          <ChevronsUpDown size={12} />
-          {loadingGap === row.key
-            ? "Loading…"
-            : row.hidden < 0
-              ? "Show more lines"
-              : row.hidden <= EXPAND_STEP
-                ? `Show ${row.hidden} more line${row.hidden === 1 ? "" : "s"}`
-                : `Show ${EXPAND_STEP} lines`}
-        </button>
-        {row.hidden > EXPAND_STEP && (
-          <button className="expand-btn" onClick={() => expand(row.key, row.gap, true)}>
-            Show all {row.hidden}
+        <div className="flex h-8 items-center gap-1 px-2">
+          <button className={expandButton} onClick={() => expand(row.key, row.gap, false)} disabled={loadingGap === row.key}>
+            <ChevronsUpDown size={12} />
+            {loadingGap === row.key
+              ? "Loading…"
+              : row.hidden < 0
+                ? "Show more lines"
+                : row.hidden <= EXPAND_STEP
+                  ? `Show ${row.hidden} more line${row.hidden === 1 ? "" : "s"}`
+                  : `Show ${EXPAND_STEP} more lines`}
           </button>
-        )}
+          {row.hidden > EXPAND_STEP && (
+            <button className={expandButton} onClick={() => expand(row.key, row.gap, true)}>
+              Show all {row.hidden}
+            </button>
+          )}
+        </div>
       </td>
     </tr>
   );
@@ -342,9 +372,9 @@ function DiffBody(props: Props) {
   const hunkRow = (row: Extract<Row, { type: "hunk" }>) => (
     <tr className="hunk" key={`hunk-${row.index}`}>
       <td colSpan={colSpan}>
-        <div className="hunk-text">
-          @@ -{row.hunk.oldStart},{row.hunk.oldLines} +{row.hunk.newStart},{row.hunk.newLines} @@{" "}
-          <span style={{ color: "var(--text-3)" }}>{row.hunk.section}</span>
+        <div className="flex h-8 items-center truncate px-3 text-[11.5px]">
+          @@ -{row.hunk.oldStart},{row.hunk.oldLines} +{row.hunk.newStart},{row.hunk.newLines} @@
+          <span className="ml-2 truncate text-fg-3">{row.hunk.section}</span>
         </div>
       </td>
     </tr>
@@ -352,11 +382,11 @@ function DiffBody(props: Props) {
 
   if (mode === "unified") {
     return (
-      <div className="diff-scroll">
-        <table className={`diff-table ${wrap ? "wrap" : ""}`}>
+      <div className="overflow-x-auto rounded-b-xl">
+        <table className={cx("diff-table", wrap && "wrap")}>
           <colgroup>
-            {!hideOld && <col style={{ width: 52 }} />}
-            {!hideNew && <col style={{ width: 52 }} />}
+            {!hideOld && <col style={{ width: 60 }} />}
+            {!hideNew && <col style={{ width: 60 }} />}
             <col style={{ width: 18 }} />
             <col />
           </colgroup>
@@ -426,13 +456,13 @@ function DiffBody(props: Props) {
   flush();
 
   return (
-    <div className="diff-scroll">
-      <table className={`diff-table split ${wrap ? "wrap" : ""}`}>
+    <div className="overflow-x-auto rounded-b-xl">
+      <table className="diff-table split">
         <colgroup>
-          <col style={{ width: 48 }} />
+          <col style={{ width: 60 }} />
           <col />
           <col style={{ width: 1 }} />
-          <col style={{ width: 48 }} />
+          <col style={{ width: 60 }} />
           <col />
         </colgroup>
         <tbody>{body}</tbody>
@@ -489,51 +519,55 @@ function Thread(props: {
   onRemovePending: (id: string) => void;
 }) {
   const [replying, setReplying] = useState(false);
+  const hasComments = props.comments.length + props.pending.length > 0;
   return (
-    <div className="inline-thread">
+    <div className="max-w-[780px] animate-pop-in overflow-hidden rounded-[14px] border border-line-2 bg-bg">
       {props.comments.map((c) => (
-        <div className="inline-comment" key={c.id}>
-          <div className="event-head">
+        <div className="border-b border-line px-3.5 py-3 last:border-b-0" key={c.id}>
+          <div className="mb-1.5 flex h-5 items-center gap-2 leading-none text-fg-3">
             <Avatar person={c.author} size="sm" />
-            <b>{c.author?.login}</b>
+            <b className="font-medium text-fg">{c.author?.login}</b>
             <span>{timeAgo(c.createdAt)}</span>
           </div>
           <Markdown html={c.bodyHtml} />
         </div>
       ))}
       {props.pending.map((p) => (
-        <div className="inline-comment" key={p.id}>
-          <div className="event-head">
-            <span className="pending-tag">Pending</span>
-            <span className="faint">Submitted with your review</span>
-            <span style={{ flex: 1 }} />
-            <button className="btn ghost sm" onClick={() => props.onRemovePending(p.id)}>
+        <div className="border-b border-line px-3.5 py-3 last:border-b-0" key={p.id}>
+          <div className="mb-1.5 flex h-6 items-center gap-2 leading-none text-fg-3">
+            <Pill tone="amber">Pending</Pill>
+            <span>Submitted with your review</span>
+            <span className="flex-1" />
+            <Button variant="ghost" size="sm" onClick={() => props.onRemovePending(p.id)}>
               Remove
-            </button>
+            </Button>
           </div>
-          <div style={{ whiteSpace: "pre-wrap" }}>{p.body}</div>
+          <div className="whitespace-pre-wrap">{p.body}</div>
         </div>
       ))}
       {props.composing || replying ? (
-        <Composer
-          autoFocus
-          placeholder="Leave a comment"
-          submitLabel="Add to review"
-          onCancel={() => {
-            setReplying(false);
-            props.onCancel();
-          }}
-          onSubmit={async (body) => {
-            props.onSubmit(body);
-            setReplying(false);
-          }}
-        />
+        <div className={cx("p-1.5", hasComments && "border-t border-line")}>
+          <Composer
+            autoFocus
+            inset
+            placeholder="Leave a comment"
+            submitLabel="Add to review"
+            onCancel={() => {
+              setReplying(false);
+              props.onCancel();
+            }}
+            onSubmit={async (body) => {
+              props.onSubmit(body);
+              setReplying(false);
+            }}
+          />
+        </div>
       ) : (
-        props.comments.length + props.pending.length > 0 && (
-          <div style={{ padding: "0 8px 8px" }}>
-            <button className="btn ghost sm" onClick={() => setReplying(true)}>
+        hasComments && (
+          <div className="border-t border-line p-1.5">
+            <Button variant="ghost" size="sm" onClick={() => setReplying(true)}>
               Reply…
-            </button>
+            </Button>
           </div>
         )
       )}

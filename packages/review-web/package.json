@@ -11,7 +11,8 @@
     "dev": "node build.mjs --watch",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "e2e": "node e2e/qa.mjs"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",
@@ -26,9 +27,12 @@
     "shiki": "^4.6.0"
   },
   "devDependencies": {
+    "@tailwindcss/cli": "^4.3.4",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "esbuild": "^0.28.2",
+    "playwright-core": "1.64.1",
+    "tailwindcss": "^4.3.4",
     "typescript": "^5.9.3",
     "vitest": "^5.1.0"
   }

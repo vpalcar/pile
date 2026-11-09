@@ -25,6 +25,12 @@ function readToken(): string {
 
 const token = readToken();
 
+// A new link from `pile review` opened in a tab that already shows the app only
+// changes the fragment; reload so the new token is picked up.
+window.addEventListener("hashchange", () => {
+  if (/token=/.test(location.hash)) location.reload();
+});
+
 export class RequestError extends Error {
   constructor(
     readonly status: number,
