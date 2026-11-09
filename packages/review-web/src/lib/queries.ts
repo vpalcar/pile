@@ -1,6 +1,6 @@
 import { QueryClient, useQuery } from "@tanstack/react-query";
-import { useCallback } from "react";
-import type { Detail, ItemRef, Preferences } from "../api";
+import { useCallback, useEffect, useState } from "react";
+import type { Detail, InboxItem, ItemRef, Preferences } from "../api";
 import { api, RequestError } from "./client";
 import { keepKnownSignals } from "./inbox";
 
@@ -49,7 +49,8 @@ export const useInbox = () =>
     queryKey: keys.inbox,
     queryFn: () => fetchInbox(invalidated(keys.inbox)),
     // The first answer may be the quick list; ask again until the full one is ready.
-    refetchInterval: (query) => (query.state.data?.partial ? 1200 : 30_000),
+    // Each refresh costs GitHub requests (see the server's request budget): once a minute.
+    refetchInterval: (query) => (query.state.data?.partial ? 1200 : 60_000),
   });
 
 // -----------------------------------------------------------------------------
@@ -68,7 +69,7 @@ export const useDetail = (ref: ItemRef | null) =>
       // While checks run, poll past the server's cache so progress shows up live.
       return api.detail(ref!, invalidated(key) || checksRunning(queryClient.getQueryData(key)));
     },
-    refetchInterval: (query) => (checksRunning(query.state.data) ? 8_000 : 60_000),
+    refetchInterval: (query) => (checksRunning(query.state.data) ? 15_000 : 60_000),
   });
 
 /** Warms a detail in the background (hover, neighbors), so opening it is instant. */
@@ -99,4 +100,23 @@ export function usePreference<K extends keyof Preferences>(key: K, fallback: Pre
     [key, fallback],
   );
   return [value, set];
+}
+
+// -----------------------------------------------------------------------------
+// Search across every open PR in the repo (everyone else's aren't in the inbox)
+
+/**
+ * Asks GitHub once typing pauses; results are kept a minute per query. `searching`
+ * covers both the pause and the request, so a "no results" never shows too early.
+ */
+export function useRepoSearch(text: string): { items: InboxItem[]; searching: boolean } {
+  const [q, setQ] = useState("");
+  const wanted = text.trim();
+  useEffect(() => {
+    const timer = setTimeout(() => setQ(wanted), 250);
+    return () => clearTimeout(timer);
+  }, [wanted]);
+  const { data, isFetching } = useQuery({ queryKey: ["search", q], queryFn: () => api.search(q), enabled: q.length >= 2, staleTime: 60_000 });
+  if (wanted.length < 2) return { items: [], searching: false };
+  return { items: q === wanted ? (data ?? []) : [], searching: q !== wanted || isFetching };
 }

@@ -47,6 +47,7 @@ export function clusters(items: InboxItem[]): Cluster[] {
 /** Every inbox item in display order, for stepping with j / k and [ / ]. */
 const sortKey = (item: InboxItem) => (item.ref.kind === "pr" ? String(item.ref.number).padStart(9, "0") : `~${item.branch}`);
 
-export function flatItems(inbox: Inbox | undefined): InboxItem[] {
-  return inbox?.groups.flatMap((g) => clusters(g.items).flatMap((c) => c.items)) ?? [];
+export function flatItems(inbox: Inbox | undefined, { search = false } = {}): InboxItem[] {
+  // Other people's PRs are only found by searching (`search`), not stepped through.
+  return inbox?.groups.filter((g) => search || !g.searchOnly).flatMap((g) => clusters(g.items).flatMap((c) => c.items)) ?? [];
 }

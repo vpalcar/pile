@@ -7,6 +7,7 @@ import { createPile } from "@pile/core";
 import { parseGitDiff } from "../src/review/local-data.js";
 import { ReviewError, ReviewService } from "../src/review/service.js";
 import { startReviewServer } from "../src/review/server.js";
+import { fakeGitHub } from "./fake-github.js";
 import { createCliRepo } from "./helpers.js";
 
 function webRoot(): string {
@@ -226,6 +227,114 @@ describe("notes for the agent", () => {
     expect(service.notes("feature")).toHaveLength(2);
     await expect(service.addNote({ ref, body: "  " })).rejects.toMatchObject({ code: "EMPTY_NOTE" });
     expect(() => service.removeNote("ffffff")).toThrow(expect.objectContaining({ code: "NOTE_NOT_FOUND" }));
+  });
+});
+
+describe("detail cache", () => {
+  it("never lets a refresh that started before a change overwrite what came after", async () => {
+    const pile = await createPile(createCliRepo().dir);
+    const service = new ReviewService(pile, null);
+    let slow: (value: unknown) => void = () => {};
+    const answers: Array<() => Promise<unknown>> = [
+      async () => ({ v: "first" }),
+      () => new Promise((resolve) => (slow = resolve)), // a background refresh, still in flight
+      async () => ({ v: "after the review" }),
+    ];
+    Object.assign(service, { octokit: {}, repo: { owner: "o", repo: "r" }, prDetail: () => answers.shift()!() });
+    const ref = { kind: "pr" as const, number: 1 };
+    const memo = (service as unknown as { memo: Map<string, { at: number }> }).memo;
+
+    expect(await service.detail(ref)).toEqual({ v: "first" });
+    memo.get("pr/1")!.at -= 20_000; // stale: served while a refresh runs
+    expect(await service.detail(ref)).toEqual({ v: "first" });
+    service.invalidate(ref); // a review was posted
+    expect(await service.detail(ref)).toEqual({ v: "after the review" });
+    slow({ v: "before the review" });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(await service.detail(ref)).toEqual({ v: "after the review" });
+  });
+});
+
+
+describe("inbox membership", () => {
+  const groups = async (opts: Parameters<typeof fakeGitHub>[0]) => {
+    const fake = fakeGitHub(opts);
+    // A PR whose review is requested only from a team you're on.
+    fake.prs[4].requested = [];
+    fake.prs[4].teams = ["web"];
+    fake.prs[4].author = "dev9";
+    const service = new ReviewService(await createPile(createCliRepo().dir), fake.github);
+    await service.inbox();
+    const inbox = await service.inbox({ fresh: true });
+    return { inbox, service, ids: (id: string) => inbox.groups.find((g) => g.id === id)!.items.map((i) => (i.ref as { number: number }).number) };
+  };
+
+  it("counts review requests to your teams as waiting for you (GraphQL and REST)", async () => {
+    for (const graphql of [true, false]) {
+      const { ids } = await groups({ prs: 12, teams: ["web"], graphql });
+      expect(ids("needs_review"), `graphql=${graphql}`).toContain(5);
+    }
+  });
+
+  it("falls back to the PR list when GitHub search returns nothing for a busy repo", async () => {
+    const { ids, service } = await groups({ prs: 12, teams: ["web"], searchBroken: true });
+    expect(ids("mine").length).toBeGreaterThan(0);
+    expect(ids("needs_review")).toContain(5);
+    expect(service.usage()!.mode).toMatch(/PR list/);
+  });
+});
+
+describe("PR pages over GraphQL", () => {
+  it("find the whole stack, including others' PRs outside your inbox", async () => {
+    // #1 is yours; #2 and #3 (built on it) are by others and don't ask for your review.
+    const fake = fakeGitHub({ prs: 12 });
+    const service = new ReviewService(await createPile(createCliRepo().dir), fake.github);
+    const stackOf = async (number: number) =>
+      (await service.detail({ kind: "pr", number })).stack.map((e) => (e.ref as { number: number }).number);
+    expect(await stackOf(1)).toEqual([1, 2, 3]);
+    expect(await stackOf(3)).toEqual([1, 2, 3]);
+  });
+
+  it("won't offer to merge a PR that still needs an approving review", async () => {
+    const fake = fakeGitHub({ prs: 12 });
+    fake.prs[3].reviewRequired = true;
+    const service = new ReviewService(await createPile(createCliRepo().dir), fake.github);
+    const detail = await service.detail({ kind: "pr", number: 4 });
+    expect(detail.merge!.single.blockers).toContain("Needs an approving review");
+  });
+
+  it("say approved when GitHub does, even while another reviewer is still asked", async () => {
+    const fake = fakeGitHub({ prs: 12 });
+    fake.prs[0].requested = ["dev7"];
+    fake.prs[0].decision = "APPROVED";
+    const service = new ReviewService(await createPile(createCliRepo().dir), fake.github);
+    expect((await service.detail({ kind: "pr", number: 1 })).reviewDecision).toBe("approved");
+  });
+
+  it("won't merge a stack whose upper PRs lack the approval the trunk requires", async () => {
+    // #1 is into main and approved (main requires a review); #2 sits on #1, where GitHub
+    // asks for nothing, but merging the stack lands it on main too.
+    const fake = fakeGitHub({ prs: 12 });
+    fake.prs[0].decision = "APPROVED";
+    fake.prs[1].requested = ["me"];
+    const service = new ReviewService(await createPile(createCliRepo().dir), fake.github);
+    const detail = await service.detail({ kind: "pr", number: 2 });
+    expect(detail.merge!.stack!.blockers).toContain("#2: Needs an approving review");
+  });
+
+  it("show every entry of a GitHub stack the same on each of its pages, inbox or not", async () => {
+    // GitHub stack 1 → 2 → 3: #1 is yours; #2 and #3 are others', not asking for your
+    // review (#3 already approved), so the inbox doesn't have them.
+    const fake = fakeGitHub({ prs: 12, nativeStacks: [[1, 2, 3]] });
+    fake.prs[2].decision = "APPROVED";
+    const service = new ReviewService(await createPile(createCliRepo().dir), fake.github);
+    const entry = async (page: number, number: number) => (await service.detail({ kind: "pr", number: page })).stack.find((e) => (e.ref as { number: number }).number === number)!;
+    const fromBottom = await entry(1, 3);
+    expect(fromBottom.reviewDecision).toBe("approved");
+    expect(fromBottom.checks).not.toBeNull();
+    const own = await entry(3, 3);
+    expect([own.reviewDecision, own.checks?.state]).toEqual([fromBottom.reviewDecision, fromBottom.checks?.state]);
+    expect((await service.detail({ kind: "pr", number: 1 })).nativeStack).toBe(100);
   });
 });
 

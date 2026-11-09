@@ -43,7 +43,26 @@ describe("layoutTree", () => {
       ["4", "2"],
       ["5", "2"],
     ]);
-    expect(rows).toEqual(["3@1", "5@2 through 1", "4@0 through 1,2", "2@0 joins 2 through 1", "1@0 joins 1", "main@0"]);
+    expect(rows).toEqual(["3@2", "5@1 through 2", "4@0 through 2,1", "2@0 joins 1 through 2", "1@0 joins 2", "main@0"]);
+  });
+
+  it("never crosses lines: a branch's side branches sit between it and lines passing by", () => {
+    // main <- 57 <- (58 <- (59, 60), 61 <- 62): the stack from pile-bench where #60's
+    // join into #58 used to cut across #61's line.
+    const { rows } = layoutTree([
+      { id: "57", parent: null },
+      { id: "58", parent: "57" },
+      { id: "61", parent: "57" },
+      { id: "59", parent: "58" },
+      { id: "60", parent: "58" },
+      { id: "62", parent: "61" },
+    ]);
+    for (const row of rows) {
+      const span = row.joins.length ? Math.max(...row.joins) : row.lane;
+      // No line passes through the stretch an elbow runs along.
+      expect(row.through.filter((l) => l > row.lane && l < span)).toEqual([]);
+    }
+    expect(rows.map((r) => `${r.id ?? "main"}@${r.lane}`)).toEqual(["62@2", "61@2", "60@1", "59@0", "58@0", "57@0", "main@0"]);
   });
 
   it("treats entries whose parent isn't in the stack as built on the trunk", () => {

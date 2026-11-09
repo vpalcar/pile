@@ -1,9 +1,11 @@
+import { useState } from "react";
 import { Command } from "cmdk";
 import { FileCode2, GitBranch, Inbox as InboxIcon, Keyboard, Moon, RefreshCw, Sun, Monitor } from "lucide-react";
 import type { Detail, Inbox } from "../api";
 import { flatItems } from "./Inbox";
-import { Avatar, Kbd, PRStateIcon, useDismiss } from "./ui";
+import { Avatar, Kbd, PRStateIcon, Spinner, useDismiss } from "./ui";
 import { modKey, navigate } from "../lib/util";
+import { useRepoSearch } from "../lib/queries";
 import { fileAnchor } from "./FileDiff";
 
 interface Props {
@@ -16,9 +18,36 @@ interface Props {
   onTheme: (theme: "dark" | "light" | "system") => void;
 }
 
+/**
+ * Every word typed must appear in the item (its title, number, branch, author or
+ * keywords): plainer than cmdk's fuzzy match, which finds "safari" in "search".
+ */
+function matchWords(value: string, search: string, keywords?: string[]): number {
+  const haystack = `${value} ${(keywords ?? []).join(" ")}`.toLowerCase();
+  return search
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((word) => haystack.includes(word))
+    ? 1
+    : 0;
+}
+
+/** Pull requests listed before anything is typed. */
+const SUGGESTED = 5;
+
 export function Palette({ inbox, detail, onClose, onRefresh, onInbox, onShortcuts, onTheme }: Props) {
   const ref = useDismiss(true, onClose);
-  const items = flatItems(inbox);
+  const [search, setSearch] = useState("");
+  const local = flatItems(inbox, { search: true });
+  // Everyone else's PRs come from GitHub's search; they carry the query as a keyword
+  // since they may match on something cmdk can't see (the description).
+  const remote = useRepoSearch(search);
+  const found = remote.items.filter((i) => !local.some((l) => l.id === i.id));
+  const typing = search.trim().length > 0;
+  // With nothing typed, a short list (waiting on you first) so the actions stay in view.
+  const items = typing ? [...local, ...found] : local.slice(0, SUGGESTED);
+  const files = detail ? (typing ? detail.files : detail.files.slice(0, 4)) : [];
   const run = (fn: () => void) => () => {
     onClose();
     fn();
@@ -26,13 +55,13 @@ export function Palette({ inbox, detail, onClose, onRefresh, onInbox, onShortcut
   return (
     <div className="fixed inset-0 z-[80] flex animate-fade-in items-start justify-center bg-scrim px-4 pt-[14vh]">
       <div ref={ref} className="palette w-full max-w-[640px] animate-pop-in overflow-hidden rounded-2xl bg-panel shadow-pop [&_svg]:shrink-0">
-        <Command label="Command palette" loop>
-          <Command.Input autoFocus placeholder="Jump to a pull request, branch or file…" />
+        <Command label="Command palette" loop filter={matchWords}>
+          <Command.Input autoFocus placeholder="Jump to a pull request, branch or file…" value={search} onValueChange={setSearch} />
           <Command.List>
-            <Command.Empty>No results</Command.Empty>
-            {detail && detail.files.length > 0 && (
+            {!remote.searching && <Command.Empty>No pull requests, branches, files or actions match “{search.trim()}”.</Command.Empty>}
+            {detail && files.length > 0 && (
               <Command.Group heading={`Files in ${detail.number ? `#${detail.number}` : detail.branch}`}>
-                {detail.files.map((f) => (
+                {files.map((f) => (
                   <Command.Item
                     key={f.path}
                     value={`file ${f.path}`}
@@ -50,11 +79,12 @@ export function Palette({ inbox, detail, onClose, onRefresh, onInbox, onShortcut
                 ))}
               </Command.Group>
             )}
-            <Command.Group heading="Pull requests and branches">
+            <Command.Group heading={typing ? "Pull requests and branches" : "Jump to"}>
               {items.map((item) => (
                 <Command.Item
                   key={item.id}
                   value={`${item.ref.kind === "pr" ? `#${item.ref.number}` : ""} ${item.title} ${item.branch} ${item.author?.login ?? ""}`}
+                  keywords={found.includes(item) ? [search] : undefined}
                   onSelect={run(() => navigate(item.ref))}
                 >
                   {item.state === "local" ? <GitBranch size={14} /> : <PRStateIcon state={item.state} size={14} />}
@@ -64,6 +94,14 @@ export function Palette({ inbox, detail, onClose, onRefresh, onInbox, onShortcut
                 </Command.Item>
               ))}
             </Command.Group>
+            {/* Outside the groups: cmdk hides a group while none of its items match. */}
+            {remote.searching && (
+              <Command.Loading>
+                <div className="flex h-9 items-center gap-2.5 px-3 text-[13px] text-fg-3" data-searching>
+                  <Spinner size={13} /> Searching every open pull request…
+                </div>
+              </Command.Loading>
+            )}
             <Command.Group heading="Actions">
               <Command.Item value="Refresh" keywords={["reload", "update"]} onSelect={run(onRefresh)}>
                 <RefreshCw size={14} /> <span className="min-w-0 flex-1 truncate">Refresh</span>
@@ -80,6 +118,9 @@ export function Palette({ inbox, detail, onClose, onRefresh, onInbox, onShortcut
                   <Kbd>?</Kbd>
                 </span>
               </Command.Item>
+              {/* Themes only when asked for: the empty palette keeps to a short list. */}
+              {typing && (
+              <>
               <Command.Item value="Dark theme" keywords={["theme", "appearance", "night"]} onSelect={run(() => onTheme("dark"))}>
                 <Moon size={14} /> <span className="min-w-0 flex-1 truncate">Dark theme</span>
               </Command.Item>
@@ -89,6 +130,8 @@ export function Palette({ inbox, detail, onClose, onRefresh, onInbox, onShortcut
               <Command.Item value="System theme" keywords={["theme", "appearance", "auto"]} onSelect={run(() => onTheme("system"))}>
                 <Monitor size={14} /> <span className="min-w-0 flex-1 truncate">System theme</span>
               </Command.Item>
+              </>
+              )}
             </Command.Group>
           </Command.List>
         </Command>
@@ -110,7 +153,8 @@ export function Palette({ inbox, detail, onClose, onRefresh, onInbox, onShortcut
 }
 
 const SHORTCUTS: Array<[string, string[]]> = [
-  ["Command palette", [modKey, "K"]],
+  ["Search and commands", ["/"]],
+  ["Search and commands (anywhere, even while typing)", [modKey, "K"]],
   ["Next / previous file", ["j", "k"]],
   ["Next / previous pull request", ["]", "["]],
   ["Mark file viewed, go to next", ["v"]],
@@ -120,8 +164,8 @@ const SHORTCUTS: Array<[string, string[]]> = [
   ["Back to the inbox", ["Esc"]],
   ["Go to the inbox", ["g"]],
   ["Move through the inbox", ["j", "k"]],
-  ["Filter the inbox", ["1–5"]],
-  ["Filter files", ["/"]],
+  ["Filter the inbox", ["1–4"]],
+  ["Next / previous open comment", ["n", "⇧N"]],
   ["Comment on the pull request", ["c"]],
   ["Submit a review", ["r"]],
   ["Open on GitHub", ["o"]],

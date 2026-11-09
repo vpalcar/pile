@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
-import { Check, ChevronDown, Columns2, PanelLeft, Rows3, Search, WrapText } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, Columns2, MessageSquare, PanelLeft, Rows3, Search, WrapText } from "lucide-react";
 import type { Detail, DiffFile } from "../api";
-import { FileDiff, fileAnchor, type PendingComment } from "./FileDiff";
+import { FileDiff, fileAnchor, REVEAL_EVENT, threadKey, type PendingComment } from "./FileDiff";
 import { Button, cx, DiffStat, StatusLetter } from "./ui";
 import { useShortcuts, useViewed } from "../lib/util";
 import { usePreference } from "../lib/queries";
@@ -83,8 +83,68 @@ export function FilesPanel({ detail, itemKey, scrollEl, pending, onAddPending, o
   );
 
   const index = Math.max(0, files.findIndex((f) => f.path === active));
+
+  // GitHub comment threads in file and line order; the open ones are what n / N step through.
+  const threads = useMemo(() => {
+    const order = new Map(files.map((f, i) => [f.path, i]));
+    return detail.inlineComments
+      .filter((c) => c.inReplyTo === null && order.has(c.path))
+      .map((c) => ({ path: c.path, key: threadKey(c), line: c.line ?? 0, resolved: c.resolved }))
+      .sort((a, b) => order.get(a.path)! - order.get(b.path)! || a.line - b.line);
+  }, [detail.inlineComments, files]);
+  const open = useMemo(() => threads.filter((t) => !t.resolved), [threads]);
+  const counts = useMemo(() => {
+    const byPath = new Map<string, { open: number; total: number }>();
+    for (const t of threads) {
+      const c = byPath.get(t.path) ?? { open: 0, total: 0 };
+      c.total++;
+      if (!t.resolved) c.open++;
+      byPath.set(t.path, c);
+    }
+    return byPath;
+  }, [threads]);
+  const [threadAt, setThreadAt] = useState(-1);
+
+  // Opens the file (rendered, expanded), then brings the thread to the middle of the screen.
+  const jumpTo = useCallback(
+    (thread: { path: string; key: string }) => {
+      window.dispatchEvent(new CustomEvent(REVEAL_EVENT, { detail: { path: thread.path } }));
+      setActive(thread.path);
+      onFileChange(thread.path);
+      let tries = 0;
+      const find = () => {
+        const el = document.querySelector<HTMLElement>(`.file[data-path="${CSS.escape(thread.path)}"] [data-thread="${CSS.escape(thread.key)}"]`);
+        if (!el) {
+          if (++tries < 90) requestAnimationFrame(find);
+          else scrollTo(thread.path);
+          return;
+        }
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
+        el.classList.remove("thread-flash");
+        void el.offsetWidth;
+        el.classList.add("thread-flash");
+      };
+      requestAnimationFrame(find);
+    },
+    [onFileChange, scrollTo],
+  );
+  const step = (by: 1 | -1) => {
+    if (open.length === 0) return;
+    const next = (threadAt + by + open.length) % open.length;
+    setThreadAt(next);
+    jumpTo(open[next]);
+  };
+  const firstIn = (path: string) => {
+    const at = open.findIndex((t) => t.path === path);
+    const thread = at >= 0 ? open[at] : threads.find((t) => t.path === path);
+    if (at >= 0) setThreadAt(at);
+    if (thread) jumpTo(thread);
+  };
+
   useShortcuts(
     {
+      n: () => step(1),
+      N: () => step(-1),
       j: () => files[index + 1] && scrollTo(files[index + 1].path),
       k: () => files[index - 1] && scrollTo(files[index - 1].path),
       v: () => {
@@ -101,7 +161,7 @@ export function FilesPanel({ detail, itemKey, scrollEl, pending, onAddPending, o
       w: () => setWrap((w) => !w),
       t: () => setTreeOpen((o) => !o),
     },
-    [files, index, isViewed, scrollTo, toggleViewed],
+    [files, index, isViewed, scrollTo, toggleViewed, open, threadAt, jumpTo],
   );
 
   const pendingByPath = useMemo(() => groupBy(pending, (p) => p.path), [pending]);
@@ -110,7 +170,11 @@ export function FilesPanel({ detail, itemKey, scrollEl, pending, onAddPending, o
 
   if (files.length === 0) {
     return (
-      <div className="mt-9 border-t border-line p-10 text-center text-fg-3">No changes in this {detail.number ? "pull request" : "branch"}.</div>
+      <div className="mt-9 border-t border-line p-10 text-center text-fg-3" data-files-unavailable={detail.filesUnavailable ? "" : undefined}>
+        {detail.filesUnavailable
+          ? `Files can't be shown right now: ${detail.filesUnavailable}. Everything else on this page is up to date.`
+          : `No changes in this ${detail.number ? "pull request" : "branch"}.`}
+      </div>
     );
   }
 
@@ -125,6 +189,24 @@ export function FilesPanel({ detail, itemKey, scrollEl, pending, onAddPending, o
         </b>
         <DiffStat additions={detail.additions} deletions={detail.deletions} bar />
         <span className="flex-1" />
+        {threads.length > 0 && (
+          <span className="mr-1 inline-flex items-center gap-0.5 text-xs leading-none text-fg-2" data-conversations>
+            <span className={cx("mr-1 inline-flex items-center gap-1.5", open.length > 0 && "font-medium text-accent")} data-tip={`${threads.length - open.length} of ${threads.length} comment threads resolved`}>
+              <MessageSquare size={13} />
+              {open.length > 0 ? `${open.length} open ${open.length === 1 ? "comment" : "comments"}` : `All ${threads.length} resolved`}
+            </span>
+            {open.length > 0 && (
+              <>
+                <Button variant="ghost" size="sm" icon onClick={() => step(-1)} aria-label="Previous open comment" data-tip="Previous open comment" data-kbd="⇧N">
+                  <ChevronUp size={14} />
+                </Button>
+                <Button variant="ghost" size="sm" icon onClick={() => step(1)} aria-label="Next open comment" data-tip="Next open comment" data-kbd="N">
+                  <ChevronDown size={14} />
+                </Button>
+              </>
+            )}
+          </span>
+        )}
         <ProgressRing done={viewedCount} total={files.length} />
         <div className="inline-flex items-center rounded-lg border border-line bg-panel-2 p-0.5" role="group" aria-label="Diff layout">
           {([
@@ -150,7 +232,7 @@ export function FilesPanel({ detail, itemKey, scrollEl, pending, onAddPending, o
         </Button>
       </div>
       <div className={cx("grid items-start transition-[grid-template-columns] duration-200", treeOpen ? "grid-cols-[264px_minmax(0,1fr)]" : "grid-cols-[0_minmax(0,1fr)]")}>
-        <FileTree files={files} active={files[index]?.path ?? null} isViewed={isViewed} onSelect={(p) => scrollTo(p)} />
+        <FileTree files={files} active={files[index]?.path ?? null} isViewed={isViewed} threads={counts} onSelect={(p) => scrollTo(p)} onThreads={firstIn} />
         <div className="flex min-w-0 flex-col gap-3.5 px-4 pb-10 pt-2.5">
           {files.map((file) => (
             <FileDiff
@@ -253,12 +335,18 @@ const FileTree = memo(function FileTree({
   files,
   active: activePath,
   isViewed,
+  threads,
   onSelect,
+  onThreads,
 }: {
   files: DiffFile[];
   active: string | null;
   isViewed: (f: DiffFile) => boolean;
+  /** Comment threads by path: how many, and how many still open. */
+  threads: Map<string, { open: number; total: number }>;
   onSelect: (path: string) => void;
+  /** Jumps to a file's first open thread (or its first one). */
+  onThreads: (path: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [closed, setClosed] = useState<Set<string>>(new Set());
@@ -289,7 +377,13 @@ const FileTree = memo(function FileTree({
           <span className="grid w-3.5 place-items-center">
             <ChevronDown size={12} className={cx("transition-transform duration-150", closed.has(dir.path) && "-rotate-90")} />
           </span>
-          <span className="min-w-0 truncate">{dir.name}</span>
+          <span className="min-w-0 flex-1 truncate">{dir.name}</span>
+          {/* A folded folder still says it holds open conversations. */}
+          {closed.has(dir.path) && (
+            <ThreadsBadge
+              {...[...threads].reduce((sum, [path, c]) => (path.startsWith(`${dir.path}/`) ? { open: sum.open + c.open, total: sum.total + c.total } : sum), { open: 0, total: 0 })}
+            />
+          )}
         </button>,
         ...(closed.has(dir.path) ? [] : render(dir, depth + 1)),
       ]),
@@ -308,6 +402,7 @@ const FileTree = memo(function FileTree({
           >
             <StatusLetter status={file.status} />
             <span className={cx("min-w-0 flex-1 truncate", v && !active && "text-fg-3")}>{file.path.split("/").pop()}</span>
+            <ThreadsBadge {...(threads.get(file.path) ?? { open: 0, total: 0 })} onClick={() => onThreads(file.path)} />
             {v ? (
               <Check size={12} strokeWidth={2.5} className="text-ok" />
             ) : (
@@ -354,4 +449,33 @@ function fuzzy(text: string, query: string): boolean {
   let i = 0;
   for (const ch of text) if (ch === query[i]) i++;
   return i === query.length;
+}
+
+/**
+ * A file's (or folded folder's) comment threads as resolved/total: accent while any are
+ * open, a quiet check once all are resolved. Clicking it jumps to the first open one.
+ */
+function ThreadsBadge({ open, total, onClick }: { open: number; total: number; onClick?: () => void }) {
+  if (total === 0) return null;
+  const done = open === 0;
+  return (
+    <span
+      role={onClick ? "button" : undefined}
+      className={cx(
+        "inline-flex shrink-0 items-center gap-[3px] rounded-full px-1.5 py-[3px] text-[10.5px] font-medium leading-none tabular",
+        done ? "text-fg-3" : "bg-accent-soft text-accent",
+        onClick && "cursor-pointer hover:brightness-110",
+      )}
+      data-tip={done ? `All ${total} comment ${total === 1 ? "thread" : "threads"} resolved` : `${open} open · ${total - open} of ${total} resolved — click to jump`}
+      data-threads={`${total - open}/${total}`}
+      onClick={(e) => {
+        if (!onClick) return;
+        e.stopPropagation();
+        onClick();
+      }}
+    >
+      {done ? <Check size={10} strokeWidth={2.5} /> : <MessageSquare size={10} strokeWidth={2.25} />}
+      {total - open}/{total}
+    </span>
+  );
 }

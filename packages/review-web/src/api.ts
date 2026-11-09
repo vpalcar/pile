@@ -111,12 +111,16 @@ export interface InboxItem {
 }
 
 export interface InboxGroup {
+  /** Listed only when searching (other people's PRs): not enriched, not in the inbox. */
+  searchOnly?: boolean;
   id: "needs_review" | "mine" | "local" | "others";
   title: string;
   items: InboxItem[];
 }
 
 export interface Inbox {
+  /** GitHub's hourly API quota for your account, as last reported. */
+  quota?: { remaining: number; limit: number; resetAt: string | null } | null;
   groups: InboxGroup[];
   fetchedAt: string;
   /** Checks, reviews and sizes are still loading; ask again shortly. */
@@ -183,6 +187,8 @@ export interface InlineComment {
   createdAt: string;
   bodyHtml: string;
   inReplyTo: number | null;
+  /** The thread was marked resolved on GitHub. */
+  resolved: boolean;
   url: string;
 }
 
@@ -215,6 +221,10 @@ export interface Detail {
   createdAt: string | null;
   updatedAt: string | null;
   bodyHtml: string | null;
+  /** The description's markdown, for editing it. */
+  body: string | null;
+  /** The native GitHub stack the PR is in; null: the stack shown is inferred from branches. */
+  nativeStack: number | null;
   additions: number;
   deletions: number;
   stack: StackEntry[];
@@ -232,7 +242,9 @@ export interface Detail {
   files: DiffFile[];
   local: LocalState | null;
   /** Things the viewer can do. */
-  can: { review: boolean; comment: boolean; merge: boolean; draft: boolean };
+  can: { review: boolean; comment: boolean; merge: boolean; draft: boolean; edit: boolean };
+  /** Why the files couldn't be loaded (GitHub's REST limit), when they couldn't. */
+  filesUnavailable?: string;
   /** What merging from here would do; null for local branches and finished PRs. */
   merge: MergeInfo | null;
 }
@@ -275,6 +287,11 @@ export interface PRUpdate {
   /** The full set of labels the PR should have. */
   labels?: string[];
   draft?: boolean;
+  /** The new description, in markdown. */
+  body?: string;
+  /** Uploaded files the new body refers to as `./name`; gh uploads them with the body. */
+  attachments?: string[];
+  title?: string;
 }
 
 /** Re-runs one check (by its Actions job) or, without `jobId`, every failed one. */
@@ -303,3 +320,13 @@ export interface FileContent {
   ref: string;
   lines: string[];
 }
+
+/** An image or video waiting to be uploaded with a description or comment. */
+export interface Attachment {
+  id: string;
+  /** What the markdown refers to, as `./name`. */
+  name: string;
+  kind: "image" | "video";
+  size: number;
+}
+

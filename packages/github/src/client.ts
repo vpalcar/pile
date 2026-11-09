@@ -9,10 +9,25 @@ const REQUEST_TIMEOUT_MS = 20_000;
 /** REST API version pinned for every request (stacks and other recent endpoints need it). */
 export const GITHUB_API_VERSION = "2026-03-10";
 
+/** Octokit's own line per failed request: "GET /repos/... - 304 with id ... in 361ms". */
+const REQUEST_LOG = /^(GET|HEAD|POST|PUT|PATCH|DELETE) \S+ - \d{3} with id /;
+
 export function createOctokit(token: string): Octokit {
   return new Octokit({
     auth: token,
     userAgent: "pile-cli",
+    // Octokit prints every non-2xx response as an error, including the 304s that ETag
+    // caching relies on and errors pile already reports in its own words. Those lines
+    // are dropped; everything else still goes to the console.
+    log: {
+      debug: () => {},
+      info: () => {},
+      warn: console.warn,
+      error: (message: string, ...rest: unknown[]) => {
+        if (typeof message === "string" && REQUEST_LOG.test(message)) return;
+        console.error(message, ...rest);
+      },
+    },
     request: {
       fetch: (url: string | URL | Request, init?: RequestInit) =>
         fetch(url, { ...init, signal: init?.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS) }),

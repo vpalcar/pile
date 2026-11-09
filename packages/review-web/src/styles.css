@@ -29,6 +29,7 @@
   --border: rgba(255, 255, 255, 0.07);
   --border-2: rgba(255, 255, 255, 0.11);
   --border-3: rgba(255, 255, 255, 0.17);
+  --rail: rgba(255, 255, 255, 0.15);
   --text: #ededef;
   --text-2: #a1a1aa;
   --text-3: #71717a;
@@ -72,6 +73,7 @@
     --border: rgba(0, 0, 0, 0.075);
     --border-2: rgba(0, 0, 0, 0.11);
     --border-3: rgba(0, 0, 0, 0.17);
+    --rail: rgba(0, 0, 0, 0.15);
     --text: #18181b;
     --text-2: #52525b;
     --text-3: #80808a;
@@ -113,6 +115,7 @@
   --border: rgba(0, 0, 0, 0.075);
   --border-2: rgba(0, 0, 0, 0.11);
   --border-3: rgba(0, 0, 0, 0.17);
+  --rail: rgba(0, 0, 0, 0.15);
   --text: #18181b;
   --text-2: #52525b;
   --text-3: #80808a;
@@ -248,9 +251,12 @@
   .rail-last .rail-node::before { bottom: 50%; }
   .rail-dashed::before { background: linear-gradient(var(--border-3) 50%, transparent 50%) 0 0 / 1.5px 5px; }
   /* Stack rails drawn per row (see StackRail): straight lines and branch elbows. */
-  .rail-line { position: absolute; width: 1.5px; margin-left: -0.75px; background: var(--border-3); }
-  .rail-line-dashed { background: linear-gradient(var(--border-3) 50%, transparent 50%) 0 0 / 1.5px 5px; }
-  .rail-join { position: absolute; box-sizing: border-box; border: 0 solid var(--border-3); border-right-width: 1.5px; border-bottom-width: 1.5px; border-bottom-right-radius: 9px; }
+  /* 2px on whole-pixel lane centres: a fractional width lands on half pixels and the
+     browser rounds each line (and the corners) to a different weight. */
+  .rail-line { position: absolute; width: 2px; margin-left: -1px; background: var(--rail); }
+  .rail-line-dashed { background: linear-gradient(var(--rail) 50%, transparent 50%) 0 0 / 2px 5px; }
+  .rail-line-h { height: 2px; margin: -1px 0 0 0; }
+  .rail-corner { position: absolute; overflow: visible; fill: none; stroke: var(--rail); stroke-width: 2px; }
 
   /* GitHub-rendered markdown */
   .markdown { color: var(--text); line-height: 1.6; overflow-wrap: anywhere; }
@@ -273,6 +279,14 @@
   .markdown img { max-width: 100%; border-radius: 6px; display: inline; }
   .markdown details summary { cursor: pointer; color: var(--text-2); display: list-item; }
   .markdown details summary:hover { color: var(--text); }
+  /* Videos and GitHub's attachment box around them (summary with a camera icon, then the video). */
+  .markdown video { display: block; max-width: 100%; max-height: 520px; border-radius: 8px; background: #000; }
+  .markdown details.details-reset { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--surface-2); }
+  .markdown details.details-reset > summary { display: flex; align-items: center; gap: 6px; padding: 7px 12px; list-style: none; font-size: 12.5px; }
+  .markdown details.details-reset > summary::-webkit-details-marker { display: none; }
+  .markdown details.details-reset > summary svg { width: 14px; height: 14px; fill: currentColor; flex-shrink: 0; }
+  .markdown details.details-reset > summary .dropdown-caret { margin-left: auto; width: 0; height: 0; border: 4px solid transparent; border-top-color: currentColor; border-bottom: 0; }
+  .markdown details.details-reset > video { width: 100%; max-height: 520px; border-radius: 0; border-top: 1px solid var(--border); }
   .markdown hr { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
   .markdown .task-list-item { list-style: none; margin-left: -20px; }
   .markdown input[type="checkbox"] {
@@ -336,3 +350,8 @@
   :root:not([data-theme="dark"]) .diff-table .code span { color: var(--shiki-light); }
 }
 :root[data-theme="light"] .diff-table .code span { color: var(--shiki-light); }
+
+/* A comment thread you jumped to blinks once, so the eye lands on it. */
+@keyframes thread-flash { 0%, 60% { box-shadow: 0 0 0 2px var(--accent); } 100% { box-shadow: 0 0 0 2px transparent; } }
+.thread-flash .thread-box { animation: thread-flash 1.4s ease-out; }
+

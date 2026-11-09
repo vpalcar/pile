@@ -115,9 +115,15 @@ export async function startReviewServer(options: {
       if (!ref || !file) return send(res, 400, { error: "Missing ref or path", code: "BAD_REQUEST" });
       return send(res, 200, await service.file(ref, file));
     }
+    // An image or video for a description or comment: the raw file, its name in a header.
+    if (method === "POST" && path === "/attachments") {
+      const name = decodeURIComponent(String(req.headers["x-file-name"] ?? ""));
+      if (!name) return send(res, 400, { error: "Missing file name", code: "BAD_REQUEST" });
+      return send(res, 201, await service.addAttachment(name, req));
+    }
     if (method === "POST" && (match = path.match(/^\/pr\/(\d+)\/comments$/))) {
-      const body = (await readBody(req)) as { body?: string };
-      await service.comment(Number(match[1]), String(body.body ?? ""));
+      const body = (await readBody(req)) as { body?: string; attachments?: string[] };
+      await service.comment(Number(match[1]), String(body.body ?? ""), Array.isArray(body.attachments) ? body.attachments.map(String) : []);
       return send(res, 201, { ok: true });
     }
     if (method === "POST" && (match = path.match(/^\/pr\/(\d+)\/reviews$/))) {
@@ -138,6 +144,8 @@ export async function startReviewServer(options: {
     }
     if (method === "GET" && path === "/preferences") return send(res, 200, preferences.read());
     if (method === "PATCH" && path === "/preferences") return send(res, 200, preferences.write(await readBody(req)));
+    if (method === "GET" && path === "/search") return send(res, 200, await service.search(url.searchParams.get("q") ?? ""));
+    if (method === "GET" && path === "/usage") return send(res, 200, service.usage());
     if (method === "GET" && path === "/options") return send(res, 200, await service.options());
     if (method === "PATCH" && (match = path.match(/^\/pr\/(\d+)$/))) {
       return send(res, 200, await service.update(Number(match[1]), (await readBody(req)) as PRUpdate));
@@ -167,7 +175,7 @@ export async function startReviewServer(options: {
       ...(file.endsWith("index.html")
         ? {
             "content-security-policy":
-              "default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
+              "default-src 'self'; img-src 'self' https: data:; media-src 'self' https:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
           }
         : {}),
     });
