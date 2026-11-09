@@ -28,11 +28,13 @@ export async function cleanupMergedBranch(
         parent: newParent,
       });
 
-      // Update the child's PR base on GitHub (native stacks do this themselves)
-      if (retargetPRs && childRel.prNumber) {
+      // Update the child's PR base on GitHub (native stacks do this themselves). Pile may
+      // not know the PR's number (opened outside pile): look it up by branch.
+      const prNumber = retargetPRs ? (childRel.prNumber ?? (await github.prs.findByBranch(child).catch(() => null))?.number) : undefined;
+      if (prNumber) {
         try {
           await github.prs.update({
-            number: childRel.prNumber,
+            number: prNumber,
             base: newParent,
           });
         } catch {
@@ -40,7 +42,7 @@ export async function cleanupMergedBranch(
           if (newParent !== trunk) {
             try {
               await github.prs.update({
-                number: childRel.prNumber,
+                number: prNumber,
                 base: trunk,
               });
               pile.state.setBranchRelationship(child, {
