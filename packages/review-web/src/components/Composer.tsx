@@ -5,6 +5,8 @@ import { modKey } from "../lib/util";
 interface Props {
   placeholder: string;
   submitLabel: string;
+  /** Replaces the "Markdown supported" hint at the start of the footer. */
+  footerStart?: React.ReactNode;
   onSubmit: (body: string) => Promise<void> | void;
   onCancel?: () => void;
   autoFocus?: boolean;
@@ -20,7 +22,7 @@ interface Props {
   inputRef?: React.RefObject<HTMLTextAreaElement | null>;
 }
 
-export function Composer({ placeholder, submitLabel, onSubmit, onCancel, autoFocus, compact, inset, draftKey, inputRef }: Props) {
+export function Composer({ placeholder, submitLabel, footerStart, onSubmit, onCancel, autoFocus, compact, inset, draftKey, inputRef }: Props) {
   const [text, setText] = useState(() => (draftKey ? readDraft(draftKey) : ""));
   const [busy, setBusy] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -95,7 +97,7 @@ export function Composer({ placeholder, submitLabel, onSubmit, onCancel, autoFoc
       />
       {showFooter && (
         <div className="flex h-10 items-center gap-2 pl-3 pr-2 text-[11.5px] leading-none text-fg-3">
-          <span>Markdown supported</span>
+          {footerStart ?? <span>Markdown supported</span>}
           <span className="flex-1" />
           {onCancel && (
             <Button variant="ghost" size="sm" onMouseDown={(e) => e.preventDefault()} onClick={onCancel}>
