@@ -32,20 +32,41 @@ export function layoutTree(nodes: TreeNode[]): { rows: RailRow[]; lanes: number 
     children.set(parent, [...(children.get(parent) ?? []), node]);
   }
 
-  const placed: Array<{ id: string | null; lane: number; parent: string | null | undefined }> = [];
-  let lanes = 1;
+  // Each subtree gets a block of lanes as wide as it has leaves. Children's blocks sit
+  // side by side, the first child's in the parent's own lane, so a branch's own side
+  // branches always lie between it and any line passing by: lines never cross.
+  const kidsOf = new Map<string | null, TreeNode[]>();
   const seen = new Set<string>();
-  // A node's subtree is listed above it: later children (in new lanes) on top, then
-  // the first child in this lane, then the node itself.
-  const place = (id: string | null, lane: number, parent: string | null | undefined) => {
+  const collect = (id: string | null) => {
     const kids = (children.get(id) ?? []).filter((k) => !seen.has(k.id));
     kids.forEach((k) => seen.add(k.id));
-    const others = kids.slice(1).map((k) => ({ node: k, lane: lanes++ }));
-    for (const { node, lane: l } of others.reverse()) place(node.id, l, id);
+    kidsOf.set(id, kids);
+    kids.forEach((k) => collect(k.id));
+  };
+  collect(null);
+  const widths = new Map<string | null, number>();
+  const width = (id: string | null): number => {
+    if (!widths.has(id)) widths.set(id, Math.max(1, (kidsOf.get(id) ?? []).reduce((sum, k) => sum + width(k.id), 0)));
+    return widths.get(id)!;
+  };
+
+  const placed: Array<{ id: string | null; lane: number; parent: string | null | undefined }> = [];
+  // A node's subtree is listed above it: later children (further right) on top, then
+  // the first child in this lane, then the node itself.
+  const place = (id: string | null, lane: number, parent: string | null | undefined) => {
+    const kids = kidsOf.get(id) ?? [];
+    let offset = lane;
+    const lanesOf = kids.map((k) => {
+      const at = offset;
+      offset += width(k.id);
+      return at;
+    });
+    for (let i = kids.length - 1; i >= 1; i--) place(kids[i].id, lanesOf[i], id);
     if (kids[0]) place(kids[0].id, lane, id);
     placed.push({ id, lane, parent });
   };
   place(null, 0, undefined); // the trunk, at the bottom
+  const lanes = width(null);
 
   const rows: RailRow[] = placed.map((p) => ({ id: p.id, lane: p.lane, down: false, up: false, joins: [], through: [] }));
   const index = new Map(placed.map((p, i) => [p.id, i]));

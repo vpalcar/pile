@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { ChevronLeft, ChevronRight, CircleAlert, CircleHelp, Inbox as InboxIcon, Keyboard, KeyRound, Monitor, Moon, RefreshCw, Search, Settings, Sun } from "lucide-react";
-import type { InboxItem, Person } from "./api";
+import { ChevronLeft, ChevronRight, CircleAlert, CircleHelp, Gauge, Inbox as InboxIcon, Keyboard, KeyRound, Monitor, Moon, RefreshCw, Search, Settings, Sun } from "lucide-react";
+import type { Inbox, InboxItem, Person } from "./api";
 import { api, RequestError } from "./lib/client";
 import { keys, prefetchDetail, queryClient, refKey, useDetail, useInbox, usePreference, useSession } from "./lib/queries";
 import { modKey, navigate, sameRef, useRoute, useShortcuts } from "./lib/util";
@@ -89,6 +89,8 @@ function Shell() {
   useShortcuts(
     {
       "mod+k": () => setPalette((p) => !p),
+      // The quicker key for the same search.
+      "/": () => setPalette(true),
       "]": () => step(1),
       "[": () => step(-1),
       R: () => refresh(),
@@ -99,6 +101,12 @@ function Shell() {
     [items, index, refresh, route.ref, palette, shortcuts],
     { always: ["mod+k"] },
   );
+
+  // The tab says where you are: the inbox, or the pull request's title.
+  const pageTitle = route.ref ? (detail.data?.title ?? current?.title ?? (route.ref.kind === "branch" ? route.ref.name : `#${route.ref.number}`)) : "Review inbox";
+  useEffect(() => {
+    document.title = pageTitle;
+  }, [pageTitle]);
 
   if (!api.hasToken()) {
     return (
@@ -131,10 +139,7 @@ function Shell() {
       {/* Left: where you are. Middle: which repo. Right: this page's actions, then app tools. */}
       <nav className="relative z-30 grid h-[var(--topbar-h)] shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 border-b border-line bg-bg/80 px-3 backdrop-blur-xl backdrop-saturate-150">
         <div className="flex min-w-0 items-center gap-1">
-          <button className="grid size-7 shrink-0 place-items-center rounded-lg hover:bg-hover" onClick={goInbox} aria-label="Inbox" data-tip="Inbox" data-kbd="g">
-            <BrandMark />
-          </button>
-          <button className={cx(navLink, !route.ref && "bg-active text-fg")} onClick={goInbox}>
+          <button className={cx(navLink, !route.ref && "bg-active text-fg")} onClick={goInbox} data-tip="Inbox" data-kbd="g">
             <InboxIcon size={14} />
             Inbox
             {waiting > 0 && <span className="grid h-[18px] min-w-[18px] place-items-center rounded-full bg-accent px-1.5 text-[11px] font-semibold leading-none text-white tabular">{waiting}</span>}
@@ -189,7 +194,7 @@ function Shell() {
           )}
           <span id="topbar-actions" className="contents" />
           {route.ref && <span className="mx-1.5 h-[18px] w-px shrink-0 bg-line-2" />}
-          <Button variant="ghost" icon onClick={() => setPalette(true)} aria-label="Search" data-tip="Search" data-kbd={`${modKey} K`}>
+          <Button variant="ghost" icon onClick={() => setPalette(true)} aria-label="Search" data-tip="Search" data-kbd="/">
             <Search size={15} />
           </Button>
           <Button variant="ghost" icon aria-label="Refresh" data-tip="Refresh" data-kbd="⇧ R" onClick={refresh} className={refreshing ? "[&_svg]:animate-spin" : ""}>
@@ -200,11 +205,12 @@ function Shell() {
         {refreshing && <div className="refreshing top-full" />}
       </nav>
 
+      <QuotaBanner quota={inbox.data?.quota ?? null} errors={[inbox.error, detail.error]} />
       <main className="relative flex-1 overflow-y-auto overflow-x-hidden scroll-smooth" ref={setScrollEl}>
         <div className="glow pointer-events-none absolute inset-x-0 top-0 h-[440px]" aria-hidden />
         <div className="relative">
           {!route.ref ? (
-            <InboxPage inbox={inbox.data} session={session.data} loading={inbox.isPending} />
+            <InboxPage inbox={inbox.data} session={session.data} loading={inbox.isPending} onSearch={() => setPalette(true)} />
           ) : detail.data ? (
             <DetailView key={detailKey} detail={detail.data} scrollEl={scrollEl} initialFile={route.file} trunk={session.data?.trunk ?? "main"} inboxItems={items} currentBranch={session.data?.currentBranch ?? null} />
           ) : detail.error ? (
@@ -296,15 +302,29 @@ function AccountMenu({ viewer, theme, onTheme, onShortcuts }: { viewer: Person |
   );
 }
 
-function BrandMark() {
+/**
+ * GitHub allows 5,000 API requests an hour per account, shared by everything signed
+ * in as you. Says so when pile is close to the limit, or past it.
+ */
+function QuotaBanner({ quota, errors }: { quota: Inbox["quota"]; errors: Array<Error | null | undefined> }) {
+  const limited = errors.find((e): e is RequestError => e instanceof RequestError && e.body.code === "RATE_LIMITED");
+  const low = quota && quota.remaining < Math.max(300, quota.limit * 0.1);
+  if (!limited && !low) return null;
+  const reset = quota?.resetAt ? new Date(quota.resetAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : null;
   return (
-    <span className="grid size-[22px] shrink-0 place-items-center rounded-[7px] bg-gradient-to-br from-accent to-merged shadow-[inset_0_0_0_1px_rgba(255,255,255,.12),0_4px_14px_-4px_var(--accent)]">
-      <span className="flex flex-col gap-[2px]">
-        <i className="block h-[2px] w-2.5 rounded-full bg-white/40" />
-        <i className="block h-[2px] w-2.5 rounded-full bg-white/70" />
-        <i className="block h-[2px] w-2.5 rounded-full bg-white" />
-      </span>
-    </span>
+    <div className="flex min-h-9 shrink-0 items-center justify-center gap-2 border-b border-warn/25 bg-warn-soft px-4 text-xs text-fg" role="status" data-quota-banner>
+      <Gauge size={14} className="shrink-0 text-warn" />
+      {limited ? (
+        <span>
+          {limited.message}. Showing what pile already has. <span className="text-fg-3">{limited.body.hint}</span>
+        </span>
+      ) : (
+        <span>
+          GitHub API: {quota!.remaining.toLocaleString()} of {quota!.limit.toLocaleString()} requests left this hour{reset ? ` (resets ${reset})` : ""}. pile is
+          refreshing less often until then.
+        </span>
+      )}
+    </div>
   );
 }
 

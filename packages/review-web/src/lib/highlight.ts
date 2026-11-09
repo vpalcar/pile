@@ -133,3 +133,13 @@ export async function highlightLines(lines: string[], lang: string | null): Prom
     return null;
   }
 }
+
+/**
+ * Tokens for separate blocks of one file (a diff's hunks), each highlighted on its own:
+ * the lines between them aren't there, so state like an open comment must not carry
+ * across (a comment closed in a hidden gap would color everything below it).
+ */
+export async function highlightBlocks(blocks: string[][], lang: string | null): Promise<Array<Token[][] | null>> {
+  return Promise.all(blocks.map((lines) => highlightLines(lines, lang)));
+}
+

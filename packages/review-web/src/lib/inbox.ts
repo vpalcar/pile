@@ -1,4 +1,4 @@
-import type { Inbox } from "../api";
+import type { Inbox, InboxItem } from "../api";
 
 /**
  * The quick inbox has no checks, reviews or sizes yet. Items already known keep
@@ -18,5 +18,21 @@ export function keepKnownSignals(inbox: Inbox, previous: Inbox | undefined): Inb
         return { ...item, checks, reviewDecision, additions, deletions, comments, stack: item.stack ?? stack };
       }),
     })),
+  };
+}
+
+/**
+ * After you review a PR, GitHub no longer lists you as a requested reviewer, so it
+ * leaves "Needs your review" at once instead of after the next full inbox.
+ */
+export function afterReview(inbox: Inbox, number: number, verdict: InboxItem["reviewDecision"]): Inbox {
+  const isIt = (i: InboxItem) => i.ref.kind === "pr" && i.ref.number === number;
+  const reviewed = inbox.groups.find((g) => g.id === "needs_review")?.items.find(isIt);
+  return {
+    ...inbox,
+    groups: inbox.groups.map((g) => {
+      const items = g.items.filter((i) => !(g.id === "needs_review" && isIt(i))).map((i) => (isIt(i) ? { ...i, reviewDecision: verdict } : i));
+      return g.id === "others" && reviewed ? { ...g, items: [{ ...reviewed, reviewDecision: verdict }, ...items] } : { ...g, items };
+    }),
   };
 }

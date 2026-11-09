@@ -61,7 +61,7 @@ const searchTree = [
   [144, "Filters on the search page", "search/ui-filters", "search/ui", 3, "approved"],
   [145, "Empty and error states for search", "search/ui-empty", "search/ui", 3, "review_required"],
 ].map(([number, title, branch, base, index, reviewDecision]) =>
-  pr(number, title, branch, { author: person("carol"), base, reviewDecision, stack: { index, size: 6, nativeStack: null }, updatedAt: ago(90 + number) }),
+  pr(number, title, branch, { author: VIEWER, base, reviewDecision, stack: { index, size: 6, nativeStack: null }, updatedAt: ago(90 + number) }),
 );
 
 const local = (name, title, base, extra = {}) => ({
@@ -131,6 +131,7 @@ export const inbox = {
           deletions: 9311,
         }),
         ...longStack,
+        ...searchTree,
       ],
     },
     {
@@ -145,10 +146,10 @@ export const inbox = {
     {
       id: "others",
       title: "Other open pull requests",
+      searchOnly: true,
       items: [
         pr(130, "Dark mode for the dashboard", "ui/dark-mode", { author: person("dave"), reviewDecision: null, checks: checks("none", 0, 0, 0) }),
         pr(131, "Speed up CI with remote caching", "ci/cache", { author: person("erin"), reviewDecision: "commented", comments: 3 }),
-        ...searchTree,
       ],
     },
   ],
@@ -237,7 +238,9 @@ const BODY = `<p>Adds a token-bucket rate limiter in front of the public API.</p
 <table><thead><tr><th>Plan</th><th>Requests / min</th></tr></thead><tbody><tr><td>Free</td><td>60</td></tr><tr><td>Pro</td><td>600</td></tr></tbody></table>
 <ul class="contains-task-list"><li class="task-list-item"><input type="checkbox" checked disabled> Unit tests</li><li class="task-list-item"><input type="checkbox" disabled> Load test in staging</li></ul>
 <blockquote><p>Rolling out behind a flag first.</p></blockquote>
-<details><summary>Benchmark</summary><pre><code>p50 1.2ms  p99 4.8ms</code></pre></details>`;
+<details><summary>Benchmark</summary><pre><code>p50 1.2ms  p99 4.8ms</code></pre></details>
+<details open class="details-reset border rounded-2"><summary class="px-3 py-2"><svg aria-hidden="true" height="16" viewBox="0 0 16 16" width="16" class="octicon octicon-device-camera-video"><path d="M2 3h8a2 2 0 0 1 2 2v1l3-2v8l-3-2v1a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"></path></svg><span aria-label="Video description rate-limit.mp4" class="m-1">rate-limit.mp4</span><span class="dropdown-caret"></span></summary><video src="https://example.com/rate-limit.mp4" controls="controls" muted="muted" class="d-block rounded-bottom-2 border-top width-fit" style="max-height:640px; min-height: 200px"></video></details>`;
+const BODY_MD = "Adds a token-bucket rate limiter in front of the public API.\n\n## What changes\n\n- `limit()` builds a rule from a window and a maximum\n";
 
 const commit = (sha, message, minutes) => ({ id: `commit-${sha}`, kind: "commit", author: person("alice"), createdAt: ago(minutes), bodyHtml: null, sha: sha.padEnd(40, "0"), message, url: `https://github.com/acme/web/commit/${sha}` });
 
@@ -308,6 +311,8 @@ function buildDetail(number) {
     createdAt: ago(600),
     updatedAt: item.updatedAt,
     bodyHtml: null,
+    body: null,
+    nativeStack: item.stack?.nativeStack ?? null,
     additions: item.additions ?? 0,
     deletions: item.deletions ?? 0,
     stack: [],
@@ -323,7 +328,7 @@ function buildDetail(number) {
     reviewDecision: item.reviewDecision,
     files: [files[1]],
     local: item.local,
-    can: { review: item.author?.login !== VIEWER.login, comment: true, merge: true, draft: item.author?.login === VIEWER.login },
+    can: { review: item.author?.login !== VIEWER.login, comment: true, merge: true, draft: item.author?.login === VIEWER.login, edit: true },
     merge: null,
   };
   const stack = [longStack, searchTree].find((s) => s.some((p) => p.ref.number === number));
@@ -345,6 +350,7 @@ function buildDetail(number) {
     return {
       ...base,
       bodyHtml: BODY,
+      body: BODY_MD,
       stack: [
         { ref: { kind: "pr", number: 101 }, title: "Rate limit the public API", branch: "api/rate-limit", base: "main", state: "open", reviewDecision: "review_required", isCurrent: true },
         { ref: { kind: "pr", number: 102 }, title: "Expose rate-limit headers to clients", branch: "api/rate-limit-headers", base: "api/rate-limit", state: "open", reviewDecision: "review_required", isCurrent: false },
@@ -361,9 +367,13 @@ function buildDetail(number) {
         { id: "review-3", kind: "review", author: person("grace"), createdAt: ago(60), bodyHtml: "<p>Looks good, one nit.</p>", reviewState: "commented", url: "https://github.com/acme/web/pull/101#r3", inlineCount: 1 },
       ],
       inlineComments: [
-        { id: 9001, path: "src/api/limit.ts", line: 23, side: "RIGHT", author: person("erin"), createdAt: ago(240), bodyHtml: "<p>This refills on every request. Should be per window.</p>", inReplyTo: null, url: "https://github.com/acme/web/pull/101#d1" },
-        { id: 9002, path: "src/api/limit.ts", line: 23, side: "RIGHT", author: person("alice"), createdAt: ago(200), bodyHtml: "<p>Fixed in e5f6a7b.</p>", inReplyTo: 9001, url: "https://github.com/acme/web/pull/101#d2" },
-        { id: 9003, path: "src/api/limit.ts", line: 22, side: "LEFT", author: person("grace"), createdAt: ago(60), bodyHtml: "<p>Nit: keep the old name in a comment?</p>", inReplyTo: null, url: "https://github.com/acme/web/pull/101#d3" },
+        { id: 9001, path: "src/api/limit.ts", line: 23, side: "RIGHT", author: person("erin"), createdAt: ago(240), bodyHtml: "<p>This refills on every request. Should be per window.</p>", inReplyTo: null, resolved: false, url: "https://github.com/acme/web/pull/101#d1" },
+        { id: 9002, path: "src/api/limit.ts", line: 23, side: "RIGHT", author: person("alice"), createdAt: ago(200), bodyHtml: "<p>Fixed in e5f6a7b.</p>", inReplyTo: 9001, resolved: false, url: "https://github.com/acme/web/pull/101#d2" },
+        { id: 9003, path: "src/api/limit.ts", line: 22, side: "LEFT", author: person("grace"), createdAt: ago(60), bodyHtml: "<p>Nit: keep the old name in a comment?</p>", inReplyTo: null, resolved: true, url: "https://github.com/acme/web/pull/101#d3" },
+        // On code that changed since: line 400 isn't in the diff any more.
+        { id: 9004, path: "src/api/limit.ts", line: 400, side: "RIGHT", author: person("dave"), createdAt: ago(500), bodyHtml: "<p>Should this log when a key is limited?</p>", inReplyTo: null, resolved: false, url: "https://github.com/acme/web/pull/101#d4" },
+        // In the last file, far down the page.
+        { id: 9005, path: "README.md", line: 3, side: "RIGHT", author: person("erin"), createdAt: ago(100), bodyHtml: "<p>Link the docs page here.</p>", inReplyTo: null, resolved: false, url: "https://github.com/acme/web/pull/101#d5" },
       ],
       checks: [
         { name: "typecheck", jobId: 7001, state: "failure", summary: "2 errors in src/api/limit.ts", url: "https://example.com/ci/1", durationSeconds: 42 },
@@ -391,6 +401,16 @@ function buildDetail(number) {
     };
   }
   if (number === 110) return { ...base, bodyHtml: null, files: [files[0]], timeline: [], checks: [], checksSummary: null, reviewers: [{ person: person("frank"), state: "approved" }] };
+  // A big repo's CI: dozens of checks, most passing or skipped.
+  if (number === 131) {
+    const many = [
+      { name: "typescript / TypeScript apps check", state: "failure", summary: "3 errors", url: null, durationSeconds: 138, jobId: 8001 },
+      ...["e2e / chrome", "e2e / safari"].map((name, i) => ({ name, state: "pending", summary: null, url: null, durationSeconds: null, jobId: 8100 + i })),
+      ...Array.from({ length: 18 }, (_, i) => ({ name: `conventions / check ${i + 1}`, state: "success", summary: null, url: null, durationSeconds: 8 + i, jobId: 8200 + i })),
+      ...Array.from({ length: 26 }, (_, i) => ({ name: `deploy / preview ${i + 1}`, state: "neutral", summary: "Skipped", url: null, durationSeconds: null, jobId: null })),
+    ];
+    return { ...base, checks: many, checksSummary: { state: "failure", total: 47, passed: 18, failed: 1, pending: 2 } };
+  }
   if (number === 113) return { ...base, bodyHtml: "<p>Mechanical upgrade.</p>", files: [files[5], files[6]] };
   return base;
 }
@@ -412,6 +432,7 @@ export function branchDetail(name) {
     createdAt: ago(60),
     updatedAt: item.updatedAt,
     bodyHtml: null,
+    nativeStack: null,
     additions: item.additions,
     deletions: item.deletions,
     stack:
@@ -433,7 +454,7 @@ export function branchDetail(name) {
     reviewDecision: null,
     files: name === "wip" ? [] : [files[1], files[6]],
     local: item.local,
-    can: { review: false, comment: false, merge: false },
+    can: { review: false, comment: false, merge: false, draft: false, edit: false },
   };
 }
 
