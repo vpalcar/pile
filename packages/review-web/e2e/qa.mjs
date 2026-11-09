@@ -134,7 +134,7 @@ await check("greets the viewer and summarizes", async () => {
 });
 await check("tabs show counts per group", async () => {
   const tabs = await page.locator("[role=tab]").allInnerTexts();
-  expect(tabs.join("|").replace(/\s+/g, " ") === "All 20|Needs review 3|Yours 12|Local 3|Others 2".replace(/\s+/g, " ").replace(/\|/g, "|"), tabs.join(" | "));
+  expect(tabs.join("|").replace(/\s+/g, " ") === "All 26|Needs review 3|Yours 12|Local 3|Others 8".replace(/\s+/g, " ").replace(/\|/g, "|"), tabs.join(" | "));
 });
 await check("every row shows its readiness", async () => {
   const status = async (id) => (await page.locator(`[data-row="${id}"]`).innerText()).replace(/\s+/g, " ");
@@ -156,8 +156,11 @@ await check("every row shows its readiness", async () => {
   }
 });
 await check("every column lines up across stacked and single rows", async () => {
+  // Diverging stacks widen the rail, which moves only their titles; the rest lines up.
   const columns = await page.locator("[data-row]").evaluateAll((rows) =>
-    [0, 1, 6].map((i) => [...new Set(rows.map((r) => Math.round(r.children[i].getBoundingClientRect().left)))]),
+    [0, 1, 6].map((i) => [
+      ...new Set(rows.filter((r) => i !== 1 || r.closest("[data-stack-lanes]")?.getAttribute("data-stack-lanes") !== "2" && r.closest("[data-stack-lanes]")?.getAttribute("data-stack-lanes") !== "3").map((r) => Math.round(r.children[i].getBoundingClientRect().left))),
+    ]),
   );
   expect(columns.every((xs) => xs.length === 1), `x positions per column: ${JSON.stringify(columns)}`);
 });
@@ -197,6 +200,7 @@ await check("filters with 1–5 and shows only that group", async () => {
   await page.keyboard.press("1");
 });
 await check("search filters by title, branch, author and number", async () => {
+  const before = await count("[data-row]");
   await page.keyboard.press("/");
   await page.keyboard.type("rate-limit");
   expect((await count("[data-row]")) === 2, `rows for "rate-limit": ${await count("[data-row]")}`);
@@ -205,12 +209,12 @@ await check("search filters by title, branch, author and number", async () => {
   await page.locator("input[placeholder^='Filter by']").fill("#103");
   expect((await count("[data-row]")) === 1, "#103 by number");
   await page.locator("input[placeholder^='Filter by']").fill("carol");
-  expect((await count("[data-row]")) === 1, "by author");
+  expect((await count("[data-row]")) === 7, `by author: ${await count("[data-row]")}`); // #103 and her 6-PR search stack
   await page.locator("input[placeholder^='Filter by']").fill("zzzz");
   await page.getByText("No pull requests or branches match").waitFor();
   await shot("search no match");
   await page.locator("input[placeholder^='Filter by']").press("Escape");
-  expect((await count("[data-row]")) === 20, "cleared");
+  expect((await count("[data-row]")) === before, "cleared");
 });
 await check("j / k move the selection, Enter opens it", async () => {
   await page.locator("body").click({ position: { x: 5, y: 300 } });
@@ -237,31 +241,72 @@ log("\nNavigation bar");
 await check("inbox badge counts what waits for you", async () => {
   expect((await page.locator("nav button", { hasText: "Inbox" }).innerText()).includes("3"), "badge 3");
 });
-await check("opening a PR shows a breadcrumb and position", async () => {
+await check("navbar: Inbox › branch on the left, repo in the middle, actions and tools on the right", async () => {
   await page.click('[data-row="pr-101"]');
   await detailReady();
-  const nav = (await text("nav")).replace(/\s+/g, " ");
-  expect(nav.includes("#101") && nav.includes("Rate limit the public API") && nav.includes("1 of 20"), nav);
-  expect(await page.locator("nav button[data-tip=Previous]").isDisabled(), "previous disabled on the first item");
+  expect((await text("nav [data-breadcrumb]")) === "api/rate-limit", await text("nav [data-breadcrumb]"));
+  expect((await text("nav [data-repo]")).replace(/\s+/g, "") === "acme/web", "repo name");
+  const nav = await page.locator("nav").boundingBox();
+  const repo = await page.locator("nav [data-repo]").boundingBox();
+  expect(Math.abs(repo.x + repo.width / 2 - (nav.x + nav.width / 2)) < 2, "repo name centred");
+  // Right side, in order: pager, Review, search, refresh, account.
+  const xs = await Promise.all(
+    ["nav button[aria-label=Next]", "nav button[data-tip='Submit a review']", "nav button[aria-label=Search]", "nav button[aria-label=Refresh]", "nav button[aria-label='Account and settings']"].map(
+      async (s) => (await page.locator(s).boundingBox()).x,
+    ),
+  );
+  expect(xs.every((x, i) => i === 0 || x > xs[i - 1]), `order ${xs.map(Math.round)}`);
+  // The repo name is the bar's one link to GitHub: the repo's default branch.
+  expect((await count("nav a")) === 1 && (await page.locator("nav a[data-repo]").getAttribute("href")) === "https://github.com/acme/web", "repo link");
+  expect((await text("nav")).includes("2 of 26"), "position: stacks are listed top first, so #102 comes before #101");
+  expect(!(await page.locator("nav button[data-tip=Previous]").isDisabled()), "previous enabled: #102 is listed above #101");
   await shot("breadcrumb");
 });
 await check("] and [ step through items", async () => {
-  await page.keyboard.press("]");
-  await page.waitForFunction(() => location.hash.includes("/pr/102"));
+  // The pager follows the inbox as drawn: #102 sits above #101 in their stack.
   await page.keyboard.press("[");
+  await page.waitForFunction(() => location.hash.includes("/pr/102"));
+  await page.keyboard.press("]");
   await page.waitForFunction(() => location.hash.includes("/pr/101"));
 });
-await check("GitHub link points at the PR", async () => {
-  expect((await page.locator("nav a", { hasText: "GitHub" }).getAttribute("href")) === "https://github.com/acme/web/pull/101", "href");
+await check("Open on GitHub lives in the status card's menu", async () => {
+  await page.locator("[data-status-card]").getByRole("button", { name: "More actions" }).click();
+  const link = page.getByRole("menuitem", { name: /Open on GitHub/ });
+  expect((await link.getAttribute("href")) === "https://github.com/acme/web/pull/101", "href");
+  await shot("status menu");
+  await page.keyboard.press("Escape");
 });
-await check("theme toggle cycles system → dark → light → system", async () => {
-  const button = page.locator("nav button[data-tip^='Theme']");
+await check("search opens the palette; the account menu holds the theme", async () => {
+  await page.click("nav button[aria-label=Search]");
+  await page.locator(".palette input").waitFor();
+  await page.keyboard.press("Escape");
+  await page.click("nav button[aria-label='Account and settings']");
+  const menu = page.getByRole("menu");
+  expect((await menu.innerText()).includes("you"), "shows who you are");
+  await shot("account menu");
   const themes = [];
-  for (let i = 0; i < 3; i++) {
-    await button.click();
+  for (const name of ["Dark", "Light", "System"]) {
+    await menu.getByRole("radio", { name }).click();
+    await page.waitForFunction((n) => (document.documentElement.dataset.theme ?? "system") === n.toLowerCase(), name);
     themes.push(await page.evaluate(() => document.documentElement.dataset.theme ?? "system"));
   }
   expect(themes.join(",") === "dark,light,system", themes.join(","));
+  await page.keyboard.press("Escape");
+  expect((await count("[role=menu]")) === 0, "closes with Escape");
+});
+await check("the theme is saved by pile, so it survives a reload and a new port", async () => {
+  await page.click("nav button[aria-label='Account and settings']");
+  await page.getByRole("menu").getByRole("radio", { name: "Light" }).click();
+  await page.waitForTimeout(300);
+  const saved = await fetch(`${server.url}/api/preferences`, { headers: { "x-pile-token": TOKEN } }).then((r) => r.json());
+  expect(saved.theme === "light", JSON.stringify(saved));
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  await page.waitForSelector("[data-page]");
+  expect((await page.evaluate(() => document.documentElement.dataset.theme)) === "light", "light after reload");
+  await page.click("nav button[aria-label='Account and settings']");
+  await page.getByRole("menu").getByRole("radio", { name: "System" }).click();
+  await page.keyboard.press("Escape");
 });
 await check("refresh re-requests data", async () => {
   await page.click("nav button[data-tip=Refresh]");
@@ -538,6 +583,33 @@ await check("pending comments can be removed, and are sent with the review", asy
   const last = (await calls()).at(-1);
   expect(last.comments?.length === 1 && last.comments[0].path === "src/api/limit.ts" && last.comments[0].side === "RIGHT", JSON.stringify(last));
 });
+await check("old code takes comments too: unchanged and removed lines, in split view", async () => {
+  const file = page.locator('.file[data-path="src/api/limit.ts"]');
+  for (const [text, body] of [
+    ["rule25 = limit", "The old name read better."],
+    ["removed = true", "Why drop this?"],
+  ]) {
+    const row = file.locator("tr", { hasText: text }).first();
+    await row.locator("td.code").first().hover();
+    const plus = row.locator("button.add-comment:visible");
+    expect((await plus.count()) === 1, `one + on the old side of "${text}"`);
+    await plus.click();
+    await page.keyboard.type(body);
+    await page.keyboard.press("Meta+Enter");
+    await file.locator("tr.split-thread", { hasText: body }).waitFor();
+  }
+  // Revealed context is outside the diff: GitHub would reject comments there.
+  const revealed = file.locator("tr", { hasText: "rule3 = limit" }).first();
+  await revealed.locator("td.code").last().hover();
+  expect((await revealed.locator("button.add-comment:visible").count()) === 0, "no + on expanded lines");
+  await page.click("nav button[data-tip='Submit a review']");
+  await page.getByRole("radio", { name: /Comment/ }).click();
+  await page.getByText("Includes 2 inline comments").waitFor();
+  await page.keyboard.press("Meta+Enter");
+  await toast("Reviewed #101");
+  const last = (await calls()).at(-1);
+  expect(last.comments?.length === 2 && last.comments.every((c) => c.side === "LEFT"), JSON.stringify(last.comments));
+});
 await check("j / k move between files; v marks viewed and advances", async () => {
   await page.locator("body").click({ position: { x: 5, y: 500 } });
   const first = await page.locator(".file.border-line-3").getAttribute("data-path");
@@ -561,10 +633,12 @@ await check("Viewed button toggles, tree shows a check", async () => {
 });
 await check("s switches split ↔ unified, w wraps, t hides the tree", async () => {
   await page.keyboard.press("s");
+  await page.waitForFunction(() => document.querySelectorAll(".diff-table.split").length === 0, null, { timeout: 2000 }).catch(() => {});
   expect((await count(".diff-table.split")) === 0, "unified");
   await page.locator('.file[data-path="src/api/limit.ts"]').scrollIntoViewIfNeeded();
   await shot("unified");
   await page.keyboard.press("s");
+  await page.waitForSelector(".diff-table.split", { timeout: 2000 }).catch(() => {});
   expect((await count(".diff-table.split")) > 0, "split again");
   await page.keyboard.press("w");
   await page.keyboard.press("w");
@@ -806,12 +880,92 @@ await check("draft → ready for review, and back", async () => {
   await rail().getByRole("button", { name: "Ready for review" }).click();
   await toast("#112 is ready for review");
   expect((await lastCall("update")).draft === false, "draft false sent");
-  await rail().getByRole("button", { name: "To draft" }).waitFor();
-  expect(!(await rail().getByRole("button", { name: "Ready for review" }).isVisible()), "ready button gone");
-  await rail().getByRole("button", { name: "To draft" }).click();
+  await rail().getByRole("button", { name: "Ready for review" }).waitFor({ state: "detached" });
+  await rail().getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Convert to draft" }).click();
   await toast("#112 is a draft again");
   expect((await lastCall("update")).draft === true, "draft true sent");
   await rail().getByRole("button", { name: "Ready for review" }).waitFor();
+});
+await check("someone else's PR can't be turned into a draft", async () => {
+  await open("#/pr/101");
+  await detailReady();
+  await rail().getByRole("button", { name: "More actions" }).click();
+  expect((await page.getByRole("menuitem", { name: "Convert to draft" }).count()) === 0, "no draft option on alice's PR");
+  await page.keyboard.press("Escape");
+});
+await check("merge: blocked PRs say why and can't be merged", async () => {
+  const card = page.locator("[data-status-card]");
+  const button = card.getByRole("button", { name: /^Merge #101/ });
+  expect(await button.isDisabled(), "disabled");
+  const why = await card.getByRole("list", { name: "What blocks merging" }).innerText();
+  expect(why.includes("CI checks failing (1/5 failed)") && why.includes("Changes requested"), why);
+  await shot("merge blocked");
+});
+await check("merge: one PR, after confirming", async () => {
+  await open("#/pr/120");
+  await detailReady();
+  const card = page.locator("[data-status-card]");
+  await card.getByRole("button", { name: "Merge #120" }).click();
+  expect((await card.innerText()).includes("Squash and merge #120 into main?"), await card.innerText());
+  await shot("merge confirm");
+  await card.getByRole("button", { name: "Cancel" }).click();
+  expect((await calls()).every((c) => c.type !== "merge"), "cancel sends nothing");
+  await card.getByRole("button", { name: "Merge #120" }).click();
+  await card.getByRole("group", { name: "Confirm merge" }).getByRole("button", { name: "Merge" }).click();
+  await toast("Merged #120");
+  expect(JSON.stringify(await lastCall("merge")) === JSON.stringify({ type: "merge", pr: 120, stack: false }), JSON.stringify(await lastCall("merge")));
+  await setState("reset=1");
+});
+await check("merge: the stack up to a PR, offered when the PR isn't on main", async () => {
+  await open("#/pr/122");
+  await detailReady();
+  const card = page.locator("[data-status-card]");
+  expect((await card.getByRole("button", { name: "Merge options" }).count()) === 0, "only one option: it's based on step 2");
+  await card.getByRole("button", { name: "Merge stack (3)" }).click();
+  await card.getByRole("group", { name: "Confirm merge" }).getByRole("button", { name: "Merge" }).click();
+  await toast("Merged #120, #121, #122");
+  expect((await lastCall("merge")).stack === true, "stack sent");
+  await page.locator("[data-status-card]", { hasText: "Merged" }).waitFor();
+  await setState("reset=1");
+});
+await check("merge: higher up, the stack is blocked by the PRs below", async () => {
+  await open("#/pr/125");
+  await detailReady();
+  const why = await page.locator("[data-status-card]").getByRole("list", { name: "What blocks merging" }).innerText();
+  expect(why.includes("#123: Changes requested by reviewer"), why);
+});
+await check("diverging stack in the inbox: one card, every branch on its own lane", async () => {
+  await open();
+  const card = page.locator("div.rounded-\\[14px\\]", { hasText: "Index documents for search" });
+  const header = (await card.innerText()).replace(/\s+/g, " ");
+  expect(header.includes("Stack of 6 on main · 3 branches"), header.slice(0, 80));
+  const order = await card.locator("[data-row]").evaluateAll((rows) => rows.map((r) => r.dataset.row));
+  expect(order.join(",") === "pr-145,pr-144,pr-142,pr-143,pr-141,pr-140", order.join(","));
+  expect((await card.locator(".rail-join").count()) === 2, "two branch points");
+  await card.scrollIntoViewIfNeeded();
+  await card.screenshot({ path: join(OUT, `${String(++shots).padStart(3, "0")} editing - diverging inbox.png`) });
+});
+await check("diverging stack on a PR page: the whole tree, the current PR marked", async () => {
+  await open("#/pr/142");
+  await detailReady();
+  const section = page.locator("[data-stack-lanes]").first();
+  expect((await section.getAttribute("data-stack-lanes")) === "3", "three lanes");
+  const text = (await page.locator("[data-page=detail]").innerText()).replace(/\s+/g, " ");
+  expect(text.includes("Stack 6 PRs · 3 branches"), text.slice(0, 200));
+  const entries = await section.locator("[data-stack-entry]").evaluateAll((rows) => rows.map((r) => r.dataset.stackEntry));
+  expect(entries.length === 6, entries.join(","));
+  await section.screenshot({ path: join(OUT, `${String(++shots).padStart(3, "0")} editing - diverging stack.png`) });
+});
+await check("diverging stack: merging up to a PR takes only its own branch, not its siblings", async () => {
+  await open("#/pr/144");
+  await detailReady();
+  const card = page.locator("[data-status-card]");
+  await card.getByRole("button", { name: "Merge stack (3)" }).click();
+  expect((await card.innerText()).includes("Squash and merge 3 PRs"), await card.innerText());
+  await card.getByRole("group", { name: "Confirm merge" }).getByRole("button", { name: "Merge" }).click();
+  await toast("Merged #140, #142, #144");
+  await setState("reset=1");
 });
 await check("local branches have nothing to edit", async () => {
   await open("#/branch/spike%2Fparser-errors");

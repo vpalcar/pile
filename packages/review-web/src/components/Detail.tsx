@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, ArrowRight, Check, ChevronDown, CircleAlert, Copy, ExternalLink, Eye, Layers, MessageSquare, Pencil, PencilLine, RotateCw, Tag, UploadCloud, UserPlus } from "lucide-react";
+import { AlertTriangle, ArrowRight, Check, ChevronDown, CircleAlert, Copy, ExternalLink, Eye, GitMerge, Layers, MessageSquare, MoreHorizontal, Pencil, PencilLine, RotateCw, Tag, UploadCloud, UserPlus } from "lucide-react";
 import type { CheckRun, Detail as DetailData, InboxItem, ItemRef, PRUpdate, ReviewRequest, StackEntry, TimelineEntry } from "../api";
 import { useMutation } from "@tanstack/react-query";
 import { api } from "../lib/client";
@@ -12,6 +12,8 @@ import { FilesPanel } from "./FilesPanel";
 import type { PendingComment } from "./FileDiff";
 import { Markdown } from "./Markdown";
 import { Picker, type PickerItem } from "./Picker";
+import { RailCell, railWidth } from "./StackRail";
+import { layoutTree, type TreeNode } from "../lib/stack-tree";
 import { Avatar, Button, buttonClass, CheckIcon, cx, DiffStat, Kbd, Label, Pill, RichText, Spinner, StatusBadge, useDismiss, useToast } from "./ui";
 
 interface Props {
@@ -85,7 +87,27 @@ export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems }:
     },
     onError: (error) => toast(<span className="text-bad">{error.message}</span>, { key: "rerun" }),
   });
+  const merge = useMutation({
+    mutationFn: (stack: boolean) => api.merge(detail.number!, { stack }),
+    onSuccess: (result) => {
+      toast(
+        result.queued ? (
+          "GitHub queued the merge; it finishes shortly"
+        ) : (
+          <>
+            <GitMerge size={14} className="text-merged" />
+            Merged {result.merged.map((n) => `#${n}`).join(", ")}
+          </>
+        ),
+        { key: "merge" },
+      );
+    },
+    onError: (error) => toast(<span className="text-bad">{error.message}</span>, { key: "merge" }),
+    // Merging changes the stack, the inbox and every PR above: refetch all of it.
+    onSettled: () => queryClient.invalidateQueries(),
+  });
   const railActions: RailActions = {
+    merge: (stack) => merge.mutateAsync(stack).then(() => {}, () => {}),
     update: (change, optimistic, done) => update.mutateAsync({ change, optimistic, done }).then(() => {}, () => {}),
     rerun: (check) => rerun.mutateAsync(check).then(() => {}, () => {}),
   };
@@ -137,7 +159,7 @@ export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems }:
           {detail.number !== null && <DescriptionSection detail={detail} />}
           <DiscussionSection detail={detail} inputRef={discussionInput} onCommented={refresh} />
         </div>
-        <Rail detail={detail} status={status} onReview={() => setReviewOpen(true)} actions={railActions} />
+        <Rail detail={detail} status={status} actions={railActions} />
       </div>
 
       <FilesPanel
@@ -260,18 +282,20 @@ function ReviewPopover({ detail, pendingCount, onClose, onSubmit }: { detail: De
   ];
 
   return (
-    <div ref={ref} role="dialog" aria-label="Submit review" className="popover absolute right-0 top-[calc(100%+14px)] z-50 w-[420px] origin-top-right animate-pop-in rounded-[14px] bg-panel p-3 shadow-pop">
+    <div ref={ref} role="dialog" aria-label="Submit review"
+      // ⌘↵ submits from anywhere in the popover, not only while typing the summary.
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+          e.preventDefault();
+          submit();
+        }
+      }}
+      className="popover absolute right-0 top-[calc(100%+14px)] z-50 w-[420px] origin-top-right animate-pop-in rounded-[14px] bg-panel p-3 shadow-pop">
       <textarea
         autoFocus
         placeholder={event === "APPROVE" || pendingCount > 0 ? "Leave a summary (optional)" : "Leave a summary (required)"}
         value={body}
         onChange={(e) => setBody(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault();
-            submit();
-          }
-        }}
         className="block min-h-24 w-full resize-none rounded-lg border border-line-2 bg-bg px-3 py-2.5 text-fg outline-none placeholder:text-fg-3 focus:border-line-3 focus:shadow-[0_0_0_3px_var(--accent-soft)]"
       />
       <div className="my-2.5 grid gap-1" role="radiogroup">
@@ -359,58 +383,89 @@ export function windowed<T>(items: T[], current: number, expanded: boolean, radi
   return out;
 }
 
+/** Every entry with the entry it's built on (null: the trunk), for the rail layout. */
+export function stackTree(stack: StackEntry[]): TreeNode[] {
+  const byBranch = new Map(stack.map((e) => [e.branch, e]));
+  return stack.map((e) => ({ id: refKey(e.ref), parent: byBranch.has(e.base) ? refKey(byBranch.get(e.base)!.ref) : null }));
+}
+
 function StackSection({ stack, trunk, items, current }: { stack: StackEntry[]; trunk: string; items: InboxItem[]; current: Readiness }) {
-  const currentIndex = stack.findIndex((s) => s.isCurrent);
   const [expanded, setExpanded] = useState(false);
-  const top = [...stack].reverse();
-  const parts = windowed(top, top.findIndex((e) => e.isCurrent), expanded);
-  const row = "grid h-9 grid-cols-[22px_minmax(0,1fr)_auto] items-center gap-3 rounded-lg pr-2";
+  const { rows, lanes } = useMemo(() => layoutTree(stackTree(stack)), [stack]);
+  const byId = new Map(stack.map((e) => [refKey(e.ref), e]));
+  const entryRows = rows.filter((r) => r.id !== null);
+  const trunkRow = rows[rows.length - 1];
+  const currentRow = entryRows.findIndex((r) => byId.get(r.id!)?.isCurrent);
+  // Long straight stacks fold around the current PR; diverging ones show every branch.
+  const parts = lanes === 1 ? windowed(entryRows, currentRow, expanded) : entryRows.map((entry) => ({ entry }));
+  const depth = (entry: StackEntry): number => {
+    let n = 1;
+    for (let e = byId.get(stackTree([entry])[0].id); e && byId.has(refKey(e.ref)); ) {
+      const parent = stack.find((p) => p.branch === e!.base);
+      if (!parent) break;
+      n++;
+      e = parent;
+    }
+    return n;
+  };
+  const me = stack.find((e) => e.isCurrent);
+  const row = "grid h-9 items-center gap-3 rounded-lg pr-2";
+  const cols = { gridTemplateColumns: `${railWidth(lanes)}px minmax(0,1fr) auto` };
+  const dot = (entry: StackEntry) => (
+    <i
+      className={cx(
+        "block size-[9px] rounded-full border-[1.5px]",
+        entry.isCurrent ? "border-accent bg-accent shadow-[0_0_0_3px_var(--accent-soft)]" : entry.state === "merged" ? "border-merged bg-merged" : "border-fg-3 bg-bg",
+      )}
+    />
+  );
 
   return (
     <Section
       title={
         <>
-          <Layers size={13} /> Stack <span className="font-normal text-fg-3 tabular">{currentIndex + 1} of {stack.length}</span>
+          <Layers size={13} /> Stack{" "}
+          <span className="font-normal text-fg-3 tabular">
+            {lanes > 1 ? `${stack.length} PRs · ${lanes} branches` : me ? `${depth(me)} of ${stack.length}` : stack.length}
+          </span>
         </>
       }
     >
-      <div className="flex flex-col">
+      <div className="flex flex-col" data-stack-lanes={lanes}>
         {parts.map((part, i) =>
           "hidden" in part ? (
-            <button key={`more-${i}`} className={cx(row, "text-left text-xs text-fg-3 hover:bg-hover hover:text-fg-2")} onClick={() => setExpanded(true)}>
-              <span className="rail-node rail-dashed" />
+            <button key={`more-${i}`} className={cx(row, "text-left text-xs text-fg-3 hover:bg-hover hover:text-fg-2")} style={cols} onClick={() => setExpanded(true)}>
+              <RailCell row={{ id: null, lane: 0, up: true, down: true, joins: [], through: [] }} lanes={lanes} node={null} dashed />
               <span>{part.hidden} more</span>
               <span />
             </button>
           ) : (
-            <div
-              key={refKey(part.entry.ref)}
-              role="link"
-              tabIndex={0}
-              onClick={() => !part.entry.isCurrent && navigate(part.entry.ref)}
-              onKeyDown={(e) => e.key === "Enter" && navigate(part.entry.ref)}
-              className={cx(row, i === 0 && "rail-first", part.entry.isCurrent ? "bg-active text-fg" : "cursor-pointer text-fg-2 hover:bg-hover hover:text-fg")}
-            >
-              <span className="rail-node">
-                <i
-                  className={cx(
-                    "block size-[9px] rounded-full border-[1.5px]",
-                    part.entry.isCurrent ? "border-accent bg-accent shadow-[0_0_0_3px_var(--accent-soft)]" : part.entry.state === "merged" ? "border-merged bg-merged" : "border-fg-3 bg-bg",
-                  )}
-                />
-              </span>
-              <span className="truncate leading-5">
-                {part.entry.ref.kind === "pr" && <span className="mr-1.5 text-fg-3 tabular">#{part.entry.ref.number}</span>}
-                {part.entry.title}
-              </span>
-              <StatusBadge status={part.entry.isCurrent ? current : entryReadiness(part.entry, items)} size="sm" />
-            </div>
+            (() => {
+              const entry = byId.get(part.entry.id!)!;
+              return (
+                <div
+                  key={part.entry.id}
+                  role="link"
+                  tabIndex={0}
+                  data-stack-entry={entry.branch}
+                  onClick={() => !entry.isCurrent && navigate(entry.ref)}
+                  onKeyDown={(e) => e.key === "Enter" && navigate(entry.ref)}
+                  className={cx(row, entry.isCurrent ? "bg-active text-fg" : "cursor-pointer text-fg-2 hover:bg-hover hover:text-fg")}
+                  style={cols}
+                >
+                  <RailCell row={part.entry} lanes={lanes} node={dot(entry)} />
+                  <span className="truncate leading-5">
+                    {entry.ref.kind === "pr" && <span className="mr-1.5 text-fg-3 tabular">#{entry.ref.number}</span>}
+                    {entry.title}
+                  </span>
+                  <StatusBadge status={entry.isCurrent ? current : entryReadiness(entry, items)} size="sm" />
+                </div>
+              );
+            })()
           ),
         )}
-        <div className={cx(row, "rail-last font-mono text-[11.5px] text-fg-3")}>
-          <span className="rail-node">
-            <i className="block size-[9px] rounded-sm border-[1.5px] border-fg-3 bg-bg" />
-          </span>
+        <div className={cx(row, "font-mono text-[11.5px] text-fg-3")} style={cols}>
+          <RailCell row={trunkRow} lanes={lanes} node={<i className="block size-[9px] rounded-sm border-[1.5px] border-fg-3 bg-bg" />} />
           <span>{trunk}</span>
           <span />
         </div>
@@ -591,9 +646,11 @@ interface RailActions {
   /** Applies `change` on GitHub, showing `optimistic` until it's confirmed. */
   update: (change: PRUpdate, optimistic: (d: DetailData) => DetailData, done?: string) => Promise<void>;
   rerun: (check?: CheckRun) => Promise<void>;
+  /** Merges this PR, or the stack up to it. */
+  merge: (stack: boolean) => Promise<void>;
 }
 
-function Rail({ detail, status, onReview, actions }: { detail: DetailData; status: Readiness; onReview: () => void; actions: RailActions }) {
+function Rail({ detail, status, actions }: { detail: DetailData; status: Readiness; actions: RailActions }) {
   // Count and bar come from the same list as the rows below, so they always agree.
   const summary =
     detail.checks.length > 0
@@ -682,53 +739,7 @@ function Rail({ detail, status, onReview, actions }: { detail: DetailData; statu
 
   return (
     <aside className="flex min-w-0 flex-col gap-6">
-      <div className="rounded-xl border border-line bg-panel p-3">
-        <div className="flex h-[22px] items-center">
-          <StatusBadge status={status} />
-        </div>
-        <p className="mb-3 mt-2 text-xs text-fg-2">
-          <RichText text={status.detail} />
-        </p>
-        <div className="grid gap-1.5">
-          {detail.state === "draft" && (
-            <Button
-              block
-              variant="primary"
-              disabled={busy === "draft"}
-              onClick={() => run("draft", () => actions.update({ draft: false }, (d) => ({ ...d, state: "open" }), `#${detail.number} is ready for review`))}
-            >
-              {busy === "draft" ? <Spinner size={12} /> : <Eye size={13} />}
-              Ready for review
-            </Button>
-          )}
-          {isPR && (
-            <Button block onClick={onReview}>
-              {detail.can.review ? "Leave a review" : "Comment"}
-              <Kbd>R</Kbd>
-            </Button>
-          )}
-          <div className={cx("grid gap-1.5", detail.state === "open" && detail.url && "grid-cols-2")}>
-            {detail.state === "open" && (
-              <Button
-                block
-                variant="ghost"
-                disabled={busy === "draft"}
-                data-tip="Hide it from review until it's ready"
-                onClick={() => run("draft", () => actions.update({ draft: true }, (d) => ({ ...d, state: "draft" }), `#${detail.number} is a draft again`))}
-              >
-                {busy === "draft" ? <Spinner size={12} /> : <PencilLine size={13} />}
-                To draft
-              </Button>
-            )}
-            {detail.url && (
-              <a className={cx(buttonClass({ variant: "ghost", block: true }), "no-underline")} href={detail.url} target="_blank" rel="noreferrer">
-                GitHub <ExternalLink size={12} />
-              </a>
-            )}
-          </div>
-        </div>
-      </div>
-
+      <StatusCard detail={detail} status={status} actions={actions} />
       {isPR && (
         <div>
           <Label>
@@ -887,6 +898,194 @@ function Rail({ detail, status, onReview, actions }: { detail: DetailData; statu
         </div>
       )}
     </aside>
+  );
+}
+
+/**
+ * Where the PR stands and the one thing to do next: mark your draft ready, or merge
+ * (this PR, or the stack up to it) once nothing blocks it. Everything else lives in
+ * the ⋯ menu.
+ */
+function StatusCard({ detail, status, actions }: { detail: DetailData; status: Readiness; actions: RailActions }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const run = (task: () => Promise<void>) => {
+    setBusy(true);
+    task().finally(() => setBusy(false));
+  };
+  const merge = detail.merge;
+  const options = merge
+    ? ([merge.single.possible && { stack: false, label: `Merge #${detail.number}`, ...merge.single }, merge.stack && { stack: true, label: `Merge stack (${merge.stack.count})`, ...merge.stack }].filter(
+        Boolean,
+      ) as Array<{ stack: boolean; label: string; blockers: string[] }>)
+    : [];
+  // Prefer an option that can go now; the whole stack when both can.
+  const [choice, setChoice] = useState<boolean | null>(null);
+  const ready = options.filter((o) => o.blockers.length === 0);
+  const option = options.find((o) => o.stack === choice) ?? ready.at(-1) ?? options[0];
+  const [confirming, setConfirming] = useState(false);
+  const [menu, setMenu] = useState(false);
+  const menuRef = useDismiss(menu, () => setMenu(false));
+  const [picking, setPicking] = useState(false);
+  const pickRef = useDismiss(picking, () => setPicking(false));
+  const method = merge?.method === "squash" ? "Squash and merge" : merge?.method === "rebase" ? "Rebase and merge" : "Merge";
+  const into = detail.stack.length && option?.stack ? detail.stack.find((e) => !e.isCurrent && e.state !== "merged")?.branch : detail.base;
+
+  const menuItem = "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] text-fg-2 no-underline hover:bg-hover hover:text-fg [&_svg]:shrink-0";
+  return (
+    <div className="rounded-xl border border-line bg-panel p-3" data-status-card>
+      <div className="flex h-[22px] items-center">
+        <StatusBadge status={status} />
+        <span className="flex-1" />
+        <div className="relative" ref={menuRef}>
+          <Button variant="ghost" size="sm" icon className="-mr-1" aria-label="More actions" aria-expanded={menu} onClick={() => setMenu((m) => !m)}>
+            <MoreHorizontal size={15} />
+          </Button>
+          {menu && (
+            <div role="menu" className="popover absolute right-0 top-[calc(100%+6px)] z-50 w-56 origin-top-right animate-pop-in rounded-xl bg-panel p-1.5 shadow-pop">
+              {detail.url && (
+                <a role="menuitem" className={menuItem} href={detail.url} target="_blank" rel="noreferrer" onClick={() => setMenu(false)}>
+                  <ExternalLink size={14} /> Open on GitHub
+                  <span className="ml-auto">
+                    <Kbd>O</Kbd>
+                  </span>
+                </a>
+              )}
+              <button
+                role="menuitem"
+                className={menuItem}
+                onClick={() => {
+                  setMenu(false);
+                  copy(`pile checkout ${detail.branch}`);
+                  toast("Copied checkout command", { key: "copy" });
+                }}
+              >
+                <Copy size={14} /> Copy checkout command
+              </button>
+              {detail.can.draft && detail.state === "open" && (
+                <button
+                  role="menuitem"
+                  className={menuItem}
+                  onClick={() => {
+                    setMenu(false);
+                    run(() => actions.update({ draft: true }, (d) => ({ ...d, state: "draft" }), `#${detail.number} is a draft again`));
+                  }}
+                >
+                  <PencilLine size={14} /> Convert to draft
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+      <p className="mt-2 text-xs text-fg-2">
+        <RichText text={status.detail} />
+      </p>
+
+      {detail.can.draft && detail.state === "draft" ? (
+        <Button
+          block
+          variant="primary"
+          className="mt-3"
+          disabled={busy}
+          onClick={() => run(() => actions.update({ draft: false }, (d) => ({ ...d, state: "open" }), `#${detail.number} is ready for review`))}
+        >
+          {busy ? <Spinner size={12} /> : <Eye size={13} />}
+          Ready for review
+        </Button>
+      ) : (
+        option && (
+          <div className="mt-3">
+            {confirming ? (
+              <div className="grid gap-1.5 rounded-lg border border-line-2 bg-bg p-2" role="group" aria-label="Confirm merge">
+                <p className="px-0.5 text-xs text-fg-2">
+                  {method} {option.stack ? `${merge!.stack!.count} PRs` : `#${detail.number}`} into <code className="text-[11px]">{into}</code>?
+                </p>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <Button variant="ghost" onClick={() => setConfirming(false)} disabled={busy}>
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="success"
+                    disabled={busy}
+                    onClick={() =>
+                      run(async () => {
+                        await actions.merge(option.stack);
+                        setConfirming(false);
+                      })
+                    }
+                  >
+                    {busy && <Spinner size={12} />}
+                    Merge
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex" ref={pickRef}>
+                <Button
+                  block
+                  variant={option.blockers.length ? "default" : "success"}
+                  className={cx(options.length > 1 && "rounded-r-none")}
+                  disabled={option.blockers.length > 0}
+                  onClick={() => setConfirming(true)}
+                >
+                  <GitMerge size={13} />
+                  {option.label}
+                </Button>
+                {options.length > 1 && (
+                  <div className="relative">
+                    <Button
+                      variant={option.blockers.length ? "default" : "success"}
+                      icon
+                      className="h-7 rounded-l-none border-l border-l-black/20"
+                      aria-label="Merge options"
+                      onClick={() => setPicking((p) => !p)}
+                    >
+                      <ChevronDown size={13} />
+                    </Button>
+                    {picking && (
+                      <div role="menu" className="popover absolute right-0 top-[calc(100%+6px)] z-50 w-60 origin-top-right animate-pop-in rounded-xl bg-panel p-1.5 shadow-pop">
+                        {options.map((o) => (
+                          <button
+                            key={String(o.stack)}
+                            role="menuitemradio"
+                            aria-checked={o === option}
+                            className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left hover:bg-hover"
+                            onClick={() => {
+                              setChoice(o.stack);
+                              setPicking(false);
+                            }}
+                          >
+                            <span className="mt-0.5 w-3.5 shrink-0">{o === option && <Check size={13} />}</span>
+                            <span className="grid gap-0.5">
+                              <span className="text-[13px] text-fg">{o.label}</span>
+                              <span className="text-[11.5px] text-fg-3">
+                                {o.stack ? "Every open PR from the bottom of the stack up to this one" : `Only this PR, into ${detail.base}`}
+                                {o.blockers.length > 0 && " · blocked"}
+                              </span>
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+            {option.blockers.length > 0 && !confirming && (
+              <ul className="mt-2 grid gap-1 text-[11.5px] leading-4 text-fg-3" aria-label="What blocks merging">
+                {option.blockers.map((b) => (
+                  <li key={b} className="flex gap-1.5">
+                    <CircleAlert size={12} className="mt-0.5 shrink-0 text-warn" />
+                    {b}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )
+      )}
+    </div>
   );
 }
 

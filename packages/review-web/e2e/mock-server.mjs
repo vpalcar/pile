@@ -11,7 +11,7 @@ export const TOKEN = "test-token";
 const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".woff2": "font/woff2" };
 
 export function startMockServer(port = 0) {
-  const state = { calls: [], inboxRequests: 0, down: false, delayMs: 120, edits: {} };
+  const state = { calls: [], inboxRequests: 0, down: false, delayMs: 120, edits: {}, preferences: {} };
   // Edits made through the app, layered over the fixtures.
   const withEdits = (detail) => (detail ? { ...detail, ...state.edits[detail.number] } : detail);
   const json = (res, status, body) => {
@@ -70,6 +70,29 @@ export function startMockServer(port = 0) {
         return detail ? json(res, 200, detail) : json(res, 404, { error: `Pull request #${m[1]} doesn't exist`, code: "PR_NOT_FOUND" });
       }
       if (api === "/options") return json(res, 200, options);
+      if (api === "/preferences" && req.method === "PATCH") {
+        Object.assign(state.preferences, await readBody(req));
+        return json(res, 200, state.preferences);
+      }
+      if (api === "/preferences") return json(res, 200, state.preferences);
+      if (req.method === "POST" && (m = api.match(/^\/pr\/(\d+)\/merge$/))) {
+        const body = await readBody(req);
+        state.calls.push({ type: "merge", pr: Number(m[1]), ...body });
+        const detail = withEdits(detailFor(Number(m[1])));
+        const plan = body.stack ? detail.merge?.stack : detail.merge?.single.possible ? detail.merge.single : null;
+        if (!plan) return json(res, 400, { error: `#${detail.number} is based on ${detail.base}`, code: "NOT_ON_TRUNK" });
+        if (plan.blockers.length) return json(res, 409, { error: plan.blockers.join("; "), code: "MERGE_BLOCKED" });
+        const byBranch = new Map(detail.stack.map((e) => [e.branch, e]));
+        const chain = [detail.number];
+        for (let e = detail.stack.find((x) => x.isCurrent); e && byBranch.has(e.base); ) {
+          e = byBranch.get(e.base);
+          chain.unshift(e.ref.number);
+        }
+        const merged = body.stack ? chain : [detail.number];
+        for (const n of merged) (state.edits[n] ??= {}).state = "merged";
+        for (const n of merged) state.edits[n].merge = null;
+        return json(res, 200, { merged, queued: false });
+      }
       if (req.method === "POST" && (m = api.match(/^\/pr\/(\d+)\/checks\/rerun$/))) {
         const body = await readBody(req);
         state.calls.push({ type: "rerun", pr: Number(m[1]), ...body });
@@ -105,6 +128,9 @@ export function startMockServer(port = 0) {
     let file = join(dist, normalize(path).replace(/^\/+/, ""));
     if (!existsSync(file) || !extname(file)) file = join(dist, "index.html");
     res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" });
+    // Like pile's server: the saved theme is written into the page.
+    const theme = state.preferences.theme;
+    if (file.endsWith("index.html") && (theme === "light" || theme === "dark")) return res.end(readFileSync(file, "utf8").replace("<html", `<html data-theme="${theme}"`));
     res.end(readFileSync(file));
   });
 

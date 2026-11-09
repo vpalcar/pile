@@ -42,7 +42,8 @@ export function ReviewWebCommand({ target, port, open, options }: ReviewWebComma
         const github = await createGitHub(pile);
         const service = new ReviewService(pile, github);
         const initial = await resolveTarget(pile, target);
-        running = await startReviewServer({ service, initial, port });
+        const root = (await pile.git.run(["rev-parse", "--show-toplevel"]).catch(() => process.cwd())).trim();
+        running = await startReviewServer({ service, initial, port, preferredPort: portFor(root) });
         // Fetch ahead while the browser opens; errors surface on the actual request.
         service.warm(initial).catch(() => {});
         setServer(running);
@@ -110,4 +111,14 @@ async function resolveTarget(pile: Awaited<ReturnType<typeof createPile>>, targe
   if (stored) return { kind: "pr", number: stored };
   if (await pile.git.branchExists(target)) return { kind: "branch", name: target };
   throw new Error(`No pull request or local branch named "${target}"`);
+}
+
+/**
+ * The same port for the same repo on every run (4100-4899), so the browser keeps its
+ * per-page state (viewed files, unsent comments) between runs.
+ */
+export function portFor(repoRoot: string): number {
+  let hash = 0;
+  for (const char of repoRoot) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return 4100 + (hash % 800);
 }
