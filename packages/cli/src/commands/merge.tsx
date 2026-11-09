@@ -232,6 +232,28 @@ export function MergeCommand({
             break;
           }
 
+          // A stack merge lands every PR on the trunk. One still based on the branch below
+          // (just merged) would land there instead, so move it onto the trunk first, and
+          // stop rather than merge it anywhere else.
+          if (pr.base.ref !== trunk) {
+            try {
+              await github.prs.update({ number: pr.number, base: trunk });
+            } catch (retargetErr) {
+              const error: CommandError = {
+                code: "NOT_ON_TRUNK",
+                message: `#${pr.number} is based on ${pr.base.ref}, and GitHub refused to move it onto ${trunk}: ${retargetErr instanceof Error ? retargetErr.message : String(retargetErr)}`,
+                hint: `Nothing more was merged. Change the PR's base to ${trunk} on GitHub, then run \`pile merge\` again.`,
+                data: { merged },
+              };
+              if (options.json || !options.interactive) exitWithError(options, error);
+              process.exitCode = 1;
+              setFailure(error);
+              setMergedPRs(merged);
+              setState("error");
+              return;
+            }
+          }
+
           // Checks and reviews come from the enriched PR, so they actually gate the merge.
           const reasons = getBlockingReasons(pr);
 
@@ -244,9 +266,18 @@ export function MergeCommand({
             await github.prs.markReadyForReview(pr.number);
           }
 
-          // Merge the PR
+          // Merge the PR. Right after a retarget GitHub may still be recomputing it, and
+          // says the base was modified: wait a moment and try again.
           setState("merging");
-          await github.prs.merge(pr.number, method);
+          for (let attempt = 1; ; attempt++) {
+            try {
+              await github.prs.merge(pr.number, method);
+              break;
+            } catch (mergeErr) {
+              if (attempt >= 5 || !/base branch was modified|not mergeable/i.test(mergeErr instanceof Error ? mergeErr.message : "")) throw mergeErr;
+              await new Promise((resolve) => setTimeout(resolve, attempt * 1500));
+            }
+          }
 
           merged.push({ branch: branchToMerge, prNumber: pr.number, title: pr.title });
 
