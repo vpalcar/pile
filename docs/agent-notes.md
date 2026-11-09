@@ -41,13 +41,27 @@ Validate the cursor: a negative or non-numeric value should return a 400.
 
 `pile notes --json` gives the same as structured data.
 
+## The agent answers
+
+The agent resolves each note with a short summary of what it did, or replies without
+resolving when it disagrees or needs an answer:
+
+```bash
+pile notes done a7a3d6 -m "Reject negative and non-numeric cursors with a 400."
+pile notes reply a7a3d6 -m "Should an out-of-range cursor return an empty page or a 400?"
+```
+
+Replies show up under the note in `pile review` as they happen. Answer there: replying to a
+resolved note reopens it, and the next `pile notes` shows the agent the whole conversation.
+
 ## Managing notes
 
 | Command | |
 |---------|---|
 | `pile notes` | Open notes on the current branch |
 | `pile notes --branch <name>` / `--all` | Another branch / every branch |
-| `pile notes done <id>…` | Mark notes handled (an agent can do this itself) |
+| `pile notes done <id> -m "…"` | Resolve a note, saying what changed |
+| `pile notes reply <id> -m "…"` | Answer or ask without resolving |
 | `pile notes reopen <id>` | Open it again |
 | `pile notes rm <id>` | Delete it |
 | `pile notes clear` | Delete the finished ones |

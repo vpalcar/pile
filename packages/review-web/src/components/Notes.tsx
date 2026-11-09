@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Bot, Check, Copy, RotateCcw, Trash2 } from "lucide-react";
 import type { AgentNote, Detail } from "../api";
@@ -21,6 +21,7 @@ interface NotesApi {
   /** The command that hands the notes to an agent. */
   command: string;
   add: (note: { path?: string; line?: number; side?: "LEFT" | "RIGHT"; body: string }) => Promise<void>;
+  reply: (id: string, body: string) => Promise<void>;
   setDone: (id: string, done: boolean) => void;
   remove: (id: string) => void;
 }
@@ -35,7 +36,26 @@ export const useNotes = () => useContext(NotesContext);
 export function NotesProvider({ detail, currentBranch, children }: { detail: Detail; currentBranch: string | null; children: ReactNode }) {
   const toast = useToast();
   const key = keys.notes(detail.branch);
-  const { data: notes = [] } = useQuery({ queryKey: key, queryFn: () => api.notes(detail.branch), staleTime: 5_000 });
+  // The agent answers through `pile notes`, outside the app: poll so replies show up live.
+  const { data: notes = [] } = useQuery({ queryKey: key, queryFn: () => api.notes(detail.branch), staleTime: 2_000, refetchInterval: 4_000 });
+  const seen = useRef<Map<string, number> | null>(null);
+  useEffect(() => {
+    const replies = new Map(notes.map((n) => [n.id, n.replies?.filter((r) => r.author === "agent").length ?? 0]));
+    if (seen.current) {
+      const answered = notes.filter((n) => (replies.get(n.id) ?? 0) > (seen.current!.get(n.id) ?? 0));
+      if (answered.length) {
+        const resolved = answered.filter((n) => n.done).length;
+        toast(
+          <>
+            <Bot size={14} className="text-merged" />
+            {resolved === answered.length ? `Your agent resolved ${plural(resolved, "note")}` : `Your agent replied to ${plural(answered.length, "note")}`}
+          </>,
+          { key: "agent" },
+        );
+      }
+    }
+    seen.current = replies;
+  }, [notes, toast]);
   const github = detail.number !== null && detail.can.comment;
   const [target, setTarget] = useState<CommentTarget>(github && detail.can.review ? "github" : "agent");
   const refresh = () => queryClient.invalidateQueries({ queryKey: key });
@@ -75,6 +95,14 @@ export function NotesProvider({ detail, currentBranch, children }: { detail: Det
       setTarget,
       command: currentBranch === detail.branch ? "pile notes" : `pile notes --branch ${detail.branch}`,
       add: (note) => add.mutateAsync(note).then(() => {}),
+      reply: (id, body) =>
+        api.replyToNote(id, body).then((note) => {
+          queryClient.setQueryData<AgentNote[]>(key, (all = []) => all.map((n) => (n.id === id ? note : n)));
+        }, (error) => {
+          // The composer keeps the text when this throws.
+          fail(error);
+          throw error;
+        }),
       setDone: (id, done) => update.mutate({ id, done }),
       remove: (id) => remove.mutate(id),
     }),
@@ -136,7 +164,49 @@ export function NoteCard({ note, location }: { note: AgentNote; location?: React
           <Trash2 size={12} />
         </Button>
       </div>
-      <div className={cx("whitespace-pre-wrap", note.done && "line-through decoration-fg-4")}>{note.body}</div>
+      <div className={cx("whitespace-pre-wrap", note.done && !note.replies?.length && "line-through decoration-fg-4")}>{note.body}</div>
+      <NoteThread note={note} />
+    </div>
+  );
+}
+
+/** The agent's answers and your follow-ups under a note, and a box to reply. */
+function NoteThread({ note }: { note: AgentNote }) {
+  const notes = useNotes()!;
+  const [replying, setReplying] = useState(false);
+  return (
+    <div className="mt-2">
+      {note.replies?.map((r, i) => (
+        <div key={i} className="mt-2 flex gap-2 border-l-2 border-line-2 pl-3" data-reply={r.author}>
+          <div className="min-w-0 flex-1">
+            <div className="mb-0.5 flex items-center gap-1.5 text-xs text-fg-3">
+              {r.author === "agent" ? <Bot size={12} className="text-merged" /> : null}
+              <b className="font-medium text-fg-2">{r.author === "agent" ? "Agent" : "You"}</b>
+              {timeAgo(r.createdAt)}
+            </div>
+            <div className="whitespace-pre-wrap text-fg">{r.body}</div>
+          </div>
+        </div>
+      ))}
+      {replying ? (
+        <div className="mt-2">
+          <Composer
+            autoFocus
+            inset
+            placeholder={note.done ? "Not quite? Reply to reopen it" : "Reply to your agent"}
+            submitLabel="Reply"
+            onCancel={() => setReplying(false)}
+            onSubmit={async (body) => {
+              await notes.reply(note.id, body);
+              setReplying(false);
+            }}
+          />
+        </div>
+      ) : (
+        <Button variant="ghost" size="sm" className="-ml-2 mt-1 text-fg-3" onClick={() => setReplying(true)}>
+          Reply…
+        </Button>
+      )}
     </div>
   );
 }

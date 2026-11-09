@@ -26,9 +26,18 @@ export interface Note {
   body: string;
   createdAt: string;
   done: boolean;
+  /** The conversation on the note: the agent's answers and the reviewer's follow-ups. */
+  replies?: NoteReply[];
 }
 
-export type NewNote = Omit<Note, "id" | "createdAt" | "done">;
+export interface NoteReply {
+  /** "agent" for replies from `pile notes`, "reviewer" for replies in the review app. */
+  author: "agent" | "reviewer";
+  body: string;
+  createdAt: string;
+}
+
+export type NewNote = Omit<Note, "id" | "createdAt" | "done" | "replies">;
 
 export interface NoteFilter {
   branch?: string;
@@ -66,6 +75,23 @@ export class NotesStore {
     const note = notes.find((n) => n.id === id);
     if (!note) throw new Error(`No note with id ${id}`);
     Object.assign(note, change);
+    this.write(notes);
+    return note;
+  }
+
+  /**
+   * Adds a reply. The agent can resolve the note with it (`done`); a reviewer's reply
+   * on a finished note reopens it, since it asks for more.
+   */
+  reply(id: string, author: NoteReply["author"], body: string, options: { done?: boolean } = {}): Note {
+    const text = body.trim();
+    if (!text) throw new Error("A reply needs some text");
+    const notes = this.read();
+    const note = notes.find((n) => n.id === id);
+    if (!note) throw new Error(`No note with id ${id}`);
+    note.replies = [...(note.replies ?? []), { author, body: text, createdAt: new Date().toISOString() }];
+    if (options.done !== undefined) note.done = options.done;
+    else if (author === "reviewer" && note.done) note.done = false;
     this.write(notes);
     return note;
   }
@@ -133,7 +159,11 @@ export function formatNotes(notes: Note[]): string {
   const out: string[] = [
     "# Review notes",
     "",
-    `${notes.length === 1 ? "A reviewer left a note" : `A reviewer left ${notes.length} notes`} on your changes. Address each one; when it's handled, run \`pile notes done <id>\`.`,
+    `${notes.length === 1 ? "A reviewer left a note" : `A reviewer left ${notes.length} notes`} on your changes. Address each one, then resolve it with a short summary of what you did:`,
+    "",
+    '    pile notes done <id> -m "what you changed"',
+    "",
+    'If you disagree or need an answer first, reply without resolving: `pile notes reply <id> -m "..."`.',
   ];
   const byBranch = new Map<string, Note[]>();
   for (const note of notes) byBranch.set(note.branch, [...(byBranch.get(note.branch) ?? []), note]);
@@ -159,6 +189,9 @@ export function formatNotes(notes: Note[]): string {
         }
       }
       out.push("", note.body);
+      for (const reply of note.replies ?? []) {
+        out.push("", `> **${reply.author === "agent" ? "You (agent)" : "Reviewer"}:** ${reply.body.replace(/\n/g, "\n> ")}`);
+      }
     }
   }
   return `${out.join("\n")}\n`;

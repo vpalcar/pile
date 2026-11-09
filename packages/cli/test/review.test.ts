@@ -219,6 +219,9 @@ describe("notes for the agent", () => {
 
     expect(service.notes("feature").map((n) => n.body)).toEqual(["Why three?", "Add a test.", "This was better."]);
     expect(service.updateNote(note.id, { done: true }).done).toBe(true);
+    // Following up on a resolved note reopens it.
+    expect(service.replyToNote(note.id, "Three is a magic number; name it.")).toMatchObject({ done: false, replies: [{ author: "reviewer" }] });
+    expect(() => service.replyToNote(note.id, " ")).toThrow(expect.objectContaining({ code: "EMPTY_REPLY" }));
     service.removeNote(general.id);
     expect(service.notes("feature")).toHaveLength(2);
     await expect(service.addNote({ ref, body: "  " })).rejects.toMatchObject({ code: "EMPTY_NOTE" });

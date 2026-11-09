@@ -2,9 +2,11 @@ import { createPile, formatNotes, type Note } from "@pile/core";
 import { createResult, exitWithError, formatJson, toCommandError, type OutputOptions } from "../utils/output.js";
 
 export interface NotesCommandOptions {
-  /** list (default), done, reopen, rm or clear */
+  /** list (default), done, reply, reopen, rm or clear */
   action?: string;
   ids: string[];
+  /** A reply: what was done (with `done`), or an answer or question (with `reply`). */
+  message?: string;
   branch?: string;
   all?: boolean;
   options: OutputOptions;
@@ -17,7 +19,7 @@ export interface NotesCommandOptions {
  *
  *   claude "$(pile notes)"
  */
-export async function runNotes({ action = "list", ids, branch, all, options }: NotesCommandOptions): Promise<void> {
+export async function runNotes({ action = "list", ids, message, branch, all, options }: NotesCommandOptions): Promise<void> {
   try {
     const pile = await createPile();
     const store = pile.notes;
@@ -35,8 +37,18 @@ export async function runNotes({ action = "list", ids, branch, all, options }: N
         if (ids.length === 0) {
           exitWithError(options, { code: "NEEDS_INPUT", message: `Which note? Pass its id: pile notes ${action} <id>`, hint: "`pile notes` lists them with their ids." }, 2);
         }
-        const updated = ids.map((id) => store.update(id, { done: action === "done" }));
+        const updated = ids.map((id) =>
+          message ? store.reply(id, "agent", message, { done: action === "done" }) : store.update(id, { done: action === "done" }),
+        );
         print({ notes: updated }, updated.map((n) => `${action === "done" ? "Done" : "Reopened"}: ${describe(n)}`).join("\n"));
+        return;
+      }
+      case "reply": {
+        if (ids.length !== 1 || !message) {
+          exitWithError(options, { code: "NEEDS_INPUT", message: 'Pass one note id and a message: pile notes reply <id> -m "..."' }, 2);
+        }
+        const note = store.reply(ids[0], "agent", message);
+        print({ note }, `Replied: ${describe(note)}`);
         return;
       }
       case "rm": {
@@ -51,11 +63,14 @@ export async function runNotes({ action = "list", ids, branch, all, options }: N
         return;
       }
       default:
-        exitWithError(options, { code: "INVALID_ARGUMENT", message: `Unknown action "${action}"`, hint: "Use list, done, reopen, rm or clear." }, 2);
+        exitWithError(options, { code: "INVALID_ARGUMENT", message: `Unknown action "${action}"`, hint: "Use list, done, reply, reopen, rm or clear." }, 2);
     }
   } catch (error) {
     const failure = toCommandError(error);
-    exitWithError(options, /No note with id/.test(failure.message) ? { ...failure, code: "NOTE_NOT_FOUND" } : failure);
+    exitWithError(
+      options,
+      /No note with id/.test(failure.message) ? { ...failure, code: "NOTE_NOT_FOUND" } : /needs some text/.test(failure.message) ? { ...failure, code: "EMPTY_REPLY" } : failure,
+    );
   }
 }
 

@@ -474,11 +474,12 @@ for (const [direction, alias, description] of [
 // notes command
 program
   .command("notes [action] [ids...]")
-  .description("Review notes for the agent on this branch: list (default), done <id>, reopen <id>, rm <id>, clear")
+  .description('Review notes for the agent on this branch: list (default), done <id> -m "what changed", reply <id> -m "...", reopen <id>, rm <id>, clear')
+  .option("-m, --message <message>", "Reply to the reviewer: what you changed (done) or an answer (reply)")
   .option("-b, --branch <branch>", "Notes for this branch (default: the current branch)")
   .option("-a, --all", "Notes on every branch")
   .action(async (action, ids, opts) => {
-    await runNotes({ action, ids: ids ?? [], branch: opts.branch, all: opts.all, options: resolveOptions(program.opts()) });
+    await runNotes({ action, ids: ids ?? [], message: opts.message, branch: opts.branch, all: opts.all, options: resolveOptions(program.opts()) });
   });
 
 // track command

@@ -126,6 +126,9 @@ export async function startReviewServer(options: {
     }
     if (method === "GET" && path === "/notes") return send(res, 200, service.notes(url.searchParams.get("branch")));
     if (method === "POST" && path === "/notes") return send(res, 201, await service.addNote((await readBody(req)) as NewNoteRequest));
+    if (method === "POST" && (match = path.match(/^\/notes\/([0-9a-f]+)\/replies$/))) {
+      return send(res, 201, service.replyToNote(match[1], String(((await readBody(req)) as { body?: string }).body ?? "")));
+    }
     if (method === "PATCH" && (match = path.match(/^\/notes\/([0-9a-f]+)$/))) {
       return send(res, 200, service.updateNote(match[1], (await readBody(req)) as { done?: boolean; body?: string }));
     }
