@@ -176,6 +176,8 @@ export interface Detail {
   assignees: Person[];
   mergeable: boolean | null;
   mergeableState: string | null;
+  /** Same meaning as InboxItem.reviewDecision, so both show the same status. */
+  reviewDecision: InboxItem["reviewDecision"];
   files: DiffFile[];
   local: LocalState | null;
   /** Things the viewer can do. */

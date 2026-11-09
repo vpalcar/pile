@@ -1,6 +1,7 @@
 // Bundles the review app into dist/: index.html, app.js (+ lazily loaded chunks for
 // syntax highlighting grammars), app.css and the two variable fonts.
 import { build, context } from "esbuild";
+import { execFileSync, spawn } from "node:child_process";
 import { copyFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -61,9 +62,15 @@ const options = {
   logLevel: "info",
 };
 
+// Tailwind compiles src/styles.css (and the classes used in src/) into app.css.
+const tailwind = join(root, "node_modules/.bin/tailwindcss");
+const css = ["-i", join(root, "src/styles.css"), "-o", join(dist, "app.css")];
+
 if (watch) {
+  spawn(tailwind, [...css, "--watch"], { stdio: "inherit" });
   const ctx = await context(options);
   await ctx.watch();
 } else {
   await build(options);
+  execFileSync(tailwind, [...css, "--minify"], { stdio: "inherit" });
 }
