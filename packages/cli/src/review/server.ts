@@ -3,7 +3,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ItemRef, ReviewRequest } from "@pile/review-web/api";
+import type { ItemRef, PRUpdate, RerunRequest, ReviewRequest } from "@pile/review-web/api";
 import { ReviewService } from "./service.js";
 
 const MIME: Record<string, string> = {
@@ -90,8 +90,7 @@ export async function startReviewServer(options: {
 
     if (method === "GET" && path === "/session") return send(res, 200, await service.session(initial));
     if (method === "GET" && path === "/inbox") {
-      if (url.searchParams.has("fresh")) service.invalidate();
-      return send(res, 200, await service.inbox());
+      return send(res, 200, await service.inbox({ fresh: url.searchParams.has("fresh") }));
     }
     if (method === "GET" && (match = path.match(/^\/pr\/(\d+)$/))) {
       const ref = { kind: "pr" as const, number: Number(match[1]) };
@@ -119,6 +118,13 @@ export async function startReviewServer(options: {
       await service.review(Number(match[1]), (await readBody(req)) as ReviewRequest);
       return send(res, 201, { ok: true });
     }
+    if (method === "GET" && path === "/options") return send(res, 200, await service.options());
+    if (method === "PATCH" && (match = path.match(/^\/pr\/(\d+)$/))) {
+      return send(res, 200, await service.update(Number(match[1]), (await readBody(req)) as PRUpdate));
+    }
+    if (method === "POST" && (match = path.match(/^\/pr\/(\d+)\/checks\/rerun$/))) {
+      return send(res, 200, await service.rerun(Number(match[1]), (await readBody(req)) as RerunRequest));
+    }
     return send(res, 404, { error: "Not found", code: "NOT_FOUND" });
   };
 
@@ -131,7 +137,9 @@ export async function startReviewServer(options: {
     const type = MIME[extname(file)] ?? "application/octet-stream";
     res.writeHead(200, {
       "content-type": type,
-      "cache-control": file.endsWith("index.html") ? "no-store" : "public, max-age=31536000, immutable",
+      // Only content-hashed files (chunks) and fonts may be cached for good; everything
+      // else is revalidated so a rebuilt app shows up on reload.
+      "cache-control": /[/\\](chunks|fonts)[/\\]/.test(file) ? "public, max-age=31536000, immutable" : "no-cache",
       "x-content-type-options": "nosniff",
       ...(file.endsWith("index.html")
         ? {

@@ -9,6 +9,9 @@ import type {
   InboxItem,
   ItemRef,
   PRState,
+  PRUpdate,
+  RepoOptions,
+  RerunRequest,
   ReviewRequest,
   Session,
   StackEntry,
@@ -139,7 +142,9 @@ export class ReviewService {
   /** Forget cached reads, e.g. after a comment or review changes them. */
   invalidate(ref?: ItemRef): void {
     if (ref) this.memo.delete(ref.kind === "pr" ? `pr/${ref.number}` : `branch/${ref.name}`);
-    this.memo.delete("inbox");
+    // The full inbox is kept and served until its replacement is ready: dropping it
+    // would fall back to the quick list, whose missing checks read as "Open".
+    this.inboxVersion++;
     this.memo.delete("inbox-fast");
   }
 
@@ -163,28 +168,43 @@ export class ReviewService {
    * The inbox comes in two passes: the plain PR list answers fast (one request), and
    * the full version with checks, reviews and sizes is built in the background. Until
    * it is ready, responses carry `partial: true` so the client polls again shortly.
+   * Once a full inbox exists it is always what's served; stale ones are rebuilt in
+   * the background, and `fresh` waits for the rebuild.
    */
-  async inbox(): Promise<Inbox> {
+  async inbox({ fresh = false } = {}): Promise<Inbox> {
     const full = this.memo.get("inbox");
-    if (full && Date.now() - full.at < 60_000) {
-      if (Date.now() - full.at > 8_000) this.refreshInbox();
-      return full.value as Promise<Inbox>;
+    if (!full) {
+      this.refreshInbox();
+      return this.cached("inbox-fast", 5_000, () => this.loadInbox(false));
     }
-    this.refreshInbox();
-    return this.cached("inbox-fast", 5_000, () => this.loadInbox(false));
+    const stale = this.inboxBuiltFrom !== this.inboxVersion || Date.now() - full.at > 8_000;
+    if (fresh) return (await this.refreshInbox()) ?? (full.value as Promise<Inbox>);
+    if (stale) this.refreshInbox();
+    return full.value as Promise<Inbox>;
   }
 
-  private inboxRefresh: Promise<unknown> | null = null;
-  private refreshInbox(): void {
-    if (this.inboxRefresh) return;
+  /** Bumped by every change; a full inbox built from an older version is stale. */
+  private inboxVersion = 0;
+  private inboxBuiltFrom = -1;
+  private inboxRefresh: Promise<Inbox | undefined> | null = null;
+  private refreshInbox(): Promise<Inbox | undefined> {
+    if (this.inboxRefresh) return this.inboxRefresh;
+    const version = this.inboxVersion;
     const next = this.loadInbox(true);
     this.inboxRefresh = next
       .then((inbox) => {
         this.memo.set("inbox", { at: Date.now(), value: next });
+        this.inboxBuiltFrom = version;
         this.warmDetails(inbox);
+        return inbox;
       })
-      .catch(() => {})
-      .finally(() => (this.inboxRefresh = null));
+      .catch(() => undefined)
+      .finally(() => {
+        this.inboxRefresh = null;
+        // Something changed while this was being built: build again.
+        if (version !== this.inboxVersion) this.refreshInbox();
+      });
+    return this.inboxRefresh;
   }
 
   private async loadInbox(enrich: boolean): Promise<Inbox> {
@@ -422,7 +442,34 @@ export class ReviewService {
     };
   }
 
+  /**
+   * The PR's stack, each open entry with its own checks and review state (requests
+   * are ETag-cached, so refreshing a whole stack is cheap).
+   */
   private async prStack(pr: FullPR): Promise<StackEntry[]> {
+    const entries = await this.stackEntries(pr);
+    if (entries.length === 0) return entries;
+    const octokit = this.octokit!;
+    const repo = this.repo!;
+    const [open, viewer] = await Promise.all([this.listOpenPRs(), this.viewer()]);
+    const byNumber = new Map(open.map((p) => [p.number, p as ListedPR | FullPR]));
+    byNumber.set(pr.number, pr);
+    return mapLimit(entries, 4, async (entry) => {
+      const listed = entry.ref.kind === "pr" ? byNumber.get(entry.ref.number) : undefined;
+      if (!listed || entry.state === "merged" || entry.state === "closed") return entry;
+      const [checks, reviews] = await Promise.all([
+        fetchChecks(octokit, repo, listed.head.sha).catch(() => null),
+        fetchReviews(octokit, repo, listed.number).catch(() => null),
+      ]);
+      return {
+        ...entry,
+        checks: checks ? summarizeChecks(checks) : null,
+        reviewDecision: reviews ? decisionFor(reviews, listed, viewer?.login ?? null) : entry.reviewDecision,
+      };
+    });
+  }
+
+  private async stackEntries(pr: FullPR): Promise<StackEntry[]> {
     const octokit = this.octokit!;
     const repo = this.repo!;
     // Native GitHub stack: the stack itself is the source of truth.
@@ -552,7 +599,8 @@ export class ReviewService {
       const { data } = await this.octokit.repos.getContent({ ...this.repo, path, ref, mediaType: { format: "raw" } });
       return String(data);
     });
-    return { path, ref, lines: text.split("\n") };
+    // A final newline ends the last line rather than starting another.
+    return { path, ref, lines: text.replace(/\r?\n$/, "").split("\n") };
   }
 
   async comment(number: number, body: string): Promise<void> {
@@ -583,6 +631,68 @@ export class ReviewService {
       }
       throw error;
     }
+  }
+
+  /** People and labels a PR can be given; cached for a few minutes. */
+  options(): Promise<RepoOptions> {
+    this.requireGitHub();
+    return this.cached("options", 5 * 60_000, async () => {
+      const [people, labels] = await Promise.all([
+        this.octokit!.paginate(this.octokit!.issues.listAssignees, { ...this.repo!, per_page: 100 }).catch(() => []),
+        this.octokit!.paginate(this.octokit!.issues.listLabelsForRepo, { ...this.repo!, per_page: 100 }).catch(() => []),
+      ]);
+      return {
+        people: people.map((p) => person(p)!).sort((a, b) => a.login.localeCompare(b.login)),
+        labels: labels.map((l) => ({ name: l.name, color: l.color ?? "888888", description: l.description ?? null })),
+      };
+    });
+  }
+
+  /** Changes reviewers, assignees, labels or draft state, then returns the fresh PR. */
+  async update(number: number, change: PRUpdate): Promise<Detail> {
+    this.requireGitHub();
+    const repo = this.repo!;
+    const api = this.octokit!;
+    const tasks: Array<Promise<unknown>> = [];
+    const { reviewers, assignees, labels, draft } = change;
+    if (reviewers?.add?.length) tasks.push(api.pulls.requestReviewers({ ...repo, pull_number: number, reviewers: reviewers.add }));
+    if (reviewers?.remove?.length) tasks.push(api.pulls.removeRequestedReviewers({ ...repo, pull_number: number, reviewers: reviewers.remove }));
+    if (assignees?.add?.length) tasks.push(api.issues.addAssignees({ ...repo, issue_number: number, assignees: assignees.add }));
+    if (assignees?.remove?.length) tasks.push(api.issues.removeAssignees({ ...repo, issue_number: number, assignees: assignees.remove }));
+    // Setting labels creates any that don't exist yet.
+    if (labels) tasks.push(api.issues.setLabels({ ...repo, issue_number: number, labels }));
+    if (draft !== undefined) tasks.push(draft ? this.github!.prs.convertToDraft(number) : this.github!.prs.markReadyForReview(number));
+    try {
+      await Promise.all(tasks);
+    } catch (error) {
+      this.invalidate({ kind: "pr", number });
+      throw cleanGitHubError(error);
+    }
+    if (labels) this.memo.delete("options");
+    this.invalidate({ kind: "pr", number });
+    return this.detail({ kind: "pr", number });
+  }
+
+  /** Re-runs one GitHub Actions job, or every failed job on the PR's head commit. */
+  async rerun(number: number, request: RerunRequest): Promise<Detail> {
+    this.requireGitHub();
+    const repo = this.repo!;
+    const api = this.octokit!;
+    try {
+      if (request.jobId) {
+        await api.actions.reRunJobForWorkflowRun({ ...repo, job_id: request.jobId });
+      } else {
+        const { data: pr } = await api.pulls.get({ ...repo, pull_number: number });
+        const failed = (await fetchChecks(api, repo, pr.head.sha)).filter((c) => c.state === "failure" && c.url);
+        const runs = new Set(failed.map((c) => c.url!.match(/\/actions\/runs\/(\d+)/)?.[1]).filter((id): id is string => !!id));
+        if (runs.size === 0) throw new ReviewError(400, "NOTHING_TO_RERUN", "There are no failed GitHub Actions checks to re-run");
+        await Promise.all([...runs].map((id) => api.actions.reRunWorkflowFailedJobs({ ...repo, run_id: Number(id) })));
+      }
+    } catch (error) {
+      throw cleanGitHubError(error);
+    }
+    this.invalidate({ kind: "pr", number });
+    return this.detail({ kind: "pr", number });
   }
 
   private requireGitHub(): void {
@@ -664,4 +774,15 @@ function sortByStack(items: InboxItem[]): InboxItem[] {
     .map((group) => group.sort((a, b) => (a.stack?.index ?? 0) - (b.stack?.index ?? 0)))
     .sort((a, b) => latest(b) - latest(a))
     .flat();
+}
+
+/** GitHub's messages end with a docs link and may hide the reason in `errors`. */
+function cleanGitHubError(error: unknown): unknown {
+  if (error instanceof ReviewError || error instanceof PileGitHubError) return error;
+  const status = (error as { status?: number }).status;
+  if (!status) return error;
+  const data = (error as { response?: { data?: { message?: string; errors?: Array<{ message?: string } | string> } } }).response?.data;
+  const detail = data?.errors?.map((e) => (typeof e === "string" ? e : e.message)).filter(Boolean).join("; ");
+  const message = (detail || data?.message || (error as Error).message).replace(/ - https:.*$/, "");
+  return new ReviewError(status >= 400 && status < 500 ? status : 502, `GITHUB_${status}`, message);
 }

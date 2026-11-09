@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, ArrowRight, Check, ChevronDown, CircleAlert, Copy, ExternalLink, Layers, MessageSquare, Pencil, UploadCloud } from "lucide-react";
-import type { Detail as DetailData, InboxItem, ItemRef, ReviewRequest, StackEntry, TimelineEntry } from "../api";
-import { api, load, refKey } from "../lib/client";
+import { AlertTriangle, ArrowRight, Check, ChevronDown, CircleAlert, Copy, ExternalLink, Eye, Layers, MessageSquare, Pencil, PencilLine, RotateCw, Tag, UploadCloud, UserPlus } from "lucide-react";
+import type { CheckRun, Detail as DetailData, InboxItem, ItemRef, PRUpdate, ReviewRequest, StackEntry, TimelineEntry } from "../api";
+import { useMutation } from "@tanstack/react-query";
+import { api } from "../lib/client";
+import { keys, queryClient, refKey, useOptions } from "../lib/queries";
 import { detailReadiness, entryReadiness, type Readiness } from "../lib/status";
 import { absoluteTime, copy, modKey, navigate, plural, timeAgo, useNow, useShortcuts } from "../lib/util";
 import { Composer } from "./Composer";
 import { FilesPanel } from "./FilesPanel";
 import type { PendingComment } from "./FileDiff";
 import { Markdown } from "./Markdown";
+import { Picker, type PickerItem } from "./Picker";
 import { Avatar, Button, buttonClass, CheckIcon, cx, DiffStat, Kbd, Label, Pill, RichText, Spinner, StatusBadge, useDismiss, useToast } from "./ui";
 
 interface Props {
@@ -22,16 +25,19 @@ interface Props {
 
 export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems }: Props) {
   useNow();
-  const key = refKey(detail.ref);
+  const key = keys.detail(detail.ref);
   const toast = useToast();
   const [pending, setPending] = useState<PendingComment[]>([]);
   const [reviewOpen, setReviewOpen] = useState(false);
   const discussionInput = useRef<HTMLTextAreaElement>(null);
   const status = detailReadiness(detail);
 
-  const refresh = useCallback(async () => {
-    await Promise.all([load(key, () => api.detail(detail.ref, true), true), load("inbox", () => api.inbox(true), true)]).catch(() => {});
-  }, [key, detail.ref]);
+  // After a change: both refetch past the server's cache (see lib/queries).
+  const refresh = useCallback(
+    () => Promise.all([queryClient.invalidateQueries({ queryKey: key }), queryClient.invalidateQueries({ queryKey: keys.inbox })]),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [detail.ref],
+  );
 
   const onFileChange = useCallback(
     (path: string | null) => history.replaceState(null, "", `${location.pathname}${location.search}#${routePath(detail.ref)}${path ? `/file/${encodeURIComponent(path)}` : ""}`),
@@ -49,6 +55,40 @@ export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems }:
     },
     [detail],
   );
+
+  // Edits show at once, roll back if GitHub refuses, and refresh the inbox either way.
+  const update = useMutation({
+    mutationFn: ({ change }: { change: PRUpdate; optimistic: (d: DetailData) => DetailData; done?: string }) => api.update(detail.number!, change),
+    onMutate: async ({ optimistic }) => {
+      await queryClient.cancelQueries({ queryKey: key });
+      const previous = queryClient.getQueryData<DetailData>(key);
+      queryClient.setQueryData<DetailData>(key, (d) => d && optimistic(d));
+      return { previous };
+    },
+    onError: (error, _change, context) => {
+      queryClient.setQueryData(key, context?.previous);
+      toast(<span className="text-bad">{error.message}</span>, { key: "update" });
+    },
+    onSuccess: (fresh, { done }) => {
+      queryClient.setQueryData(key, fresh);
+      if (done) toast(done, { key: "update" });
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: keys.inbox }),
+  });
+  const rerun = useMutation({
+    mutationFn: (check?: CheckRun) => api.rerun(detail.number!, { jobId: check?.jobId ?? undefined }),
+    onSuccess: (_fresh, check) => {
+      // GitHub queues the job a moment later; show it running now. Polling takes over from here.
+      const hit = (c: CheckRun) => (check ? c.name === check.name : c.state === "failure" && c.jobId !== null);
+      queryClient.setQueryData<DetailData>(key, (d) => d && { ...d, checks: d.checks.map((c) => (hit(c) ? { ...c, state: "pending", durationSeconds: null } : c)) });
+      toast(check ? `Re-running ${check.name}` : "Re-running failed checks", { key: "rerun" });
+    },
+    onError: (error) => toast(<span className="text-bad">{error.message}</span>, { key: "rerun" }),
+  });
+  const railActions: RailActions = {
+    update: (change, optimistic, done) => update.mutateAsync({ change, optimistic, done }).then(() => {}, () => {}),
+    rerun: (check) => rerun.mutateAsync(check).then(() => {}, () => {}),
+  };
 
   const submitReview = async (request: ReviewRequest) => {
     await api.review(detail.number!, { ...request, comments: pending.map(({ path, line, side, body }) => ({ path, line, side, body })) });
@@ -97,12 +137,12 @@ export function DetailView({ detail, scrollEl, initialFile, trunk, inboxItems }:
           {detail.number !== null && <DescriptionSection detail={detail} />}
           <DiscussionSection detail={detail} inputRef={discussionInput} onCommented={refresh} />
         </div>
-        <Rail detail={detail} status={status} onReview={() => setReviewOpen(true)} />
+        <Rail detail={detail} status={status} onReview={() => setReviewOpen(true)} actions={railActions} />
       </div>
 
       <FilesPanel
         detail={detail}
-        itemKey={key}
+        itemKey={refKey(detail.ref)}
         scrollEl={scrollEl}
         pending={pending}
         onAddPending={(c) => {
@@ -547,7 +587,13 @@ function CommitGroup({ commits, url }: { commits: TimelineEntry[]; url: string |
 
 // -----------------------------------------------------------------------------
 
-function Rail({ detail, status, onReview }: { detail: DetailData; status: Readiness; onReview: () => void }) {
+interface RailActions {
+  /** Applies `change` on GitHub, showing `optimistic` until it's confirmed. */
+  update: (change: PRUpdate, optimistic: (d: DetailData) => DetailData, done?: string) => Promise<void>;
+  rerun: (check?: CheckRun) => Promise<void>;
+}
+
+function Rail({ detail, status, onReview, actions }: { detail: DetailData; status: Readiness; onReview: () => void; actions: RailActions }) {
   // Count and bar come from the same list as the rows below, so they always agree.
   const summary =
     detail.checks.length > 0
@@ -560,6 +606,79 @@ function Rail({ detail, status, onReview }: { detail: DetailData; status: Readin
       : null;
   const row = "-mx-1.5 flex min-h-7 items-center gap-2 rounded-md px-1.5 text-fg no-underline";
   const empty = <span className="text-xs text-fg-3">None</span>;
+  const isPR = detail.number !== null;
+  const editable = isPR && (detail.state === "open" || detail.state === "draft");
+  const rerunnable = detail.checks.filter((c) => c.state === "failure" && c.jobId !== null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const run = (id: string, task: () => Promise<void>) => {
+    setBusy(id);
+    task().finally(() => setBusy(null));
+  };
+
+  const [picker, setPicker] = useState<"reviewers" | "assignees" | "labels" | null>(null);
+  // Loaded on first use; shared by all three pickers.
+  const options = useOptions(picker !== null);
+  const people = (exclude?: string): PickerItem[] | undefined =>
+    options.data?.people.map((p) => ({
+      id: p.login,
+      label: p.login,
+      icon: <Avatar person={p} size="sm" />,
+      disabled: p.login === exclude,
+      hint: p.login === exclude ? "Author" : undefined,
+    }));
+  const swatch = (color: string) => (
+    <i className="size-2.5 shrink-0 rounded-full shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--text)_28%,transparent)]" style={{ background: `#${color}` }} />
+  );
+  const editButton = (which: "reviewers" | "assignees" | "labels", label: string) =>
+    editable && (
+      <Button
+        variant="ghost"
+        size="sm"
+        icon
+        className="-my-1 -mr-1.5 ml-auto"
+        aria-label={label}
+        data-tip={label}
+        onClick={() => setPicker((p) => (p === which ? null : which))}
+      >
+        {which === "labels" ? <Tag size={13} /> : <UserPlus size={13} />}
+      </Button>
+    );
+
+  const requested = detail.reviewers.filter((r) => r.state === "requested" && !r.isTeam).map((r) => r.person.login);
+  const applyReviewers = (next: string[]) => {
+    const add = next.filter((l) => !requested.includes(l));
+    const remove = requested.filter((l) => !next.includes(l));
+    actions.update(
+      { reviewers: { add, remove } },
+      (d) => ({
+        ...d,
+        reviewers: [
+          ...d.reviewers.filter((r) => !remove.includes(r.person.login) && !add.includes(r.person.login)),
+          ...add.map((login) => ({ person: options.data?.people.find((p) => p.login === login) ?? { login, avatarUrl: null }, state: "requested" as const })),
+        ],
+      }),
+      add.length && !remove.length ? `Requested review from ${add.join(", ")}` : "Reviewers updated",
+    );
+  };
+  const applyAssignees = (next: string[]) => {
+    const current = detail.assignees.map((a) => a.login);
+    const add = next.filter((l) => !current.includes(l));
+    const remove = current.filter((l) => !next.includes(l));
+    actions.update(
+      { assignees: { add, remove } },
+      (d) => ({ ...d, assignees: next.map((login) => options.data?.people.find((p) => p.login === login) ?? { login, avatarUrl: null }) }),
+      "Assignees updated",
+    );
+  };
+  const applyLabels = (next: string[]) =>
+    actions.update(
+      { labels: next },
+      (d) => ({
+        ...d,
+        labels: next.map((name) => d.labels.find((l) => l.name === name) ?? options.data?.labels.find((l) => l.name === name) ?? { name, color: "8b8b8b" }),
+      }),
+      "Labels updated",
+    );
 
   return (
     <aside className="flex min-w-0 flex-col gap-6">
@@ -571,26 +690,51 @@ function Rail({ detail, status, onReview }: { detail: DetailData; status: Readin
           <RichText text={status.detail} />
         </p>
         <div className="grid gap-1.5">
-          {detail.number !== null && (
+          {detail.state === "draft" && (
+            <Button
+              block
+              variant="primary"
+              disabled={busy === "draft"}
+              onClick={() => run("draft", () => actions.update({ draft: false }, (d) => ({ ...d, state: "open" }), `#${detail.number} is ready for review`))}
+            >
+              {busy === "draft" ? <Spinner size={12} /> : <Eye size={13} />}
+              Ready for review
+            </Button>
+          )}
+          {isPR && (
             <Button block onClick={onReview}>
               {detail.can.review ? "Leave a review" : "Comment"}
               <Kbd>R</Kbd>
             </Button>
           )}
-          {detail.url && (
-            <a className={cx(buttonClass({ variant: "ghost", block: true }), "no-underline")} href={detail.url} target="_blank" rel="noreferrer">
-              Open on GitHub <ExternalLink size={12} />
-            </a>
-          )}
+          <div className={cx("grid gap-1.5", detail.state === "open" && detail.url && "grid-cols-2")}>
+            {detail.state === "open" && (
+              <Button
+                block
+                variant="ghost"
+                disabled={busy === "draft"}
+                data-tip="Hide it from review until it's ready"
+                onClick={() => run("draft", () => actions.update({ draft: true }, (d) => ({ ...d, state: "draft" }), `#${detail.number} is a draft again`))}
+              >
+                {busy === "draft" ? <Spinner size={12} /> : <PencilLine size={13} />}
+                To draft
+              </Button>
+            )}
+            {detail.url && (
+              <a className={cx(buttonClass({ variant: "ghost", block: true }), "no-underline")} href={detail.url} target="_blank" rel="noreferrer">
+                GitHub <ExternalLink size={12} />
+              </a>
+            )}
+          </div>
         </div>
       </div>
 
-      {detail.number !== null && (
+      {isPR && (
         <div>
           <Label>
             Checks
             <span className="flex-1" />
-            {summary && summary.total > 0 && (
+            {summary && (
               <span className="tabular">
                 {summary.failed || summary.pending
                   ? [summary.passed && `${summary.passed} passed`, summary.failed && `${summary.failed} failed`, summary.pending && `${summary.pending} running`]
@@ -600,7 +744,7 @@ function Rail({ detail, status, onReview }: { detail: DetailData; status: Readin
               </span>
             )}
           </Label>
-          {summary && summary.total > 0 && (
+          {summary && (
             <div className="mb-2.5 flex h-[3px] overflow-hidden rounded-full bg-panel-3" aria-hidden>
               <i className="h-full bg-ok transition-[width] duration-500" style={{ width: `${(summary.passed / summary.total) * 100}%` }} />
               <i className="h-full bg-warn transition-[width] duration-500" style={{ width: `${(summary.pending / summary.total) * 100}%` }} />
@@ -610,19 +754,59 @@ function Rail({ detail, status, onReview }: { detail: DetailData; status: Readin
           <div className="flex flex-col gap-0.5">
             {detail.checks.length === 0 && <span className="text-xs text-fg-3">No checks reported.</span>}
             {detail.checks.map((check) => (
-              <a key={check.name} className={cx(row, "hover:bg-hover")} href={check.url ?? undefined} target="_blank" rel="noreferrer" data-tip={check.summary ?? undefined}>
+              <div key={check.name} className={cx(row, "group/check relative hover:bg-hover")} data-tip={check.summary ?? undefined}>
                 <CheckIcon state={check.state} />
-                <span className="min-w-0 flex-1 truncate">{check.name}</span>
-                {check.durationSeconds !== null && <span className="shrink-0 text-[11.5px] text-fg-3 tabular">{formatDuration(check.durationSeconds)}</span>}
-              </a>
+                <a className="min-w-0 flex-1 truncate text-fg no-underline after:absolute after:inset-0" href={check.url ?? undefined} target="_blank" rel="noreferrer">
+                  {check.name}
+                </a>
+                {check.durationSeconds !== null && (
+                  <span className={cx("shrink-0 text-[11.5px] text-fg-3 tabular", check.jobId !== null && check.state !== "pending" && "group-hover/check:hidden")}>
+                    {formatDuration(check.durationSeconds)}
+                  </span>
+                )}
+                {check.jobId !== null && check.state !== "pending" && (
+                  <span className="relative z-[1] -mr-1 hidden group-focus-within/check:flex group-hover/check:flex">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon
+                    aria-label={`Re-run ${check.name}`}
+                    data-tip="Re-run"
+                    disabled={busy === `check-${check.name}`}
+                    onClick={() => run(`check-${check.name}`, () => actions.rerun(check))}
+                  >
+                    <RotateCw size={12} />
+                  </Button>
+                  </span>
+                )}
+              </div>
             ))}
           </div>
+          {rerunnable.length > 0 && (
+            <Button size="sm" variant="ghost" className="-ml-1.5 mt-1.5 text-fg-2" disabled={busy === "rerun"} onClick={() => run("rerun", () => actions.rerun())}>
+              {busy === "rerun" ? <Spinner size={11} /> : <RotateCw size={12} />}
+              Re-run failed {rerunnable.length === 1 ? "check" : `checks (${rerunnable.length})`}
+            </Button>
+          )}
         </div>
       )}
 
-      {detail.number !== null && (
-        <div>
-          <Label>Reviewers</Label>
+      {isPR && (
+        <div className="relative">
+          <Label>
+            Reviewers
+            {editButton("reviewers", "Request reviewers")}
+          </Label>
+          {picker === "reviewers" && (
+            <Picker
+              title="Request reviews from"
+              items={people(detail.author?.login)}
+              initial={requested}
+              onApply={applyReviewers}
+              onClose={() => setPicker(null)}
+              empty="Nobody else has access to this repository"
+            />
+          )}
           <div className="flex flex-col gap-0.5">
             {detail.reviewers.length === 0 && <span className="text-xs text-fg-3">No reviewers yet.</span>}
             {detail.reviewers.map((r) => (
@@ -644,15 +828,29 @@ function Rail({ detail, status, onReview }: { detail: DetailData; status: Readin
         </div>
       )}
 
-      {detail.number !== null && (
-        <div>
-          <Label>Labels</Label>
+      {isPR && (
+        <div className="relative">
+          <Label>
+            Labels
+            {editButton("labels", "Edit labels")}
+          </Label>
+          {picker === "labels" && (
+            <Picker
+              title="Labels"
+              items={options.data?.labels.map((l) => ({ id: l.name, label: l.name, icon: swatch(l.color), hint: undefined }))}
+              initial={detail.labels.map((l) => l.name)}
+              onApply={applyLabels}
+              onClose={() => setPicker(null)}
+              create={(name) => ({ id: name, label: name, icon: swatch("8b8b8b"), hint: "New" })}
+              empty="This repository has no labels yet"
+            />
+          )}
           {detail.labels.length === 0 ? (
             empty
           ) : (
             <div className="flex flex-wrap gap-1.5">
               {detail.labels.map((l) => (
-                <span key={l.name} className="inline-flex h-[22px] items-center gap-1.5 rounded-full border border-line-2 px-2 text-[11.5px] font-medium leading-none text-fg-2">
+                <span key={l.name} className="inline-flex h-[22px] items-center gap-1.5 rounded-full border border-line-2 px-2 text-[11.5px] font-medium leading-none text-fg-2" data-tip={l.description ?? undefined}>
                   <i className="size-2 shrink-0 rounded-full shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--text)_28%,transparent)]" style={{ background: `#${l.color}` }} />
                   {l.name}
                 </span>
@@ -662,9 +860,22 @@ function Rail({ detail, status, onReview }: { detail: DetailData; status: Readin
         </div>
       )}
 
-      {detail.number !== null && (
-        <div>
-          <Label>Assignees</Label>
+      {isPR && (
+        <div className="relative">
+          <Label>
+            Assignees
+            {editButton("assignees", "Edit assignees")}
+          </Label>
+          {picker === "assignees" && (
+            <Picker
+              title="Assign to"
+              items={people()}
+              initial={detail.assignees.map((a) => a.login)}
+              onApply={applyAssignees}
+              onClose={() => setPicker(null)}
+              empty="Nobody has access to this repository"
+            />
+          )}
           {detail.assignees.length === 0
             ? empty
             : detail.assignees.map((a) => (

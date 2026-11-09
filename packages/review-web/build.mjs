@@ -2,7 +2,8 @@
 // syntax highlighting grammars), app.css and the two variable fonts.
 import { build, context } from "esbuild";
 import { execFileSync, spawn } from "node:child_process";
-import { copyFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,9 +23,13 @@ for (const [pkg, file, name] of [
   copyFileSync(join(dirname(require.resolve(`${pkg}/package.json`)), "files", file), join(dist, "fonts", name));
 }
 
-writeFileSync(
-  join(dist, "index.html"),
-  `<!doctype html>
+// app.js and app.css keep stable names; the page links them with a content hash so a
+// rebuilt app is never shadowed by a cached copy.
+const version = (file) => (existsSync(join(dist, file)) ? createHash("sha256").update(readFileSync(join(dist, file))).digest("hex").slice(0, 10) : String(Date.now()));
+const writeIndex = () =>
+  writeFileSync(
+    join(dist, "index.html"),
+    `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
@@ -32,18 +37,18 @@ writeFileSync(
     <meta name="color-scheme" content="dark light">
     <title>pile review</title>
     <link rel="preload" href="/fonts/geist.woff2" as="font" type="font/woff2" crossorigin>
-    <link rel="stylesheet" href="/app.css">
+    <link rel="stylesheet" href="/app.css?v=${version("app.css")}">
     <link rel="icon" href="data:image/svg+xml,${encodeURIComponent(
       '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#111"/><rect x="9" y="19" width="14" height="4" rx="2" fill="#fff"/><rect x="9" y="13" width="14" height="4" rx="2" fill="#fff" opacity=".7"/><rect x="9" y="7" width="14" height="4" rx="2" fill="#fff" opacity=".4"/></svg>',
     )}">
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/app.js"></script>
+    <script type="module" src="/app.js?v=${version("app.js")}"></script>
   </body>
 </html>
 `,
-);
+  );
 
 const options = {
   entryPoints: { app: join(root, "src/main.tsx") },
@@ -70,7 +75,9 @@ if (watch) {
   spawn(tailwind, [...css, "--watch"], { stdio: "inherit" });
   const ctx = await context(options);
   await ctx.watch();
+  writeIndex();
 } else {
   await build(options);
   execFileSync(tailwind, [...css, "--minify"], { stdio: "inherit" });
+  writeIndex();
 }
