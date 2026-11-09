@@ -232,7 +232,7 @@ function checkRunsFor(summary) {
   for (let i = 0; i < summary.failed; i++) runs.push({ name: `test shard ${i + 1}`, state: "failure", summary: "1 failed", url: null, durationSeconds: 61 });
   for (let i = 0; i < summary.pending; i++) runs.push({ name: `e2e ${i + 1}`, state: "pending", summary: null, url: null, durationSeconds: null });
   for (let i = 0; i < summary.passed; i++) runs.push({ name: ["build", "lint", "typecheck", "unit tests", "docs"][i % 5], state: "success", summary: null, url: null, durationSeconds: 20 + i * 7 });
-  return runs;
+  return runs.map((run, i) => ({ ...run, jobId: 5000 + i }));
 }
 
 /** Header totals always match the files the detail actually carries. */
@@ -303,11 +303,11 @@ function buildDetail(number) {
         { id: 9003, path: "src/api/limit.ts", line: 22, side: "LEFT", author: person("grace"), createdAt: ago(60), bodyHtml: "<p>Nit: keep the old name in a comment?</p>", inReplyTo: null, url: "https://github.com/acme/web/pull/101#d3" },
       ],
       checks: [
-        { name: "typecheck", state: "failure", summary: "2 errors in src/api/limit.ts", url: "https://example.com/ci/1", durationSeconds: 42 },
-        { name: "e2e (chrome)", state: "pending", summary: null, url: "https://example.com/ci/2", durationSeconds: null },
-        { name: "unit tests", state: "success", summary: "214 passed", url: "https://example.com/ci/3", durationSeconds: 95 },
-        { name: "lint", state: "success", summary: null, url: "https://example.com/ci/4", durationSeconds: 18 },
-        { name: "preview deploy", state: "neutral", summary: "Skipped", url: null, durationSeconds: null },
+        { name: "typecheck", jobId: 7001, state: "failure", summary: "2 errors in src/api/limit.ts", url: "https://example.com/ci/1", durationSeconds: 42 },
+        { name: "e2e (chrome)", jobId: 7002, state: "pending", summary: null, url: "https://example.com/ci/2", durationSeconds: null },
+        { name: "unit tests", jobId: 7003, state: "success", summary: "214 passed", url: "https://example.com/ci/3", durationSeconds: 95 },
+        { name: "lint", jobId: 7004, state: "success", summary: null, url: "https://example.com/ci/4", durationSeconds: 18 },
+        { name: "preview deploy", jobId: null, state: "neutral", summary: "Skipped", url: null, durationSeconds: null },
       ],
       checksSummary: checks("failure", 3, 1, 1),
       reviewers: [
@@ -373,3 +373,15 @@ export function branchDetail(name) {
     can: { review: false, comment: false, merge: false },
   };
 }
+
+/** Who a PR can be assigned to or reviewed by, and the repository's labels. */
+export const options = {
+  people: ["alice", "bob", "carol", "dave", "erin", "frank", "grace", "you"].map((login) => ({ login, avatarUrl: null })),
+  labels: [
+    { name: "api", color: "1d76db", description: "Public API" },
+    { name: "security", color: "b60205", description: null },
+    { name: "needs-docs", color: "fbca04", description: null },
+    { name: "light", color: "ededed", description: null },
+    { name: "ui", color: "c5def5", description: null },
+  ],
+};

@@ -90,6 +90,8 @@ export interface StackEntry {
   branch: string;
   state: PRState | "local";
   reviewDecision: InboxItem["reviewDecision"];
+  /** The entry's own checks, so the stack shows real statuses without the inbox. */
+  checks?: ChecksSummary | null;
   isCurrent: boolean;
 }
 
@@ -99,6 +101,8 @@ export interface CheckRun {
   summary: string | null;
   url: string | null;
   durationSeconds: number | null;
+  /** GitHub Actions job behind this check, when it can be re-run from here. */
+  jobId: number | null;
 }
 
 export interface ReviewerState {
@@ -172,7 +176,7 @@ export interface Detail {
   checks: CheckRun[];
   checksSummary: ChecksSummary | null;
   reviewers: ReviewerState[];
-  labels: Array<{ name: string; color: string }>;
+  labels: Label[];
   assignees: Person[];
   mergeable: boolean | null;
   mergeableState: string | null;
@@ -182,6 +186,32 @@ export interface Detail {
   local: LocalState | null;
   /** Things the viewer can do. */
   can: { review: boolean; comment: boolean; merge: boolean };
+}
+
+export interface Label {
+  name: string;
+  color: string;
+  description?: string | null;
+}
+
+/** What a PR's reviewers, assignees and labels can be picked from. */
+export interface RepoOptions {
+  people: Person[];
+  labels: Label[];
+}
+
+/** Changes to a PR's metadata; every field is optional. */
+export interface PRUpdate {
+  reviewers?: { add?: string[]; remove?: string[] };
+  assignees?: { add?: string[]; remove?: string[] };
+  /** The full set of labels the PR should have. */
+  labels?: string[];
+  draft?: boolean;
+}
+
+/** Re-runs one check (by its Actions job) or, without `jobId`, every failed one. */
+export interface RerunRequest {
+  jobId?: number;
 }
 
 export interface ApiError {
