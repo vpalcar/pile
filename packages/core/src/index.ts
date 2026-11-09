@@ -41,5 +41,8 @@ export {
 // Process execution
 export { runGit, runGitSync, GitError, getGitCallCount, mapLimit } from "./exec.js";
 
+// Review notes
+export { NotesStore, createNotesStore, formatNotes, type Note, type NewNote, type NoteFilter } from "./notes.js";
+
 // Pile instance
 export { createPile, type PileInstance } from "./pile.js";
