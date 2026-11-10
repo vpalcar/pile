@@ -99,6 +99,7 @@ program
     "Insert branch between current branch and its children",
   )
   .option("--no-verify", "Skip the commit hooks (pre-commit, commit-msg)")
+  .option("--verbose", "Print everything the commit hooks say, not a summary")
   .action((name, opts) => {
     const globalOpts = program.opts();
     render(
@@ -109,6 +110,7 @@ program
         update: opts.update,
         insert: opts.insert,
         verify: opts.verify,
+        verbose: opts.verbose,
         options: resolveOptions(globalOpts),
       }),
     );
@@ -124,6 +126,7 @@ program
   .option("-m, --message <message>", "New commit message (optional)")
   .option("--amend", "Only amend last commit instead of squashing all")
   .option("--no-verify", "Skip the commit hooks (pre-commit, commit-msg)")
+  .option("--verbose", "Print everything the commit hooks say, not a summary")
   .action((opts) => {
     const globalOpts = program.opts();
     render(
@@ -133,6 +136,7 @@ program
         message: opts.message,
         squash: !opts.amend, // Squash by default, --amend disables it
         verify: opts.verify,
+        verbose: opts.verbose,
         options: resolveOptions(globalOpts),
       }),
     );

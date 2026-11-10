@@ -65,7 +65,8 @@ export function InfoMessage({
 
 /** What the commit hooks printed (pile quiets git itself), so it's clear they ran. */
 export function HookOutput({ output }: { output: string }): React.ReactElement | null {
-  const lines = output.split("\n").filter((line) => line.trim());
+  // Steps with nothing to do (lefthook's "(skip)" lines) say nothing useful.
+  const lines = output.split("\n").filter((line) => line.trim() && !/\(skip\)|no matching (staged )?files/i.test(line));
   if (lines.length === 0) return null;
   const shown = lines.slice(-20);
   return (

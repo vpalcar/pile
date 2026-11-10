@@ -105,7 +105,7 @@ each one with a reply, which shows up live in the app. See
 
 | Command | Alias | Description |
 |---------|-------|-------------|
-| `pile create -m "message"` | `c` | Create a new stacked branch with a commit (`-a` stages everything, untracked files included; `-u` only tracked files; `--no-verify` skips the commit hooks) |
+| `pile create -m "message"` | `c` | Create a new stacked branch with a commit (`-a` stages everything, untracked files included; `-u` only tracked files; `--no-verify` skips the commit hooks; if a hook fails, pile names the failed step, shows its last lines and saves the full log to `.git/pile/last-hook.log`, or prints it all with `--verbose`) |
 | `pile log` | `l` | View the branch stack tree |
 | `pile checkout [branch]` | `co` | Checkout a branch (interactive if no branch given) |
 | `pile up [steps]` / `pile down [steps]` | `u` / `dn` | Move to the child / parent branch |
