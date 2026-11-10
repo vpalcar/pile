@@ -18,7 +18,7 @@ import {
   toCommandError,
 } from "../utils/output.js";
 import { useFailureExitCode } from "../utils/exit-code.js";
-import { hookFailure } from "../utils/hooks.js";
+import { hookFailure, type HookContext } from "../utils/hooks.js";
 import { deriveBranchName } from "../utils/branch-name.js";
 
 export interface CreateCommandProps {
@@ -29,6 +29,8 @@ export interface CreateCommandProps {
   insert?: boolean;
   /** Run the commit hooks (false with --no-verify). */
   verify?: boolean;
+  /** Print the hooks' whole output instead of a summary. */
+  verbose?: boolean;
   options: OutputOptions;
 }
 
@@ -54,6 +56,7 @@ export function CreateCommand({
   update,
   insert,
   verify,
+  verbose,
   options,
 }: CreateCommandProps): React.ReactElement {
   const [hookOutput, setHookOutput] = useState("");
@@ -178,8 +181,8 @@ export function CreateCommand({
     checkAndCreate();
   }, [name, message, all, update, insert, options.json, options.interactive]);
 
-  const handleError = (err: unknown) => {
-    const hook = hookFailure(err);
+  const handleError = (err: unknown, context?: HookContext) => {
+    const hook = hookFailure(err, context);
     const errMessage = hook ? `${hook.message}\n${hook.hint}` : err instanceof Error ? err.message : String(err);
     if (!options.interactive) {
       if (hook) exitWithError(options, hook);
@@ -269,7 +272,8 @@ export function CreateCommand({
       setState("success");
       setTimeout(() => exit(), 100);
     } catch (err) {
-      handleError(err);
+      const gitDir = await pile.git.getGitDir().catch(() => null);
+      handleError(err, { action: "create", branch: currentBranch, verbose, gitDir });
     }
   };
 

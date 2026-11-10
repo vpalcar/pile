@@ -17,7 +17,7 @@ import {
   toCommandError,
 } from "../utils/output.js";
 import { useFailureExitCode } from "../utils/exit-code.js";
-import { hookFailure } from "../utils/hooks.js";
+import { hookFailure, type HookContext } from "../utils/hooks.js";
 
 export interface ModifyCommandProps {
   all?: boolean;
@@ -26,6 +26,8 @@ export interface ModifyCommandProps {
   squash?: boolean;
   /** Run the commit hooks (false with --no-verify). */
   verify?: boolean;
+  /** Print the hooks' whole output instead of a summary. */
+  verbose?: boolean;
   options: OutputOptions;
 }
 
@@ -48,6 +50,7 @@ export function ModifyCommand({
   message,
   squash,
   verify,
+  verbose,
   options,
 }: ModifyCommandProps): React.ReactElement {
   const [hookOutput, setHookOutput] = useState("");
@@ -155,8 +158,8 @@ export function ModifyCommand({
     checkAndModify();
   }, [all, update, message, squash, options.json, options.interactive]);
 
-  const handleError = (err: unknown) => {
-    const hook = hookFailure(err);
+  const handleError = (err: unknown, context?: HookContext) => {
+    const hook = hookFailure(err, context);
     const errMessage = hook ? `${hook.message}\n${hook.hint}` : err instanceof Error ? err.message : String(err);
     if (!options.interactive) {
       exitWithError(options, hook ?? toCommandError(err));
@@ -251,7 +254,8 @@ export function ModifyCommand({
       setState("success");
       setTimeout(() => exit(), 100);
     } catch (err) {
-      handleError(err);
+      const gitDir = await pile.git.getGitDir().catch(() => null);
+      handleError(err, { action: "modify", branch: currentBranch, verbose, gitDir });
     }
   };
 
