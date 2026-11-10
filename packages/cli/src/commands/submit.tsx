@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { Box, Text } from "ink";
 import { createPile } from "@pile/core";
-import { createGitHub, syncStack, type StackLink, type StackSyncResult } from "@pile/github";
+import { createGitHub, syncStack, type StackSyncResult } from "@pile/github";
+import { stackChain, type KnownPR } from "../utils/stack-chain.js";
 import { Spinner } from "../components/Spinner.js";
 import { Link } from "../components/Link.js";
 import {
@@ -324,38 +325,23 @@ export function SubmitCommand({
         });
 
         // GitHub's native stack is the source of truth: register the chain from the trunk
-        // up to this branch there (only once every branch in it has an open PR).
+        // up to this branch there, or say which branch keeps it from being one.
         let synced: StackSyncResult | null = null;
         if (queued.length === 0) {
-          const known = new Map(plans.map((plan, i) => [plan.branch, { outcome: outcomes[i], pr: plan.existingPR }]));
-          const chain: StackLink[] = [];
-          let complete = true;
-          for (const branch of pile.stack.getAncestry(current)) {
-            const here = known.get(branch);
-            if (here) {
-              if (here.outcome === null) continue; // merged
-              if ("operation" in here.outcome) {
-                complete = false;
-                break;
-              }
-              chain.push({ number: here.outcome.prNumber, branch, stack: here.pr?.stack ?? null });
-              continue;
-            }
-            // Below what this run submitted: its PR as GitHub has it now.
-            const number = pile.state.getBranchRelationship(branch)?.prNumber;
-            const pr = number ? await github.prs.get(number).catch(() => null) : null;
-            if (pr?.merged) continue;
-            if (!pr || pr.state !== "open") {
-              complete = false;
-              break;
-            }
-            chain.push({ number: pr.number, branch, stack: pr.stack ?? null });
-          }
-          if (complete) {
-            synced = await syncStack(github.prs, chain, {
-              isSibling: (branch, parent) => pile.state.getParent(branch) === parent,
-            });
-          }
+          const known = new Map<string, KnownPR>(
+            plans.map((plan, i) => {
+              const outcome = outcomes[i];
+              const state: KnownPR = outcome === null ? "merged" : "operation" in outcome ? "queued" : { number: outcome.prNumber, stack: plan.existingPR?.stack ?? null };
+              return [plan.branch, state];
+            }),
+          );
+          const found = await stackChain(pile, github, current, known);
+          synced =
+            "blocked" in found
+              ? { action: "skipped", reason: found.blocked }
+              : await syncStack(github.prs, found.chain, {
+                  isSibling: (branch, parent) => pile.state.getParent(branch) === parent,
+                });
         }
         setStackSync(synced);
 
