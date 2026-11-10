@@ -39,20 +39,29 @@ export class StackManager {
   async createBranch(
     name: string,
     message?: string,
-    options?: { insert?: boolean }
-  ): Promise<Branch> {
+    options?: { insert?: boolean; verify?: boolean }
+  ): Promise<Branch & { hookOutput?: string }> {
     const currentBranch = await this.git.getCurrentBranch();
     const trunk = this.getTrunk();
 
     // Create the new branch
     await this.git.createBranch(name);
 
-    // If there's a message and staged changes, commit them
+    // If there's a message and staged changes, commit them (running the commit hooks)
     const commits: Branch["commits"] = [];
+    let hookOutput: string | undefined;
     if (message) {
       const stagedFiles = await this.git.getStagedFiles();
       if (stagedFiles.length > 0) {
-        const hash = await this.git.commit(message);
+        let hash: string;
+        try {
+          ({ hash, output: hookOutput } = await this.git.commitWithOutput(message, { verify: options?.verify }));
+        } catch (error) {
+          // A hook refused the commit: go back to where we were, changes still staged.
+          await this.git.checkout(currentBranch).catch(() => {});
+          await this.git.deleteBranch(name, true).catch(() => {});
+          throw error;
+        }
         commits.push({
           hash,
           message,
@@ -94,6 +103,7 @@ export class StackManager {
       commits,
       syncStatus: "pending",
       tracked: true,
+      hookOutput,
     };
   }
 

@@ -92,12 +92,13 @@ program
   .alias("c")
   .description("Create a new stacked branch")
   .requiredOption("-m, --message <message>", "Commit message (required)")
-  .option("-a, --all", "Stage all changes before creating branch")
-  .option("-u, --update", "Stage all tracked file changes (git add -u)")
+  .option("-a, --all", "Stage all changes, untracked files included (git add -A)")
+  .option("-u, --update", "Stage changes to tracked files only (git add -u)")
   .option(
     "-i, --insert",
     "Insert branch between current branch and its children",
   )
+  .option("--no-verify", "Skip the commit hooks (pre-commit, commit-msg)")
   .action((name, opts) => {
     const globalOpts = program.opts();
     render(
@@ -107,6 +108,7 @@ program
         all: opts.all,
         update: opts.update,
         insert: opts.insert,
+        verify: opts.verify,
         options: resolveOptions(globalOpts),
       }),
     );
@@ -117,10 +119,11 @@ program
   .command("modify")
   .alias("m")
   .description("Squash all commits and stage changes into single commit")
-  .option("-a, --all", "Stage all changes before squashing")
-  .option("-u, --update", "Stage all tracked file changes (git add -u)")
+  .option("-a, --all", "Stage all changes, untracked files included (git add -A)")
+  .option("-u, --update", "Stage changes to tracked files only (git add -u)")
   .option("-m, --message <message>", "New commit message (optional)")
   .option("--amend", "Only amend last commit instead of squashing all")
+  .option("--no-verify", "Skip the commit hooks (pre-commit, commit-msg)")
   .action((opts) => {
     const globalOpts = program.opts();
     render(
@@ -129,6 +132,7 @@ program
         update: opts.update,
         message: opts.message,
         squash: !opts.amend, // Squash by default, --amend disables it
+        verify: opts.verify,
         options: resolveOptions(globalOpts),
       }),
     );
@@ -159,15 +163,24 @@ program
   )
   .option("-d, --draft", "Create PR as draft")
   .option("-t, --title <title>", "PR title (default: derived from branch name)")
+  .option("-b, --body <body>", "PR body for this branch ('-' reads stdin); new PRs otherwise start from the repo's PR template")
   .option("-r, --reviewers <reviewers...>", "Request reviewers")
   .option("-o, --open", "Open PR in browser after creating")
-  .action((opts) => {
+  .action(async (opts) => {
     const globalOpts = program.opts();
+    let body: string | undefined = opts.body;
+    if (body === "-") {
+      let data = "";
+      process.stdin.setEncoding("utf8");
+      for await (const chunk of process.stdin) data += chunk;
+      body = data;
+    }
     render(
       React.createElement(SubmitCommand, {
         stack: opts.stack,
         draft: opts.draft,
         title: opts.title,
+        body,
         reviewers: opts.reviewers,
         open: opts.open,
         options: resolveOptions(globalOpts),
@@ -223,12 +236,18 @@ program
 program
   .command("status [target]")
   .alias("st")
-  .description("Show PR status (target: branch, PR number or URL; default: current branch)")
-  .action((target) => {
+  .description(
+    "Show a PR's state: draft or ready, base branch, checks, reviews and whether it can merge (target: branch, PR number or URL; default: current branch)",
+  )
+  .option("--body", "Also show the PR's description")
+  .option("--comments", "Also show its comments (discussion, review summaries, inline)")
+  .action((target, opts) => {
     const globalOpts = program.opts();
     render(
       React.createElement(StatusCommand, {
         target,
+        body: opts.body,
+        comments: opts.comments,
         options: resolveOptions(globalOpts),
       }),
     );

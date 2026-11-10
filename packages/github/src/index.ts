@@ -8,6 +8,7 @@ export {
   type UpdatePRParams,
   type PRStatus,
   type PRStackInfo,
+  type PRComment,
   type AsyncMergeResult,
   getPRStatus,
 } from "./types.js";

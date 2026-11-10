@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 import { createPile } from "@pile/core";
 import { createGitHub, syncStack, type StackSyncResult } from "@pile/github";
 import { stackChain, type KnownPR } from "../utils/stack-chain.js";
+import { readPRTemplate } from "../utils/pr-template.js";
 import { Spinner } from "../components/Spinner.js";
 import { Link } from "../components/Link.js";
 import {
@@ -26,6 +27,8 @@ export interface SubmitCommandProps {
   stack?: boolean;
   draft?: boolean;
   title?: string;
+  /** Body for the current branch's PR (created or updated). */
+  body?: string;
   reviewers?: string[];
   open?: boolean;
   options: OutputOptions;
@@ -81,6 +84,7 @@ export function SubmitCommand({
   stack,
   draft,
   title,
+  body,
   reviewers,
   open,
   options,
@@ -254,14 +258,22 @@ export function SubmitCommand({
           return { branch, existingPR, baseBranch: parent ?? trunk };
         });
 
-        const stackInfo = stack ? `Part of a stack based on \`${trunk}\`` : "";
+        // New PRs start from --body (this branch) or the repository's PR template.
+        const template = readPRTemplate(await pile.git.getRepoRoot()) ?? "";
+        const bodyFor = (branch: string) => (branch === current && body !== undefined ? body : template);
         const outcomes = await Promise.all(
           plans.map(async ({ branch, existingPR, baseBranch }): Promise<PRResult | QueuedResult | null> => {
             const prTitle = title ?? pile.state.getTitle(branch) ?? branch;
             try {
               if (existingPR && !existingPR.merged) {
-                if (existingPR.base.ref !== baseBranch) {
-                  await github.prs.update({ number: existingPR.number, base: baseBranch });
+                // An open PR keeps its body, unless --body was given for it.
+                const newBody = branch === current ? body : undefined;
+                if (existingPR.base.ref !== baseBranch || newBody !== undefined) {
+                  await github.prs.update({
+                    number: existingPR.number,
+                    ...(existingPR.base.ref !== baseBranch ? { base: baseBranch } : {}),
+                    ...(newBody !== undefined ? { body: newBody } : {}),
+                  });
                 }
                 github.cache.cachePR(existingPR);
                 return {
@@ -278,7 +290,7 @@ export function SubmitCommand({
 
               const pr = await github.prs.create({
                 title: prTitle,
-                body: stackInfo,
+                body: bodyFor(branch),
                 head: branch,
                 base: baseBranch,
                 draft: draft ?? false,
@@ -300,7 +312,7 @@ export function SubmitCommand({
                   : {
                       branch,
                       title: prTitle,
-                      body: stackInfo,
+                      body: bodyFor(branch),
                       base: baseBranch,
                       draft: draft ?? false,
                       reviewers,
@@ -405,7 +417,7 @@ export function SubmitCommand({
     }
 
     submit();
-  }, [stack, draft, title, reviewers, open, options.json, options.interactive]);
+  }, [stack, draft, title, body, reviewers, open, options.json, options.interactive]);
 
   if (options.json) {
     return <></>;

@@ -70,6 +70,18 @@ export interface Review {
   submitted_at: string;
 }
 
+/** A comment on a PR: in the discussion, in a review's summary, or on a line of code. */
+export interface PRComment {
+  kind: "comment" | "review" | "inline";
+  author: string;
+  createdAt: string;
+  body: string;
+  url: string;
+  /** Inline comments only: where in the diff. */
+  path?: string;
+  line?: number | null;
+}
+
 export interface CheckStatus {
   state: "pending" | "success" | "failure" | "error" | null;
   total: number;
