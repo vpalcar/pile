@@ -34,7 +34,7 @@ import { describeCommands } from "../utils/schema.js";
 
 const program = new Command();
 
-program.name("pile").description("AI-native stacked PR CLI").version("0.3.0");
+program.name("pile").description("AI-native stacked PR CLI").version("1.0.0");
 
 program
   .option("--json", "Output in JSON format for AI agents", false)
