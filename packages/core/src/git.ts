@@ -33,6 +33,11 @@ function parseCommits(output: string): Commit[] {
     });
 }
 
+export interface CommitOptions {
+  /** Run the commit hooks (default true); false is `git commit --no-verify`. */
+  verify?: boolean;
+}
+
 export class GitOperations {
   private readonly cwd: string | undefined;
   private remote = "origin";
@@ -251,24 +256,51 @@ export class GitOperations {
     if (files.length > 0) await this.run(["add", "--", ...files]);
   }
 
-  async commit(message: string): Promise<string> {
-    await this.run(["commit", "-m", message]);
-    return this.getCommitHash("HEAD");
+  async commit(message: string, options: CommitOptions = {}): Promise<string> {
+    return (await this.commitWithOutput(message, options)).hash;
   }
 
-  async amendCommit(message?: string): Promise<string> {
-    await this.run(["commit", "--amend", ...(message ? ["-m", message] : ["--no-edit"])]);
-    return this.getCommitHash("HEAD");
+  /**
+   * Commits, running the repository's hooks (pre-commit, commit-msg) unless `verify` is
+   * false, and returns what the hooks printed: git's own summary is quieted, so the
+   * output is theirs.
+   */
+  async commitWithOutput(message: string, options: CommitOptions = {}): Promise<{ hash: string; output: string }> {
+    const output = await runGit(["commit", "--quiet", ...(options.verify === false ? ["--no-verify"] : []), "-m", message], { cwd: this.cwd, both: true });
+    return { hash: await this.getCommitHash("HEAD"), output: output.trim() };
+  }
+
+  async amendCommit(message?: string, options: CommitOptions = {}): Promise<string> {
+    return (await this.amendCommitWithOutput(message, options)).hash;
+  }
+
+  async amendCommitWithOutput(message?: string, options: CommitOptions = {}): Promise<{ hash: string; output: string }> {
+    const output = await runGit(
+      ["commit", "--amend", "--quiet", ...(options.verify === false ? ["--no-verify"] : []), ...(message ? ["-m", message] : ["--no-edit"])],
+      { cwd: this.cwd, both: true },
+    );
+    return { hash: await this.getCommitHash("HEAD"), output: output.trim() };
   }
 
   /** Squash all commits since `parent` into one, keeping the working tree as is. */
-  async squashCommits(parent: string, message: string): Promise<string> {
+  async squashCommits(parent: string, message: string, options: CommitOptions = {}): Promise<string> {
+    return (await this.squashCommitsWithOutput(parent, message, options)).hash;
+  }
+
+  async squashCommitsWithOutput(parent: string, message: string, options: CommitOptions = {}): Promise<{ hash: string; output: string }> {
     const mergeBase = await this.getMergeBase("HEAD", parent);
     if (!mergeBase) {
       throw new Error(`Could not find merge base with ${parent}`);
     }
+    const before = await this.getCommitHash("HEAD");
     await this.run(["reset", "--soft", mergeBase]);
-    return this.commit(message);
+    try {
+      return await this.commitWithOutput(message, options);
+    } catch (error) {
+      // A hook refused the commit: put the branch's commits back as they were.
+      await this.run(["reset", "--soft", before]).catch(() => {});
+      throw error;
+    }
   }
 
   async stash(): Promise<void> {

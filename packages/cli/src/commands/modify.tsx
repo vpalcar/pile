@@ -2,7 +2,12 @@ import React, { useState, useEffect } from "react";
 import { Box, Text, useInput, useApp } from "ink";
 import { createPile, PileInstance } from "@pile/core";
 import { Spinner } from "../components/Spinner.js";
-import { SuccessMessage, ErrorMessage, WarningMessage } from "../components/Message.js";
+import {
+  SuccessMessage,
+  ErrorMessage,
+  WarningMessage,
+  HookOutput,
+} from "../components/Message.js";
 import {
   OutputOptions,
   formatJson,
@@ -12,12 +17,15 @@ import {
   toCommandError,
 } from "../utils/output.js";
 import { useFailureExitCode } from "../utils/exit-code.js";
+import { hookFailure } from "../utils/hooks.js";
 
 export interface ModifyCommandProps {
   all?: boolean;
   update?: boolean;
   message?: string;
   squash?: boolean;
+  /** Run the commit hooks (false with --no-verify). */
+  verify?: boolean;
   options: OutputOptions;
 }
 
@@ -39,8 +47,10 @@ export function ModifyCommand({
   update,
   message,
   squash,
+  verify,
   options,
 }: ModifyCommandProps): React.ReactElement {
+  const [hookOutput, setHookOutput] = useState("");
   const { exit } = useApp();
   const [state, setState] = useState<State>("checking");
   useFailureExitCode(state, ["not_initialized", "no_changes", "on_trunk", "aborted", "error"]);
@@ -146,9 +156,10 @@ export function ModifyCommand({
   }, [all, update, message, squash, options.json, options.interactive]);
 
   const handleError = (err: unknown) => {
-    const errMessage = err instanceof Error ? err.message : String(err);
+    const hook = hookFailure(err);
+    const errMessage = hook ? `${hook.message}\n${hook.hint}` : err instanceof Error ? err.message : String(err);
     if (!options.interactive) {
-      exitWithError(options, toCommandError(err));
+      exitWithError(options, hook ?? toCommandError(err));
     }
     setError(errMessage);
     setState("error");
@@ -178,6 +189,7 @@ export function ModifyCommand({
       }
 
       let hash: string;
+      let hooks = "";
       let squashedCount: number | undefined;
 
       if (squash) {
@@ -201,12 +213,17 @@ export function ModifyCommand({
           await pile.git.stageAll();
         }
 
-        hash = await pile.git.squashCommits(parent, squashMessage);
+        const done = await pile.git.squashCommitsWithOutput(parent, squashMessage, { verify });
+        hash = done.hash;
+        hooks = done.output;
       } else {
         setState("amending");
         // Amend the commit
-        hash = await pile.git.amendCommit(message);
+        const done = await pile.git.amendCommitWithOutput(message, { verify });
+        hash = done.hash;
+        hooks = done.output;
       }
+      setHookOutput(hooks);
 
       if (options.json) {
         console.log(
@@ -216,6 +233,7 @@ export function ModifyCommand({
               {
                 branch: currentBranch,
                 commit: hash,
+                hookOutput: hooks,
                 filesModified: stagedFiles.length,
                 squashed: squashedCount,
               },
@@ -286,6 +304,7 @@ export function ModifyCommand({
           {commitHash && (
             <Text color="gray">  Commit: {commitHash}</Text>
           )}
+          <HookOutput output={hookOutput} />
           <Text color="gray">  Run `pile submit` to push changes</Text>
         </Box>
       );

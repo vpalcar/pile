@@ -24,7 +24,7 @@ export {
 } from "./schemas.js";
 
 // Git operations
-export { GitOperations, createGitOperations, type RefSnapshot, type RebaseResult } from "./git.js";
+export { GitOperations, createGitOperations, type CommitOptions, type RefSnapshot, type RebaseResult } from "./git.js";
 
 // State management
 export { StateManager, createStateManager, type RestackState } from "./state.js";

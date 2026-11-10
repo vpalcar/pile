@@ -45,6 +45,8 @@ export interface GitRunOptions {
   env?: NodeJS.ProcessEnv;
   /** Strip the trailing newline (default true). */
   trim?: boolean;
+  /** Resolve with stderr after stdout (hooks write to either). */
+  both?: boolean;
 }
 
 function debug(args: string[]): void {
@@ -72,7 +74,8 @@ export function runGit(args: string[], options: GitRunOptions = {}): Promise<str
           reject(new GitError(args, code, stdout ?? "", stderr ?? ""));
           return;
         }
-        resolve(options.trim === false ? stdout : stdout.replace(/\n$/, ""));
+        const out = options.both ? `${stdout ?? ""}${stderr ?? ""}` : stdout;
+        resolve(options.trim === false ? out : out.replace(/\n$/, ""));
       },
     );
   });

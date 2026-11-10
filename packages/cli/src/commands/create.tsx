@@ -3,7 +3,12 @@ import { Box, Text, useInput, useApp } from "ink";
 import { createPile, PileInstance } from "@pile/core";
 import { createGitHub } from "@pile/github";
 import { Spinner } from "../components/Spinner.js";
-import { SuccessMessage, ErrorMessage, WarningMessage } from "../components/Message.js";
+import {
+  SuccessMessage,
+  ErrorMessage,
+  WarningMessage,
+  HookOutput,
+} from "../components/Message.js";
 import {
   OutputOptions,
   formatJson,
@@ -13,6 +18,8 @@ import {
   toCommandError,
 } from "../utils/output.js";
 import { useFailureExitCode } from "../utils/exit-code.js";
+import { hookFailure } from "../utils/hooks.js";
+import { deriveBranchName } from "../utils/branch-name.js";
 
 export interface CreateCommandProps {
   name?: string;
@@ -20,6 +27,8 @@ export interface CreateCommandProps {
   all?: boolean;
   update?: boolean;
   insert?: boolean;
+  /** Run the commit hooks (false with --no-verify). */
+  verify?: boolean;
   options: OutputOptions;
 }
 
@@ -38,37 +47,16 @@ type State =
   | "aborted"
   | "error";
 
-/**
- * Generate a branch name from a commit message.
- * Format: mm-dd-slug-from-message
- */
-function deriveBranchName(message: string): string {
-  const now = new Date();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  const datePrefix = `${month}-${day}`;
-
-  // Convert message to branch-friendly format
-  const slug = message
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, "") // Remove special chars
-    .trim()
-    .replace(/\s+/g, "-") // Replace spaces with dashes
-    .replace(/-+/g, "-") // Replace multiple dashes with single
-    .replace(/^-|-$/g, "") // Remove leading/trailing dashes
-    .slice(0, 40); // Limit length (leaving room for date prefix)
-
-  return `${datePrefix}-${slug}`;
-}
-
 export function CreateCommand({
   name,
   message,
   all,
   update,
   insert,
+  verify,
   options,
 }: CreateCommandProps): React.ReactElement {
+  const [hookOutput, setHookOutput] = useState("");
   const { exit } = useApp();
   const [state, setState] = useState<State>("checking");
   useFailureExitCode(state, ["no_staged", "not_initialized", "no_changes", "aborted", "error"]);
@@ -191,8 +179,10 @@ export function CreateCommand({
   }, [name, message, all, update, insert, options.json, options.interactive]);
 
   const handleError = (err: unknown) => {
-    const errMessage = err instanceof Error ? err.message : String(err);
+    const hook = hookFailure(err);
+    const errMessage = hook ? `${hook.message}\n${hook.hint}` : err instanceof Error ? err.message : String(err);
     if (!options.interactive) {
+      if (hook) exitWithError(options, hook);
       const code = (err as { code?: unknown })?.code;
       exitWithError(
         options,
@@ -234,7 +224,9 @@ export function CreateCommand({
 
       const branch = await pile.stack.createBranch(finalName, message, {
         insert,
+        verify,
       });
+      setHookOutput(branch.hookOutput ?? "");
 
       // If insert mode and there were children, restack them onto the new branch
       if (insert && pile.state.getChildren(finalName).length > 0) {
@@ -259,6 +251,7 @@ export function CreateCommand({
                 branch: branch.name,
                 parent: branch.parent,
                 commits: branch.commits.length,
+                hookOutput: branch.hookOutput ?? "",
                 inserted: insert && pile.state.getChildren(finalName).length > 0,
               },
               undefined,
@@ -335,6 +328,7 @@ export function CreateCommand({
           {commitHash && (
             <Text color="gray">  Committed: {commitHash}</Text>
           )}
+          <HookOutput output={hookOutput} />
         </Box>
       );
     case "no_changes":

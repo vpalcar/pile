@@ -7,6 +7,7 @@ import {
   CheckStatus,
   CreatePRParams,
   UpdatePRParams,
+  PRComment,
 } from "./types.js";
 
 /** The subset of GitHub's pull request payload pile reads (shared by get and list). */
@@ -203,6 +204,25 @@ export class PROperations {
       state: review.state as Review["state"],
       submitted_at: review.submitted_at ?? new Date().toISOString(),
     }));
+  }
+
+  /** Every comment on a PR, oldest first: discussion, review summaries and inline comments. */
+  async getComments(prNumber: number): Promise<PRComment[]> {
+    const repo = { owner: this.client.repoOwner, repo: this.client.repoName };
+    const api = this.client.api;
+    const [discussion, reviews, inline] = await Promise.all([
+      api.paginate(api.issues.listComments, { ...repo, issue_number: prNumber, per_page: 100 }),
+      api.paginate(api.pulls.listReviews, { ...repo, pull_number: prNumber, per_page: 100 }),
+      api.paginate(api.pulls.listReviewComments, { ...repo, pull_number: prNumber, per_page: 100 }),
+    ]);
+    const comments: PRComment[] = [
+      ...discussion.map((c) => ({ kind: "comment" as const, author: c.user?.login ?? "unknown", createdAt: c.created_at, body: c.body ?? "", url: c.html_url })),
+      ...reviews
+        .filter((r) => r.body?.trim())
+        .map((r) => ({ kind: "review" as const, author: r.user?.login ?? "unknown", createdAt: r.submitted_at ?? "", body: r.body ?? "", url: r.html_url })),
+      ...inline.map((c) => ({ kind: "inline" as const, author: c.user?.login ?? "unknown", createdAt: c.created_at, body: c.body, url: c.html_url, path: c.path, line: c.line ?? c.original_line ?? null })),
+    ];
+    return comments.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
   /**

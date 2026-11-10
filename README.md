@@ -105,7 +105,7 @@ each one with a reply, which shows up live in the app. See
 
 | Command | Alias | Description |
 |---------|-------|-------------|
-| `pile create -m "message"` | `c` | Create a new stacked branch with a commit |
+| `pile create -m "message"` | `c` | Create a new stacked branch with a commit (`-a` stages everything, untracked files included; `-u` only tracked files; `--no-verify` skips the commit hooks) |
 | `pile log` | `l` | View the branch stack tree |
 | `pile checkout [branch]` | `co` | Checkout a branch (interactive if no branch given) |
 | `pile up [steps]` / `pile down [steps]` | `u` / `dn` | Move to the child / parent branch |
@@ -113,7 +113,7 @@ each one with a reply, which shows up live in the app. See
 | `pile track [branch] [--parent <branch>]` | | Start tracking an existing branch |
 | `pile untrack [branch]` | | Stop tracking a branch (children move to its parent) |
 | `pile delete [branch]` | `del` | Delete a branch, close its PR, reparent its children |
-| `pile modify` | `m` | Amend or squash commits |
+| `pile modify` | `m` | Amend or squash commits (`--no-verify` skips the commit hooks) |
 | `pile rename` | `rn` | Rename the current branch |
 | `pile move` | `mv` | Move branch to a different parent |
 | `pile restack` | `rs` | Rebase all branches onto their parents |
@@ -123,10 +123,10 @@ each one with a reply, which shows up live in the app. See
 
 | Command | Alias | Description |
 |---------|-------|-------------|
-| `pile submit` | `s` | Push and create/update PR |
+| `pile submit` | `s` | Push and create/update PR (`-b <text>` or `-b -` for stdin sets the body; new PRs otherwise start from the repo's PR template) |
 | `pile submit --stack` | `s -s` | Submit all PRs in the stack |
 | `pile add` | `a` | Stage files for commit |
-| `pile status [target]` | `st` | View PR status, reviews, CI checks |
+| `pile status [target]` | `st` | A PR's state: draft or ready, base branch, CI checks, reviews, mergeability; `--body` and `--comments` add its description and comments (both in `--json` too) |
 | `pile diff [target]` | `d` | Files changed compared to the parent branch |
 | `pile merge [target]` | | Merge the PR (squash by default) |
 | `pile close [target]` | | Close PR without merging |
@@ -155,7 +155,8 @@ git checkout main
 # Create first feature branch
 pile create -m "Add database schema"
 
-# Make more changes, create next branch
+# Make more changes, create next branch. Commit hooks (lefthook, husky, …) run as
+# with git commit, and pile shows what they print; --no-verify skips them.
 pile create -m "Add API endpoints"
 
 # And another

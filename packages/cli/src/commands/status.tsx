@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Box, Text } from "ink";
-import { PullRequest, Review, getPRStatus, PRStatus } from "@pile/github";
+import { PullRequest, Review, getPRStatus, PRStatus, type PRComment } from "@pile/github";
 import { Spinner } from "../components/Spinner.js";
 import { Link } from "../components/Link.js";
 import { CommandError, OutputOptions, formatJson, createResult } from "../utils/output.js";
@@ -10,6 +10,10 @@ import { formatStatusWithFlair, getStatusEmoji } from "../utils/fun.js";
 export interface StatusCommandProps {
   /** Branch, PR number, #number or PR URL. Default: current branch. */
   target?: string;
+  /** Show the description (always in --json). */
+  body?: boolean;
+  /** Fetch and show every comment (in --json too). */
+  comments?: boolean;
   options: OutputOptions;
 }
 
@@ -19,6 +23,7 @@ interface StatusData {
   branch: string;
   pr: PullRequest;
   status: PRStatus;
+  comments: PRComment[] | null;
 }
 
 function getStatusIcon(status: PRStatus): { icon: string; color: string } {
@@ -107,6 +112,8 @@ function formatTimeAgo(dateStr: string): string {
 
 export function StatusCommand({
   target,
+  body: showBody,
+  comments: showComments,
   options,
 }: StatusCommandProps): React.ReactElement {
   const [state, setState] = useState<State>("loading");
@@ -120,6 +127,7 @@ export function StatusCommand({
         // One PR fetch, then reviews and checks in parallel.
         const { pr, branch } = await resolveTargetPR(context, target, { enriched: true });
         const status = getPRStatus(pr);
+        const comments = showComments ? await context.github.prs.getComments(pr.number) : null;
 
         if (options.json) {
           console.log(
@@ -136,9 +144,11 @@ export function StatusCommand({
                   mergeable: pr.mergeable,
                   author: pr.user.login,
                   base: pr.base.ref,
+                  body: pr.body ?? "",
                   createdAt: pr.created_at,
                   updatedAt: pr.updated_at,
                 },
+                ...(comments ? { comments } : {}),
                 reviews: pr.reviews.map((r) => ({
                   user: r.user.login,
                   state: r.state,
@@ -151,7 +161,7 @@ export function StatusCommand({
           process.exit(0);
         }
 
-        setStatusData({ branch, pr, status });
+        setStatusData({ branch, pr, status, comments });
         setState("success");
       } catch (err) {
         setFailure(reportFailure(options, err));
@@ -160,7 +170,7 @@ export function StatusCommand({
     }
 
     loadStatus();
-  }, [options.json, target]);
+  }, [options.json, target, showComments]);
 
   if (options.json) {
     return <></>;
@@ -325,6 +335,50 @@ export function StatusCommand({
               )}
             </Box>
           </Box>
+
+          {showBody && (
+            <Box flexDirection="column" marginTop={1}>
+              <Box>
+                <Text color="gray">  </Text>
+                <Text bold>Description</Text>
+              </Box>
+              {(pr.body?.trim() ? pr.body.trim().split("\n") : ["No description"]).map((line, i) => (
+                <Text key={i} color={pr.body?.trim() ? undefined : "gray"}>
+                  {"    "}
+                  {line}
+                </Text>
+              ))}
+            </Box>
+          )}
+
+          {statusData.comments && (
+            <Box flexDirection="column" marginTop={1}>
+              <Box>
+                <Text color="gray">  </Text>
+                <Text bold>Comments</Text>
+                <Text color="gray"> ({statusData.comments.length})</Text>
+              </Box>
+              {statusData.comments.length === 0 && <Text color="gray">    No comments yet</Text>}
+              {statusData.comments.map((c, i) => (
+                <Box key={i} flexDirection="column" marginTop={i ? 1 : 0}>
+                  <Box>
+                    <Text color="gray">    </Text>
+                    <Text bold>{c.author}</Text>
+                    <Text color="gray">
+                      {" "}
+                      {c.kind === "inline" ? `on ${c.path}${c.line ? `:${c.line}` : ""}` : c.kind === "review" ? "reviewed" : "commented"} • {formatTimeAgo(c.createdAt)}
+                    </Text>
+                  </Box>
+                  {c.body.trim().split("\n").map((line, j) => (
+                    <Text key={j}>
+                      {"      "}
+                      {line}
+                    </Text>
+                  ))}
+                </Box>
+              ))}
+            </Box>
+          )}
 
           {/* Footer with timestamps */}
           <Box marginTop={1}>
